@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta content="width=device-width, initial-scale=1.0" name="viewport">
+    <title>Loan Officers - Microfinance</title>
+    <meta content="" name="description">
+    <meta content="" name="keywords">
+
+    <!-- Favicons -->
+    <link href="assets/img/favicon.png" rel="icon">
+    <link href="assets/img/apple-touch-icon.png" rel="apple-touch-icon">
+<style>
+  /* Add this to your existing style.css or modify it accordingly */
+
+/* Form styles */
+form {
+    background-color: var(--surface-color);
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    margin-bottom: 20px;
+}
+
+form h2 {
+    font-family: 'Poppins', sans-serif;
+    font-size: 20px;
+    margin-bottom: 15px;
+    color: var(--heading-color);
+}
+
+form .form-label {
+    font-weight: bold;
+    color: var(--default-color);
+}
+
+form .form-control {
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+
+form .btn-primary {
+    background-color: var(--accent-color);
+    border-color: var(--accent-color);
+}
+
+form .btn-primary:hover {
+    background-color: #d73636;
+    border-color: #d73636;
+}
+
+.sidebar .nav-link.active {
+    color: var(--nav-hover-color);
+}
+
+.sidebar .nav-link:hover {
+    color: var(--nav-hover-color);
+}
+
+</style>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans&family=Montserrat&family=Poppins&display=swap"
+        rel="stylesheet">
+
+    <!-- Vendor CSS Files -->
+    <link href="assets/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+    <link href="assets/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
+
+    <!-- Main CSS File -->
+    <link href="admin/assets/css/style.css" rel="stylesheet">
+</head>
+
+<body class="admin-page">
+
+    <!-- ======= Header ======= -->
+    <header id="header" class="header d-flex align-items-center sticky-top">
+        <div class="container-fluid position-relative d-flex align-items-center justify-content-between">
+            <a href="index.html" class="logo d-flex align-items-center me-auto me-xl-0">
+                <h1 class="sitename">Microfinance</h1><span>.</span>
+            </a>
+
+            <nav id="navmenu" class="navmenu">
+                <ul>
+                    <li><a href="admin.php">Dashboard</a></li>
+                    <li><a href="loan-officers.html" class="active">Loan Officers</a></li>
+                    <li><a href="portfolio-at-risk.html">Portfolio at Risk</a></li>
+                    <li><a href="reports.html">Reports</a></li>
+                    <li><a href="settings.html">Settings</a></li>
+                    <li><a href="logout.php">Logout</a></li>
+                </ul>
+                <i class="mobile-nav-toggle d-xl-none bi bi-list"></i>
+            </nav>
+        </div>
+    </header><!-- End Header -->
+
+    <!-- ======= Main ======= -->
+    <main class="main">
+        <section id="loan-officers" class="loan-officers section">
+            <div class="container">
+                <div class="row">
+                    <div class="col-lg-3 col-md-4">
+                        <aside id="sidebar" class="sidebar">
+                            <ul class="sidebar-nav" id="sidebar-nav">
+
+                                <li class="nav-item">
+                                    <a class="nav-link" href="admin.php">
+                                        <i class="bi bi-grid"></i>
+                                        <span>Dashboard</span>
+                                    </a>
+                                </li><!-- End Dashboard Nav -->
+
+                                <li class="nav-item">
+                                    <a class="nav-link" href="loan-officers.html">
+                                        <i class="bi bi-people"></i>
+                                        <span>Loan Officers</span>
+                                    </a>
+                                </li><!-- End Loan Officers Nav -->
+
+                                <li class="nav-item">
+                                    <a class="nav-link" href="portfolio-at-risk.html">
+                                        <i class="bi bi-graph-up"></i>
+                                        <span>Portfolio at Risk</span>
+                                    </a>
+                                </li><!-- End Portfolio at Risk Nav -->
+
+                                <li class="nav-item">
+                                    <a class="nav-link collapsed" data-bs-target="#reports-nav"
+                                        data-bs-toggle="collapse" href="#">
+                                        <i class="bi bi-file-earmark-bar-graph"></i><span>Reports</span><i
+                                            class="bi bi-chevron-down ms-auto"></i>
+                                    </a>
+                                    <ul id="reports-nav" class="nav-content collapse "
+                                        data-bs-parent="#sidebar-nav">
+                                        <li>
+                                            <a href="loan-reports.html">
+                                                <i class="bi bi-circle"></i><span>Loan Reports</span>
+                                            </a>
+                                        </li>
+                                        <li>
+                                            <a href="financial-reports.html">
+                                                <i class="bi bi-circle"></i><span>Financial Reports</span>
+                                            </a>
+                                        </li>
+                                    </ul>
+                                </li><!-- End Reports Nav -->
+
+                                <li class="nav-item">
+                                    <a class="nav-link collapsed" data-bs-target="#settings-nav"
+                                        data-bs-toggle="collapse" href="#">
+                                        <i class="bi bi-gear"></i><span>Settings</span><i
+                                            class="bi bi-chevron-down ms-auto"></i>
+                                    </a>
+                                    <ul id="settings-nav" class="nav-content collapse "
+                                        data-bs-parent="#sidebar-nav">
+                                        <li>
+                                            <a href="profile-settings.html">
+                                                <i class="bi bi-circle"></i><span>Profile Settings</span>
+                                            </a>
+                                        </li>
+                                        <li>
+                                            <a href="account-settings.html">
+                                                <i class="bi bi-circle"></i><span>Account Settings</span>
+                                            </a>
+                                        </li>
+                                    </ul>
+                                </li><!-- End Settings Nav -->
+
+                            </ul>
+                        </aside><!-- End Sidebar -->
+                    </div><!-- End Col -->
+
+                    <div class="col-lg-9 col-md-8">
+                        <div class="content">
+                            <h2>Register Client</h2>
+                            <form id="register-client-form">
+                                <div class="mb-3">
+                                    <label for="client-name" class="form-label">Client Name</label>
+                                    <input type="text" class="form-control" id="client-name" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="client-email" class="form-label">Client Email</label>
+                                    <input type="email" class="form-control" id="client-email" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="client-password" class="form-label">Client Password</label>
+                                    <input type="password" class="form-control" id="client-password" required>
+                                </div>
+                                <button type="submit" class="btn btn-primary">Register Client</button>
+                            </form>
+
+                            <hr>
+
+                            <h2>Disburse Loan</h2>
+                            <form id="disburse-loan-form">
+                                <div class="mb-3">
+                                    <label for="loan-client-id" class="form-label">Client ID</label>
+                                    <input type="text" class="form-control" id="loan-client-id" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="loan-amount" class="form-label">Loan Amount</label>
+                                    <input type="number" class="form-control" id="loan-amount" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="loan-term" class="form-label">Loan Term (months)</label>
+                                    <input type="number" class="form-control" id="loan-term" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="loan-interest-rate" class="form-label">Interest Rate (%)</label>
+                                    <input type="number" class="form-control" id="loan-interest-rate" required>
+                                </div>
+                                <button type="submit" class="btn btn-primary">Disburse Loan</button>
+                            </form>
+
+                            <hr>
+
+                            <h2>Track Repayment</h2>
+                            <form id="track-repayment-form">
+                                <div class="mb-3">
+                                    <label for="repayment-loan-id" class="form-label">Loan ID</label>
+                                    <input type="text" class="form-control" id="repayment-loan-id" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="repayment-amount" class="form-label">Repayment Amount</label>
+                                    <input type="number" class="form-control" id="repayment-amount" required>
+                                </div>
+                                <button type="submit" class="btn btn-primary">Track Repayment</button>
+                            </form>
+                        </div>
+                    </div><!-- End Col -->
+                </div><!-- End Row -->
+            </div><!-- End Container -->
+        </section><!-- End Loan Officers Section -->
+    </main><!-- End Main -->
+
+    <!-- Vendor JS Files -->
+    <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+    <script src="assets/vendor/aos/aos.js"></script>
+    <script src="assets/vendor/glightbox/js/glightbox.min.js"></script>
+    <script src="assets/vendor/swiper/swiper-bundle.min.js"></script>
+
+    <!-- Main JS File -->
+    <script src="assets/js/main.js"></script>
+    <script>
+        // Add JavaScript for form submissions and interactions
+        document.getElementById('register-client-form').addEventListener('submit', function (e) {
+            e.preventDefault();
+            // Add your JavaScript code to handle client registration
+            alert('Client registered successfully!');
+        });
+
+        document.getElementById('disburse-loan-form').addEventListener('submit', function (e) {
+            e.preventDefault();
+            // Add your JavaScript code to handle loan disbursement
+            alert('Loan disbursed successfully!');
+        });
+
+        document.getElementById('track-repayment-form').addEventListener('submit', function (e) {
+            e.preventDefault();
+            // Add your JavaScript code to handle repayment tracking
+            alert('Repayment tracked successfully!');
+        });
+        // Add this to your existing main.js or create a new file
+
+document.addEventListener('DOMContentLoaded', function () {
+    // Register Client Form Submission
+    document.getElementById('register-client-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        // Add your AJAX request or form submission code here
+        alert('Client registered successfully!');
+    });
+
+    // Disburse Loan Form Submission
+    document.getElementById('disburse-loan-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        // Add your AJAX request or form submission code here
+        alert('Loan disbursed successfully!');
+    });
+
+    // Track Repayment Form Submission
+    document.getElementById('track-repayment-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        // Add your AJAX request or form submission code here
+        alert('Repayment tracked successfully!');
+    });
+});
+
+    </script>
+
+</body>
+
+</html>
