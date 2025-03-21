@@ -1,4 +1,6 @@
 <?php 
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
 include '../includes/functions.php';
 include 'includes/header.php'; 
 include 'db.php';
@@ -202,18 +204,53 @@ include 'db.php';
     </div>
     
     <?php
-    // Secure SQL queries with prepared statements
-    $sql_due = "SELECT borrowers.full_name, loan_applications.loan_product, SUM(repayments.amount) AS total_amount_due, repayments.repayment_date 
-                FROM repayments 
-                INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
-                INNER JOIN borrowers ON loan_applications.borrower = borrowers.id 
-                WHERE repayments.repayment_date >= CURDATE() 
-                GROUP BY repayments.loan_id, borrowers.full_name, loan_applications.loan_product, repayments.repayment_date";
-    
-    $stmt_due = $conn->prepare($sql_due);
-    $stmt_due->execute();
-    $result_due = $stmt_due->get_result();
-    
+// Secure SQL query for due repayments with interval-based filtering
+$sql_due = "SELECT 
+    borrowers.full_name AS borrower_name, 
+    loan_applications.loan_product, 
+    SUM(repayments.amount) AS total_amount_due, 
+    SUM(repayments.paid) AS total_amount_paid,
+    repayments.repayment_date,
+    CASE 
+        WHEN DATEDIFF(repayments.repayment_date, CURDATE()) <= 7 THEN '0-7 days (Upcoming soon)'
+        WHEN DATEDIFF(repayments.repayment_date, CURDATE()) BETWEEN 8 AND 14 THEN '8-14 days (Next week)'
+        ELSE '15+ days (Beyond two weeks)'
+    END AS due_category
+FROM 
+    repayments
+INNER JOIN 
+    loan_applications ON repayments.loan_id = loan_applications.id
+INNER JOIN 
+    borrowers ON loan_applications.borrower = borrowers.id
+WHERE 
+    repayments.repayment_date >= CURDATE()
+GROUP BY 
+    repayments.loan_id, 
+    borrowers.full_name, 
+    loan_applications.loan_product, 
+    repayments.repayment_date
+ORDER BY 
+    repayments.repayment_date ASC";
+
+$stmt_due = $conn->prepare($sql_due);
+$stmt_due->execute();
+$result_due = $stmt_due->get_result();
+
+// Organize results into categories
+$due_repayments = [
+    "0-7 days (Upcoming soon)" => [],
+    "8-14 days (Next week)" => [],
+    "15+ days (Beyond two weeks)" => []
+];
+
+while ($row = $result_due->fetch_assoc()) {
+    $diff = $row['total_amount_due'] - $row['total_amount_paid'];
+    if ($diff > 0) {
+        $due_repayments[$row['due_category']][] = $row;
+    }
+};
+
+
     $sql_overdue = "SELECT borrowers.full_name, loan_applications.loan_product, repayments.amount, repayments.repayment_date,repayments.paid 
                     FROM repayments 
                     INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
@@ -230,8 +267,12 @@ include 'db.php';
             <div class="container">
                 <h1>Repayments</h1>
                 
-                <div class="table-container">
-                    <h2>Due Repayments</h2>
+                   <!-- Due Repayments Section -->
+            <div class="table-container">
+                <h2>Due Repayments</h2>
+
+                <?php foreach ($due_repayments as $label => $rows): ?>
+                    <h3><?php echo $label; ?></h3>
                     <table class="table table-striped">
                         <thead>
                             <tr>
@@ -242,24 +283,22 @@ include 'db.php';
                             </tr>
                         </thead>
                         <tbody>
-                            <?php while ($row = $result_due->fetch_assoc()) : ?>
-                                <?php $diff=$row['amount']-$row['paid'];
-                                if($diff>0)
-                                {
-                                ?>
-                                <tr>
-                                
-                                    <td><?php echo htmlspecialchars($row['full_name']); ?></td>
-                                    <td><?php echo htmlspecialchars($row['loan_product']); ?></td>
-                                    <td><?php echo number_format($row['total_amount_due'], 2); ?></td>
-                                    <td><?php echo htmlspecialchars($row['repayment_date']); ?></td>
-                                </tr>
-                                <?php } ?>
-                            <?php endwhile; ?>
-                            <?php if ($result_due->num_rows === 0) echo "<tr><td colspan='4'>No due repayments found</td></tr>"; ?>
+                            <?php if (empty($rows)): ?>
+                                <tr><td colspan="4">No due repayments found in this category</td></tr>
+                            <?php else: ?>
+                                <?php foreach ($rows as $row): ?>
+                                    <tr>
+                                        <td><?php echo htmlspecialchars($row['borrower_name']); ?></td>
+                                        <td><?php echo htmlspecialchars($row['loan_product']); ?></td>
+                                        <td><?php echo number_format($row['total_amount_due'] - $row['total_amount_paid'], 2) . " KES"; ?></td>
+                                        <td><?php echo htmlspecialchars($row['repayment_date']); ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
                         </tbody>
                     </table>
-                </div>
+                <?php endforeach; ?>
+            </div>
 
                 <div class="table-container">
                     <h2>Overdue Repayments</h2>

@@ -93,8 +93,7 @@ $roles = getRoles();
         <section id="loan-officers" class="loan-officers section">
             <div class="container">
                 <h1>Staff</h1>
-                <button class="btn btn-success mb-3" data-bs-toggle="modal" data-bs-target="#addLoanOfficerModal">Add Staff</button>
-                <div class="table-container">
+              <div class="table-container">
                     <table class="table">
                         <thead>
                             <tr>

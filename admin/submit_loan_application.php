@@ -13,7 +13,7 @@ $borrower = $_POST['borrower'];
 $loan_product = $_POST['loan_product'];
 $principal = $_POST['principal'];
 $loan_release_date = $_POST['loan_release_date'];
-$interest = $_POST['interest'];
+$interest = $_POST['loan_interest_percentage'];
 $interest_method = $_POST['interest_method'];
 $loan_interest_percentage = $_POST['loan_interest_percentage'];
 $loan_duration = $_POST['loan_duration'];
@@ -23,22 +23,6 @@ $number_of_repayments = $_POST['number_of_repayments'];
 $processing_fee = $_POST['processing_fee'];
 $registration_fee = $_POST['registration_fee'];
 $loan_status = "pending";
-
-// Handle ID photo upload
-$upload_dir = '../assets/img/'; // Ensure this directory exists and is writable
-$id_photo = $_FILES['photo'];
-$target_file = $upload_dir . basename($id_photo['name']); // Full file path
-
-if (!file_exists($upload_dir)) {
-    mkdir($upload_dir, 0775, true); // Ensure directory exists
-}
-
-if (move_uploaded_file($id_photo['tmp_name'], $target_file)) {
-    echo "File uploaded successfully.";
-} else {
-    echo "Error uploading file.";
-    exit; // Stop execution if file upload fails
-}
 
 // Calculate total interest
 $total_interest = 0;

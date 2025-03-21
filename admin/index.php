@@ -27,7 +27,8 @@ $performing_book=$total_loan_amount-$total_paid_amount;
 $loan_book=$performing_book+$total_arrears;
 // Query for upcoming repayments
 $sql_due = "SELECT 
-                borrowers.full_name, 
+                borrowers.full_name,
+                loan_applications.loan_status,  
                 loan_applications.loan_product,
                 loan_applications.total_amount, 
                 SUM(repayments.amount) AS total_amount_due, 
@@ -36,6 +37,7 @@ $sql_due = "SELECT
             INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
             INNER JOIN borrowers ON loan_applications.borrower = borrowers.id 
             WHERE repayments.repayment_date >= CURDATE() 
+            AND loan_applications.loan_status = 'approved' 
             GROUP BY repayments.loan_id, borrowers.full_name, loan_applications.loan_product, loan_applications.total_amount, repayments.repayment_date";
 
 $stmt_due = $conn->prepare($sql_due);
@@ -43,12 +45,22 @@ $stmt_due->execute();
 $result_due = $stmt_due->get_result();
 
 // Query for overdue repayments
-$sql_overdue = "SELECT borrowers.full_name, loan_applications.loan_product, SUM(repayments.amount) AS total_amount, repayments.repayment_date, repayments.paid 
+$sql_overdue = "SELECT borrowers.full_name, 
+                       loan_applications.loan_product, 
+                       loan_applications.loan_status, 
+                       SUM(repayments.amount) AS total_amount, 
+                       repayments.repayment_date, 
+                       repayments.paid 
                 FROM repayments 
                 INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
                 INNER JOIN borrowers ON loan_applications.borrower = borrowers.id 
-                WHERE repayments.repayment_date < CURDATE()
-                GROUP BY repayments.loan_id, borrowers.full_name, loan_applications.loan_product, repayments.repayment_date, repayments.paid";
+                WHERE repayments.repayment_date < CURDATE() 
+                  AND loan_applications.loan_status = 'approved' 
+                GROUP BY repayments.loan_id, 
+                         borrowers.full_name, 
+                         loan_applications.loan_product, 
+                         repayments.repayment_date, 
+                         repayments.paid";
 
 $stmt_overdue = $conn->prepare($sql_overdue);
 $stmt_overdue->execute();
@@ -174,11 +186,10 @@ $result_overdue = $stmt_overdue->get_result();
 </div>
 <main class="main">
     <div class="container mt-5">
-        <?php
         <h1 class="text-center">Admin Dashboard</h1>
         
         <div class="dashboard-metrics">
-            <a href="http://localhost/InuaPremium/admin/overdue_repayments.php"><div class="metric">
+            <a href="overdue_repayments.php"><div class="metric">
             
                 <h2>KSH <?php echo number_format($total_arrears, 2); ?></h2>
                 <p>Total Arrears</p>
@@ -190,12 +201,12 @@ $result_overdue = $stmt_overdue->get_result();
                 <p>Total Disbursed Loans</p>
             </div></a>
             </a>
-            <a href="http://localhost/InuaPremium/admin/approved-loans.php"><div class="metric">
+            <a href="performingBook.php"><div class="metric">
                 
                 <h2>KSH <?php echo number_format($performing_book, 2); ?></h2>
                 <p>Performing Book</p>
             </div></a>
-            <a href="http://localhost/InuaPremium/admin/approved-loans.php"><div class="metric">
+            <a href="approved-loans.php"><div class="metric">
                 
                 <h2>KSH <?php echo number_format($loan_book, 2); ?></h2>
                 <p>Loan Book</p>

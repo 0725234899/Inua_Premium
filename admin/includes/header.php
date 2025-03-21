@@ -1,7 +1,4 @@
 <!-- ======= Header ======= -->
-<?php 
-session_start();
-?>
 <header id="header" class="header" style="background-color:red">
         <div class="container-fluid d-flex align-items-center justify-content-between">
             <a href="index.html" class="logo d-flex align-items-center me-auto me-xl-0">
@@ -10,10 +7,8 @@ session_start();
 
             <nav id="navmenu" class="navmenu">
                 <ul>
-                    <?php if($_SESSION['role']=='1'){ ?>
                     <li><a href="admin.php" class="active">Admin</a></li>
-                    <?php } ?>
-                    <li><a href="../index.php?logout=1">Logout</a></li>
+                    <li><a href="index.php?logout=1">Logout</a></li>
                 </ul>
                 <i class="mobile-nav-toggle d-xl-none bi bi-list"></i>
             </nav>
