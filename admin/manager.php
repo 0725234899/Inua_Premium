@@ -174,7 +174,6 @@ $result_overdue = $stmt_overdue->get_result();
 </div>
 <main class="main">
     <div class="container mt-5">
-        <?php
         <h1 class="text-center">Manager Dashboard</h1>
         
         <div class="dashboard-metrics">

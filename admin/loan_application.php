@@ -257,11 +257,7 @@
                         <label for="repaymentAmount">Repayment Amount Per Cycle</label>
                         <input type="number" class="form-control" id="repaymentAmount" name="repayment_amount" readonly>
                     </div>
-                    <div class="form-group">
-                    <label for="idPhoto">Upload ID Photo</label>
-                    <input type="file" class="form-control" id="idPhoto" name="photo" accept="image/*" required>
-                    <small class="form-text text-muted">Please upload a clear photo of your ID.</small>
-                </div>
+                    
                     <div class="form-group">
                         <button type="submit" class="btn btn-primary">Submit</button>
                     </div>

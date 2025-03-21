@@ -185,9 +185,10 @@
                         <?php
                         if (count($loans) > 0) {
                             foreach ($loans as $loan) {
+                                $loanId=$loan['id'];
                                 echo "<tr>
-                                    <td>{$loan['id']}</td>
-                                    <td>{$loan['borrower_name']}</td>
+                                    <td><a href='repayment_details.php?loanId=$loanId'>{$loan['id']}</a></td>
+                                    <td><a href='repayment_details.php?loanId=$loanId'>{$loan['borrower_name']}</a></td>
                                     <td>{$loan['loan_product_name']}</td>
                                     <td>{$loan['principal']}</td>
                                     <td>{$loan['interest']}</td>
