@@ -81,170 +81,729 @@ $result_overdue = $stmt_overdue->get_result();
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
+        :root {
+            --primary-color: #e84545;
+            --secondary-color: #2a2c39;
+            --accent-color: #0ea2bd;
+            --light-color: #f8f9fa;
+            --dark-color: #212529;
+            --success-color: #28a745;
+            --warning-color: #ffc107;
+            --danger-color: #dc3545;
+            --info-color: #17a2b8;
+            --purple-color: #6f42c1;
+        }
+
+        body {
+            font-family: 'Poppins', sans-serif;
+            background-color: #f5f5f5;
+        }
+
         .dashboard-metrics {
             display: flex;
             justify-content: space-around;
-            margin-top: 20px;
+            margin-top: 30px;
             flex-wrap: wrap;
+            gap: 20px;
         }
+
         .metric {
             background-color: #ffffff;
-            border: 1px solid #212529;
-            border-radius: 8px;
-            padding: 20px;
+            border-radius: 12px;
+            padding: 25px;
             text-align: center;
             flex: 1;
             margin: 10px;
-            min-width: 250px;
+            min-width: 220px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            transition: all 0.3s ease;
+            border-top: 5px solid var(--primary-color);
+            position: relative;
+            overflow: hidden;
         }
+
+        .metric:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+        }
+
+        .metric h2 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 10px;
+            color: var(--dark-color);
+        }
+
+        .metric p {
+            font-size: 16px;
+            color: #6c757d;
+            margin-bottom: 0;
+            font-weight: 500;
+        }
+
+        .metric-icon {
+            font-size: 28px;
+            margin-bottom: 15px;
+            display: inline-block;
+            background: rgba(232, 69, 69, 0.1);
+            color: var(--primary-color);
+            padding: 12px;
+            border-radius: 50%;
+        }
+
+        .arrears-metric { border-top-color: var(--danger-color); }
+        .arrears-metric .metric-icon { background: rgba(220, 53, 69, 0.1); color: var(--danger-color); }
+
+        .loans-metric { border-top-color: var(--info-color); }
+        .loans-metric .metric-icon { background: rgba(23, 162, 184, 0.1); color: var(--info-color); }
+
+        .performing-metric { border-top-color: var(--success-color); }
+        .performing-metric .metric-icon { background: rgba(40, 167, 69, 0.1); color: var(--success-color); }
+
+        .book-metric { border-top-color: var(--accent-color); }
+        .book-metric .metric-icon { background: rgba(14, 162, 189, 0.1); color: var(--accent-color); }
+
+        .risk-metric { border-top-color: var(--warning-color); }
+        .risk-metric .metric-icon { background: rgba(255, 193, 7, 0.1); color: var(--warning-color); }
+
         .chart-container {
-            width: 80%;
-            margin: auto;
+            background-color: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            padding: 20px;
+            margin: 30px auto;
+            width: 90%;
         }
-        .header {
-            background-color: #e84545;
-            color: #ffffff;
-            padding: 10px 0;
+
+        .chart-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
+            margin-bottom: 20px;
         }
+
+        .chart-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--dark-color);
+        }
+
+        .header {
+            background-color: var(--secondary-color);
+            color: #ffffff;
+            padding: 15px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
         .header .logo h1 {
             color: #ffffff;
             margin: 0;
             font-size: 24px;
+            font-weight: 700;
         }
+
         .header .navmenu ul {
             list-style: none;
             padding: 0;
             margin: 0;
             display: flex;
         }
+
         .header .navmenu ul li {
             margin-right: 20px;
         }
+
         .header .navmenu ul li a {
             color: #ffffff;
             text-decoration: none;
+            font-weight: 500;
+            padding: 8px 12px;
+            border-radius: 4px;
+            transition: all 0.3s ease;
         }
+
         .header .navmenu ul li a.active, .header .navmenu ul li a:hover {
-            color: #e84545;
+            background-color: rgba(255, 255, 255, 0.2);
+            color: #ffffff;
         }
+
         .sidebar {
-            background-color: #ffffff;
-            color: #3a3939;
-            padding: 20px;
-            width: 250px;
+            background-color: var(--secondary-color);
+            color: #ffffff;
+            padding: 25px 0;
+            width: 280px;
             position: fixed;
             height: 100%;
             overflow: auto;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+            z-index: 100;
         }
+
+        .sidebar-header {
+            padding: 0 20px 20px 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .sidebar .nav-item {
+            margin-bottom: 5px;
+            padding: 0 10px;
+        }
+
         .sidebar .nav-item .nav-link {
-            color: #3a3939;
-            padding: 10px 15px;
+            color: rgba(255, 255, 255, 0.8);
+            padding: 12px 25px;
             text-decoration: none;
-            display: block;
+            display: flex;
+            align-items: center;
+            transition: all 0.3s ease;
+            border-radius: 6px;
+            font-weight: 500;
         }
+
+        .sidebar .nav-item .nav-link i {
+            margin-right: 10px;
+            font-size: 18px;
+        }
+
         .sidebar .nav-item .nav-link.active, .sidebar .nav-item .nav-link:hover {
-            color: #e84545;
+            color: #ffffff;
+            background-color: rgba(255, 255, 255, 0.1);
         }
+
         .main {
-            margin-left: 270px;
-            padding: 20px;
+            margin-left: 280px;
+            padding: 30px;
+            min-height: 100vh;
         }
-        .table-container {
-            overflow-x: auto;
+
+        .dashboard-header {
+            margin-bottom: 30px;
+            position: relative;
         }
+
         .container h1 {
             font-size: 28px;
             margin-bottom: 20px;
+            font-weight: 700;
+            color: var(--dark-color);
+            position: relative;
+            display: inline-block;
         }
+
+        .container h1:after {
+            content: '';
+            position: absolute;
+            bottom: -10px;
+            left: 0;
+            width: 60px;
+            height: 4px;
+            background-color: var(--primary-color);
+            border-radius: 2px;
+        }
+
+        .welcome-text {
+            color: #6c757d;
+            font-size: 16px;
+            margin-bottom: 30px;
+        }
+
+        .table-container {
+            overflow-x: auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            padding: 20px;
+            margin-top: 30px;
+        }
+
         .table thead th {
-            background-color: #f5f5f5;
+            background-color: rgba(42, 44, 57, 0.05);
+            color: var(--dark-color);
+            font-weight: 600;
+            border-bottom: none;
+            padding: 15px;
         }
+
+        .table tbody td {
+            padding: 15px;
+            vertical-align: middle;
+        }
+
+        .table-responsive {
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
         .overdue {
-            background-color: #f8d7da;
+            background-color: rgba(220, 53, 69, 0.1);
         }
+
+        .status-badge {
+            padding: 6px 12px;
+            border-radius: 50px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-badge.success {
+            background-color: rgba(40, 167, 69, 0.1);
+            color: var(--success-color);
+        }
+
+        .status-badge.warning {
+            background-color: rgba(255, 193, 7, 0.1);
+            color: var(--warning-color);
+        }
+
+        .status-badge.danger {
+            background-color: rgba(220, 53, 69, 0.1);
+            color: var(--danger-color);
+        }
+
+        .admin-stats-row {
+            margin-top: 30px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+
+        .stat-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            display: flex;
+            align-items: center;
+        }
+
+        .stat-icon {
+            width: 60px;
+            height: 60px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 15px;
+            font-size: 24px;
+            color: white;
+        }
+
+        .stat-icon.purple { background-color: var(--purple-color); }
+        .stat-icon.success { background-color: var(--success-color); }
+        .stat-icon.warning { background-color: var(--warning-color); }
+        .stat-icon.info { background-color: var(--info-color); }
+
+        .stat-content h3 {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .stat-content p {
+            color: #6c757d;
+            margin: 0;
+            font-size: 14px;
+        }
+
+        @media (max-width: 992px) {
+            .sidebar {
+                width: 240px;
+            }
+            .main {
+                margin-left: 240px;
+            }
+        }
+
         @media (max-width: 768px) {
             .sidebar {
-                position: relative;
-                width: 100%;
+                position: fixed;
+                width: 280px;
+                left: -280px;
+                transition: all 0.3s ease;
+                z-index: 1000;
+            }
+            .sidebar.active {
+                left: 0;
             }
             .main {
                 margin-left: 0;
+                padding: 20px;
+            }
+            .dashboard-metrics {
+                flex-direction: column;
+            }
+            .metric {
+                min-width: 100%;
+            }
+            .toggle-sidebar {
+                display: block;
+                position: fixed;
+                top: 15px;
+                left: 15px;
+                z-index: 1001;
+                background-color: var(--secondary-color);
+                color: white;
+                width: 40px;
+                height: 40px;
+                border-radius: 50%;
+                text-align: center;
+                line-height: 40px;
+                cursor: pointer;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             }
         }
     </style>
 </head>
 <body>
+<!-- Mobile sidebar toggle button -->
+<div class="toggle-sidebar d-md-none">
+    <i class="bi bi-list"></i>
+</div>
+
 <?php 
     include '../includes/functions.php';
     include 'includes/header.php'; 
 ?>
-<div class="sidebar">
+
+<div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+        <img src="assets/img/logo.png" alt="Inua Logo" height="50">
+        <h5 class="mt-2">Admin Portal</h5>
+    </div>
     <?php include '../includes/sidebar.php'; ?>
 </div>
+
 <main class="main">
-    <div class="container mt-5">
-        <h1 class="text-center">Admin Dashboard</h1>
+    <div class="container">
+        <div class="dashboard-header">
+            <h1>Admin Dashboard</h1>
+            <p class="welcome-text">Welcome back! Here's an overview of the loan portfolio and system performance.</p>
+        </div>
         
         <div class="dashboard-metrics">
-            <a href="overdue_repayments.php"><div class="metric">
-            
-                <h2>KSH <?php echo number_format($total_arrears, 2); ?></h2>
-                <p>Total Arrears</p>
-            </div>
-    </a>
-            <a href="http://localhost/InuaPremium/admin/approved-loans.php"><div class="metric">
-                
-                <h2>KSH <?php echo number_format($total_loan_amount, 2); ?></h2>
-                <p>Total Disbursed Loans</p>
-            </div></a>
+            <a href="overdue_repayments.php" class="text-decoration-none">
+                <div class="metric arrears-metric">
+                    <div class="metric-icon">
+                        <i class="bi bi-exclamation-triangle"></i>
+                    </div>
+                    <h2>KSH <?php echo number_format($total_arrears, 2); ?></h2>
+                    <p>Total Arrears</p>
+                </div>
             </a>
-            <a href="performingBook.php"><div class="metric">
-                
-                <h2>KSH <?php echo number_format($performing_book, 2); ?></h2>
-                <p>Performing Book</p>
-            </div></a>
-            <a href="approved-loans.php"><div class="metric">
-                
-                <h2>KSH <?php echo number_format($loan_book, 2); ?></h2>
-                <p>Loan Book</p>
-            </div></a>
-            <div class="metric">
+            
+            <a href="approved-loans.php" class="text-decoration-none">
+                <div class="metric loans-metric">
+                    <div class="metric-icon">
+                        <i class="bi bi-cash-coin"></i>
+                    </div>
+                    <h2>KSH <?php echo number_format($total_loan_amount, 2); ?></h2>
+                    <p>Total Disbursed Loans</p>
+                </div>
+            </a>
+            
+            <a href="performingBook.php" class="text-decoration-none">
+                <div class="metric performing-metric">
+                    <div class="metric-icon">
+                        <i class="bi bi-graph-up-arrow"></i>
+                    </div>
+                    <h2>KSH <?php echo number_format($performing_book, 2); ?></h2>
+                    <p>Performing Book</p>
+                </div>
+            </a>
+            
+            <a href="approved-loans.php" class="text-decoration-none">
+                <div class="metric book-metric">
+                    <div class="metric-icon">
+                        <i class="bi bi-journal-text"></i>
+                    </div>
+                    <h2>KSH <?php echo number_format($loan_book, 2); ?></h2>
+                    <p>Loan Book</p>
+                </div>
+            </a>
+            
+            <div class="metric risk-metric">
+                <div class="metric-icon">
+                    <i class="bi bi-shield-exclamation"></i>
+                </div>
                 <h2><?php echo number_format($par, 2); ?>%</h2>
                 <p>Portfolio At Risk</p>
             </div>
         </div>
 
-        <div class="chart-container mt-5">
+        <!-- Admin stats summary -->
+        <div class="admin-stats-row">
+            <div class="stat-card">
+                <div class="stat-icon purple">
+                    <i class="bi bi-people"></i>
+                </div>
+                <div class="stat-content">
+                    <h3><?php 
+                    // Count active borrowers
+                    $active_borrowers_query = "SELECT COUNT(*) as count FROM borrowers WHERE status = 'active'";
+                    $active_borrowers_result = $conn->query($active_borrowers_query);
+                    $active_borrowers = $active_borrowers_result ? $active_borrowers_result->fetch_assoc()['count'] : '0';
+                    echo $active_borrowers; 
+                    ?></h3>
+                    <p>Active Borrowers</p>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon success">
+                    <i class="bi bi-check-circle"></i>
+                </div>
+                <div class="stat-content">
+                    <h3><?php
+                    // Count completed loans
+                    $completed_loans_query = "SELECT COUNT(*) as count FROM loan_applications WHERE loan_status = 'completed'";
+                    $completed_loans_result = $conn->query($completed_loans_query);
+                    $completed_loans = $completed_loans_result ? $completed_loans_result->fetch_assoc()['count'] : '0';
+                    echo $completed_loans;
+                    ?></h3>
+                    <p>Completed Loans</p>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon warning">
+                    <i class="bi bi-clock-history"></i>
+                </div>
+                <div class="stat-content">
+                    <h3><?php
+                    // Count pending applications
+                    $pending_applications_query = "SELECT COUNT(*) as count FROM loan_applications WHERE loan_status = 'pending'";
+                    $pending_applications_result = $conn->query($pending_applications_query);
+                    $pending_applications = $pending_applications_result ? $pending_applications_result->fetch_assoc()['count'] : '0';
+                    echo $pending_applications;
+                    ?></h3>
+                    <p>Pending Applications</p>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon info">
+                    <i class="bi bi-person-badge"></i>
+                </div>
+                <div class="stat-content">
+                    <h3><?php
+                    // Count loan officers
+                    $loan_officers_query = "SELECT COUNT(*) as count FROM users WHERE role = 'loan_officer'";
+                    $loan_officers_result = $conn->query($loan_officers_query);
+                    $loan_officers = $loan_officers_result ? $loan_officers_result->fetch_assoc()['count'] : '0';
+                    echo $loan_officers;
+                    ?></h3>
+                    <p>Loan Officers</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-header">
+                <div class="chart-title">Financial Overview</div>
+                <div class="chart-actions">
+                    <button class="btn btn-sm btn-outline-secondary" id="toggleChartType">
+                        <i class="bi bi-bar-chart"></i> Change Chart Type
+                    </button>
+                </div>
+            </div>
             <canvas id="loanChart"></canvas>
         </div>
     </div>
 </main>
 
+    <div class="table-container">
+        <h3 class="mb-3">Recent Overdue Repayments</h3>
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Borrower</th>
+                        <th>Loan Product</th>
+                        <th>Amount Due</th>
+                        <th>Due Date</th>
+                        <th>Days Overdue</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php
+                    if ($result_overdue->num_rows > 0) {
+                        while($row = $result_overdue->fetch_assoc()) {
+                            $due_date = new DateTime($row['repayment_date']);
+                            $today = new DateTime();
+                            $days_overdue = $today->diff($due_date)->days;
+                            $status_class = '';
+                            
+                            if ($days_overdue > 30) {
+                                $status_class = 'danger';
+                            } elseif ($days_overdue > 15) {
+                                $status_class = 'warning';
+                            } else {
+                                $status_class = 'warning';
+                            }
+                            
+                            echo '<tr>
+
+                                <td>' . htmlspecialchars($row['full_name']) . '</td>
+
+                                <td>' . htmlspecialchars($row['loan_product']) . '</td>
+
+                                <td>KSH ' . number_format($row['total_amount'] - $row['paid'], 2) . '</td>
+
+                                <td>' . date('d M Y', strtotime($row['repayment_date'])) . '</td>
+
+                                <td>' . $days_overdue . ' days</td>
+
+                                <td><span class="status-badge ' . $status_class . '">Overdue</span></td>
+
+                            </tr>';
+                        }
+                    } else {
+                        echo '<tr><td colspan="6" class="text-center">No overdue repayments found</td></tr>';
+                    }
+                    ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+</main>
+
 <script>
+    // Chart initialization
+    let chartType = 'bar';
     const ctx = document.getElementById('loanChart').getContext('2d');
-    new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: ['Total Disbursed Loans', 'Total Overdue', 'Portfolio At Risk'],
+    let myChart;
+    
+    // Function to create or update chart
+    function initChart(type) {
+        // If chart exists, destroy it first
+        if (myChart) {
+            myChart.destroy();
+        }
+        
+        // Chart data
+        const data = {
+            labels: ['Total Disbursed Loans', 'Total Arrears', 'Performing Book', 'Loan Book', 'PAR (%)'],
             datasets: [{
                 label: 'Financial Overview',
-                data: [<?php echo $total_loan_amount; ?>, <?php echo $total_overdue_amount; ?>, <?php echo $par; ?>],
-                backgroundColor: ['blue', 'red', 'orange']
+                data: [
+                    <?php echo $total_loan_amount; ?>, 
+                    <?php echo $total_arrears; ?>, 
+                    <?php echo $performing_book; ?>, 
+                    <?php echo $loan_book; ?>, 
+                    <?php echo $par; ?>
+                ],
+                backgroundColor: [
+                    'rgba(23, 162, 184, 0.7)',   // info color for loans
+                    'rgba(220, 53, 69, 0.7)',    // danger color for arrears
+                    'rgba(40, 167, 69, 0.7)',    // success color for performing
+                    'rgba(14, 162, 189, 0.7)',   // accent color for book
+                    'rgba(255, 193, 7, 0.7)'     // warning color for PAR
+                ],
+                borderColor: [
+                    'rgba(23, 162, 184, 1)',
+                    'rgba(220, 53, 69, 1)',
+                    'rgba(40, 167, 69, 1)',
+                    'rgba(14, 162, 189, 1)',
+                    'rgba(255, 193, 7, 1)'
+                ],
+                borderWidth: 1,
+                hoverOffset: 4
             }]
-        },
-        options: {
+        };
+        
+        // Chart options based on type
+        const options = {
             responsive: true,
-            plugins: {
-                legend: { display: false }
+            maintainAspectRatio: false,
+            animation: {
+                duration: 1000,
+                easing: 'easeInOutQuart'
             },
-            scales: {
-                y: { title: { display: true, text: 'Amount (KSH)' } },
-                x: { title: { display: true, text: 'Metrics' } }
-            }
-        }
+            plugins: {
+                legend: { 
+                    display: type === 'pie' || type === 'doughnut',
+                    position: 'bottom',
+                    labels: {
+                        usePointStyle: true,
+                        padding: 20
+                    }
+                },
+                tooltip: {
+                    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                    padding: 10,
+                    titleFont: { size: 14 },
+                    bodyFont: { size: 13 },
+                    displayColors: true,
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) {
+                                label += ': ';
+                            }
+                            
+                            const value = context.raw;
+                            if (context.label === 'PAR (%)') {
+                                return `${label}${value.toFixed(2)}%`;
+                            } else {
+                                return `${label}KSH ${value.toLocaleString()}`;
+                            }
+                        }
+                    }
+                }
+            },
+            scales: type !== 'pie' && type !== 'doughnut' ? {
+                y: { 
+                    title: { display: true, text: 'Amount (KSH)' },
+                    grid: { drawBorder: false }
+                },
+                x: { 
+                    title: { display: true, text: 'Metrics' },
+                    grid: { display: false }
+                }
+            } : undefined
+        };
+        
+        // Create new chart
+        myChart = new Chart(ctx, {
+            type: type,
+            data: data,
+            options: options
+        });
+    }
+    
+    // Initialize chart with default type
+    initChart(chartType);
+    
+    // Chart type toggle functionality
+    document.getElementById('toggleChartType').addEventListener('click', function() {
+        // Toggle between chart types
+        chartType = chartType === 'bar' ? 'pie' : 
+                   chartType === 'pie' ? 'line' : 
+                   chartType === 'line' ? 'doughnut' : 'bar';
+        
+        // Update button text based on next chart type
+        const nextType = chartType === 'bar' ? 'pie' : 
+                        chartType === 'pie' ? 'line' : 
+                        chartType === 'line' ? 'doughnut' : 'bar';
+        this.innerHTML = `<i class="bi bi-${nextType === 'line' ? 'graph-up' : 
+                               nextType === 'bar' ? 'bar-chart' : 
+                               nextType === 'pie' ? 'pie-chart' : 'circle'}"></i> To ${nextType.charAt(0).toUpperCase() + nextType.slice(1)}`;
+        
+        // Initialize chart with new type
+        initChart(chartType);
+    });
+    
+    // Mobile sidebar toggle
+    document.querySelector('.toggle-sidebar').addEventListener('click', function() {
+        document.getElementById('sidebar').classList.toggle('active');
     });
 </script>
 <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>

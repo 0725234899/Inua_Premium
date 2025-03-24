@@ -300,7 +300,7 @@ $result_overdue = $stmt_overdue->get_result();
                                         <td><?php echo htmlspecialchars($row['borrower_name']); ?></td>
                                         <td><?php echo htmlspecialchars($row['loan_product']); ?></td>
                                         <td><?php echo number_format($row['total_amount_due'] - $row['total_amount_paid'], 2) . " KES"; ?></td>
-                                        <td><?php echo htmlspecialchars($row['repayment_date']); ?></td>
+                                        <td><?php echo htmlspecialchars($row['next_due_date']); ?></td>
                                     </tr>
                                 <?php endforeach; ?>
                             <?php endif; ?>
