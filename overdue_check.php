@@ -2,7 +2,7 @@
 $pdo = new PDO('mysql:host=localhost;dbname=loan_system', 'root', '');
 
 // Get overdue loans
-$query = $pdo->query("SELECT * FROM loans WHERE due_date < CURDATE() AND status = 'active'");
+$query = $pdo->query("SELECT * FROM loan_applications WHERE due_date < CURDATE() AND status = 'active'");
 $overdueLoans = $query->fetchAll();
 
 foreach ($overdueLoans as $loan) {
