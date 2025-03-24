@@ -24,11 +24,11 @@ if (isset($_POST['login'])) {
                     break;
                 case '2':
                     // Another role, such as Manager
-                    header("Location: admin/loanofficer.php");
+                    header("Location: loanOfficer/loanofficer.php");
                     break;
                 case '4':
                     // Client
-                    header("Location: admin/manager.php");
+                    header("Location: manager/manager.php");
                     break;
                 default:
                     $error_message = "Invalid role.";
