@@ -16,7 +16,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $status = mysqli_real_escape_string($conn, $_POST['status']);
 
     // File Upload Handling
-    $upload_dir = "uploads/";
+    $upload_dir = "../uploads/";
     if (!is_dir($upload_dir)) {
         mkdir($upload_dir, 0777, true);
     }

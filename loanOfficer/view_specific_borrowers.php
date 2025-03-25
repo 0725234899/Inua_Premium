@@ -1,7 +1,10 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 include '../includes/functions.php';
 include 'db.php'; // Ensure this file sets up $conn as a valid MySQLi connection
-session_start();
+
 // Error handling for query execution
 $sql = "
     SELECT 
@@ -173,12 +176,13 @@ if (!$result) {
     <!-- End Header -->
     <?php
     include("../includes/sidebar.php");
+    include("includes/header.php");
     ?>
     <!-- ======= Main ======= -->
     <main class="main">
         <section id="admin-dashboard" class="admin-dashboard section">
             <div class="container">
-                <?php echo $_SESSION['email'];?>
+                
                 <h2>View Borrowers</h2>
                 <table border="1" class="table">
                     <tr>

@@ -1,6 +1,9 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 $userId = 1; // Assume a logged-in user with ID 1
-$roleId = getUserRole($userId);
+$roleId = $_SESSION['role'];
 $navItems = getNavigationItems($roleId);
 
 function renderNavItems($items, $parentId = NULL) {

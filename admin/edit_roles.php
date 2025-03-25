@@ -182,7 +182,12 @@
 
             if ($stmt->execute()) {
                 echo "Permission deleted successfully.";
+                ?>
+                <script>
+                     alert("Role deleted successfully.");
                 location.replace("staff_role_permission.php");
+                </script>
+                <?php
             } else {
                 echo "Error deleting permission: " . $conn->error;
                 ?>

@@ -106,23 +106,28 @@ $roles = getRoles();
                             </tr>
                         </thead>
                         <tbody>
-                            <?php if (!empty($loanOfficers)): ?>
-                                <?php foreach ($loanOfficers as $officer): ?>
-                                    <tr>
-                                        <td><?php echo htmlspecialchars($officer['id']); ?></td>
-                                        <td><?php echo htmlspecialchars($officer['name']); ?></td>
-                                        <td><?php echo htmlspecialchars($officer['email']); ?></td>
-                                        <td><?php echo htmlspecialchars($officer['phone']); ?></td>
-                                        <td><?php echo getRole($officer['role_id'])['name'];?></td>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            <?php else: ?>
-                                <tr>
-                                    <td colspan="6">No loan officers found.</td>
-                                </tr>
-                            <?php endif; ?>
-                        </tbody>
+    <?php if (!empty($loanOfficers)): ?>
+        <?php foreach ($loanOfficers as $officer): ?>
+            <tr>
+                <td><?php echo htmlspecialchars($officer['id']); ?></td>
+                <td><?php echo htmlspecialchars($officer['name']); ?></td>
+                <td><?php echo htmlspecialchars($officer['email']); ?></td>
+                <td><?php echo htmlspecialchars($officer['phone']); ?></td>
+                <td><?php echo getRole($officer['role_id'])['name']; ?></td>
+                <td>
+                    <a href="officer_details.php?id=<?php echo $officer['id']; ?>" class="btn btn-primary btn-sm">
+                        View Details
+                    </a>
+                </td>
+            </tr>
+        <?php endforeach; ?>
+    <?php else: ?>
+        <tr>
+            <td colspan="6">No loan officers found.</td>
+        </tr>
+    <?php endif; ?>
+</tbody>
+
                     </table>
                 </div>
             </div>

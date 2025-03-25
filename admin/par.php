@@ -94,7 +94,7 @@
     // Query to get overdue repayments
     $sql_overdue = "SELECT 
                         borrowers.full_name AS borrower_name, 
-                        loan_applications.loan_product, 
+                         loan_products.name AS loan_product, 
                         repayments.amount, 
                         repayments.repayment_date
                     FROM 
@@ -103,6 +103,9 @@
                         loan_applications ON repayments.loan_id = loan_applications.id
                     INNER JOIN 
                         borrowers ON loan_applications.borrower= borrowers.id
+                     INNER JOIN 
+                        loan_products ON loan_applications.loan_product = loan_products.id
+                    
                     WHERE 
                         repayments.repayment_date < CURDATE() AND DATEDIFF(CURDATE(), repayments.repayment_date) > $days";
 
@@ -132,7 +135,7 @@
                     <option value="60" <?php if($days == 60) echo 'selected'; ?>>60 days</option>
                     <option value="90" <?php if($days == 90) echo 'selected'; ?>>90 days</option>
                 </select>
-                <input type="number" name="days" placeholder="Custom days" min="1" oninput="this.form.submit()" class="form-control" value="<?php echo $days; ?>">
+                <input type="text" name="days" placeholder="Custom days" min="1" oninput="this.form.submit()" class="form-control" value="<?php echo $days; ?>">
             </form>
             <div class="table-container">
                 <h2>Portfolio at Risk (PAR) > <?php echo $days; ?> days</h2>

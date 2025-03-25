@@ -2,7 +2,7 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 include '../includes/functions.php';
-include 'includes/header.php'; 
+
 include 'db.php';
 
 if (!isset($_GET['loanId']) || !is_numeric($_GET['loanId'])) {
@@ -69,9 +69,13 @@ $result_records= $stmt_records->get_result();
     <link href="https://fonts.googleapis.com/css2?family=Open+Sans&family=Montserrat&family=Poppins&display=swap" rel="stylesheet">
     <link href="assets/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
-    <link href="../assets/css/style.css" rel="stylesheet">
+    <link href="assets/css/style.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body>
+<?php 
+    include 'includes/header.php'; 
+    ?>
     <div class="container mt-5">
         <h2>Repayment Details</h2>
         <div class="card mb-4">
@@ -80,7 +84,15 @@ $result_records= $stmt_records->get_result();
                 <p><strong>Borrower:</strong> <?php echo htmlspecialchars($loan['borrower_name']); ?></p>
                 <p><strong>Loan Product:</strong> <?php echo htmlspecialchars($loan['loan_product_name']); ?></p>
                 <p><strong>Total Amount:</strong> <?php echo number_format($totalDue, 2); ?> KES</p>
-                <p><strong>Total Paid:</strong> <?php echo number_format($totalPaid, 2); ?> KES</p>
+                <p><strong>Total Paid:</strong> <?php if($totalPaid==0.00)
+                {
+                    
+                    echo "0.00";
+                }
+                else
+                {
+                    echo number_format($totalPaid, 2);
+                } ?> </p>
                 <p><strong>Balance:</strong> <?php echo number_format($balance, 2); ?> KES</p>
             </div>
         </div>

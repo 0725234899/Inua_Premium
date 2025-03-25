@@ -1,0 +1,34 @@
+
+{
+    "name": "knox/africastalking",
+    "description": "A Laravel Implementation of the Africa's Talking API",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Timothy Radier",
+            "email": "timothyradier@gmail.com"
+        }
+    ],
+    "minimum-stability": "stable",
+    "require": {},
+    "autoload": {
+        "psr-4": {
+            "Knox\\AFT\\": "src/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Knox\\AFT\\AFTServiceProvider"
+            ],
+            "aliases": {
+                "AFT": "Knox\\AFT\\Facades\\AFT"
+            }
+        }
+    }
+}
+

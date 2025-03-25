@@ -16,7 +16,7 @@ $stmt_total_paid->execute();
 $total_paid_amount = $stmt_total_paid->get_result()->fetch_assoc()['total_paid'] ?? 0;
 $total_arrears=$total_overdue_amount-$total_paid_amount;
 // Fetch total disbursed loans
-$sql_total_loans = "SELECT SUM(total_amount) AS total_loans FROM loan_applications";
+$sql_total_loans = "SELECT SUM(total_amount) AS total_loans FROM loan_applications WHERE loan_status = 'approved'";
 $stmt_total_loans = $conn->prepare($sql_total_loans);
 $stmt_total_loans->execute();
 $total_loan_amount = $stmt_total_loans->get_result()->fetch_assoc()['total_loans'] ?? 0;
@@ -37,6 +37,8 @@ $sql_due = "SELECT
             INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
             INNER JOIN borrowers ON loan_applications.borrower = borrowers.id 
             WHERE repayments.repayment_date >= CURDATE() 
+            AND loan_applications.loan_status = 'approved'
+            AND repayments.paid = 0
             AND loan_applications.loan_status = 'approved' 
             GROUP BY repayments.loan_id, borrowers.full_name, loan_applications.loan_product, loan_applications.total_amount, repayments.repayment_date";
 
@@ -186,7 +188,7 @@ $result_overdue = $stmt_overdue->get_result();
 </div>
 <main class="main">
     <div class="container mt-5">
-        <h1 class="text-center">Admin Dashboard</h1>
+        <h1 class="text-center">Manager Dashboard</h1>
         
         <div class="dashboard-metrics">
             <a href="overdue_repayments.php"><div class="metric">
@@ -195,7 +197,7 @@ $result_overdue = $stmt_overdue->get_result();
                 <p>Total Arrears</p>
             </div>
     </a>
-            <a href="http://localhost/InuaPremium/admin/approved-loans.php"><div class="metric">
+            <a href="approved-loans.php"><div class="metric">
                 
                 <h2>KSH <?php echo number_format($total_loan_amount, 2); ?></h2>
                 <p>Total Disbursed Loans</p>
@@ -206,11 +208,11 @@ $result_overdue = $stmt_overdue->get_result();
                 <h2>KSH <?php echo number_format($performing_book, 2); ?></h2>
                 <p>Performing Book</p>
             </div></a>
-            <a href="approved-loans.php"><div class="metric">
+            <div class="metric">
                 
                 <h2>KSH <?php echo number_format($loan_book, 2); ?></h2>
                 <p>Loan Book</p>
-            </div></a>
+            </div>
             <div class="metric">
                 <h2><?php echo number_format($par, 2); ?>%</h2>
                 <p>Portfolio At Risk</p>

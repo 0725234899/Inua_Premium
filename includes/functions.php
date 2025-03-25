@@ -1,4 +1,6 @@
 <?php
+ use AfricasTalking\SDK\AfricasTalking;
+ require 'vendor/autoload.php';
 //session_start();
 
 // Database connection
@@ -39,6 +41,7 @@ function login($email, $password, $role) {
     $user = $stmt->fetch();
     if ($user && password_verify($password, $user['password'])) {
         $_SESSION['user'] = $email;
+        $_SESSION['username'] = $user['name'];
         return '1,' . $role; // Success
     } else {
         return '0'; // Failure
@@ -278,7 +281,22 @@ function getSettings() {
     $stmt = $conn->query("SELECT * FROM settings");
     return $stmt->fetch();
 }
-
+function sendMessage($recipient, $message) {
+    $text=$message;
+    $phone=$recipient;
+    $username = 'inua'; // use 'sandbox' for development in the test environment
+    $apiKey   = 'atsk_e901eb4e7f48e5ebcc5a327516cba2e0213b991c7485d6c64d6f5a05de75a49dba270f32'; // use your sandbox app API key for development in the test environment
+    $AT = new AfricasTalking($username,$apiKey);
+    
+    // Get one of the services
+    $sms      = $AT->sms();
+    
+    // Use the service
+    $result   = $sms->send([
+        'to'      => $phone,
+        'message' => $text
+    ]);
+}
 function savelogs() {
     // Implement log saving functionality
 }
