@@ -90,7 +90,7 @@
     include 'db.php';
 
     $days = isset($_GET['days']) ? (int)$_GET['days'] : 30;
-
+    $email=$_SESSION['email'];
     // Query to get overdue repayments
     $sql_overdue = "SELECT 
                         borrowers.full_name AS borrower_name, 
@@ -104,24 +104,38 @@
                     INNER JOIN 
                         borrowers ON loan_applications.borrower= borrowers.id
                     WHERE 
-                        repayments.repayment_date < CURDATE() AND DATEDIFF(CURDATE(), repayments.repayment_date) > $days";
+                        repayments.repayment_date < CURDATE() AND DATEDIFF(CURDATE(), repayments.repayment_date) > $days AND borrowers.loan_officer='$email'";
 
     $result_overdue = $conn->query($sql_overdue);
 
     // Query to calculate total loan amount and overdue amount for PAR
-    $sql_total_loan = "SELECT SUM(total_amount) AS total_loan_amount FROM loan_applications";
+    $sql_total_loan = "SELECT SUM(total_amount) AS total_loan_amount 
+    FROM loan_applications
+    INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
+    WHERE borrowers.loan_officer = '$email'";
+    
     $result_total_loan = $conn->query($sql_total_loan);
-    $row_total_loan = $result_total_loan->fetch_assoc();
-    $total_loan_amount = $row_total_loan['total_loan_amount'];
-
+    
+    if ($result_total_loan) {
+        $row_total_loan = $result_total_loan->fetch_assoc();
+        $total_loan_amount = $row_total_loan['total_loan_amount'] ?? 0; // Handle NULL case
+    } else {
+        $total_loan_amount = 0; // Default in case of query failure
+        echo "Error: " . $conn->error; // Debugging message
+    }
+    
     $sql_overdue_amount = "SELECT SUM(repayments.amount) AS total_overdue_amount 
                            FROM repayments 
                            WHERE repayment_date < CURDATE() AND DATEDIFF(CURDATE(), repayment_date) > $days";
     $result_overdue_amount = $conn->query($sql_overdue_amount);
     $row_overdue_amount = $result_overdue_amount->fetch_assoc();
     $total_overdue_amount = $row_overdue_amount['total_overdue_amount'];
-
-    $par = ($total_overdue_amount / $total_loan_amount) * 100;
+    if ($total_loan_amount > 0) {
+        $par = ($total_overdue_amount / $total_loan_amount) * 100;
+    } else {
+        $par = 0; // Set PAR to 0% if no loans exist
+    }
+    
     ?>
     <main class="main">
         <section class="section">

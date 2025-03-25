@@ -97,14 +97,16 @@ ini_set('display_startup_errors', 1); error_reporting(E_ALL);
 
     // Query to get overdue repayments
     $sql_overdue = "SELECT 
-                        borrowers.full_name AS borrower_name, 
-                        loan_applications.loan_product, 
+                        borrowers.full_name AS borrower_name,  
+                        loan_products.name AS loan_product,
                         repayments.amount, 
                         repayments.repayment_date,repayments.paid
                     FROM 
                         repayments
                     INNER JOIN 
                         loan_applications ON repayments.loan_id = loan_applications.id
+                    INNER JOIN 
+                        loan_products ON loan_applications.loan_product = loan_products.id
                     INNER JOIN 
                         borrowers ON loan_applications.borrower = borrowers.id
                     WHERE 

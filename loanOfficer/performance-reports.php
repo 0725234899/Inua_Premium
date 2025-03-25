@@ -153,7 +153,7 @@
     function getLoans() {
         global $conn;
         $loans = array();
-
+        $email=$_SESSION['email'];
         $sql = "SELECT 
                     l.id, 
                     b.full_name AS borrower_name, 
@@ -172,7 +172,10 @@
                     l.loan_status
                 FROM loan_applications l 
                 INNER JOIN borrowers b ON l.borrower = b.id 
-                INNER JOIN loan_products p ON l.loan_product = p.id";
+                INNER JOIN loan_products p ON l.loan_product = p.id
+                where b.loan_officer='$email'
+                GROUP BY l.id, b.full_name, p.name
+                ";
 
         $result = $conn->query($sql);
 
@@ -196,7 +199,7 @@
 
     $sql_due = "SELECT 
                 borrowers.full_name AS borrower_name, 
-                loan_applications.loan_product, 
+                loan_products.name as loan_product, 
                 SUM(repayments.amount) AS total_amount_due, 
                 repayments.repayment_date
             FROM 
@@ -205,8 +208,10 @@
                 loan_applications ON repayments.loan_id = loan_applications.id
             INNER JOIN 
                 borrowers ON loan_applications.borrower = borrowers.id
+            INNER JOIN
+                loan_products ON loan_applications.loan_product = loan_products.id
             WHERE 
-                repayments.repayment_date >= CURDATE()
+                repayments.repayment_date >= CURDATE() AND borrowers.loan_officer='$email'
             GROUP BY 
                 repayments.loan_id, 
                 borrowers.full_name, 
@@ -216,7 +221,7 @@
 
     $sql_overdue = "SELECT 
                         borrowers.full_name AS borrower_name, 
-                        loan_applications.loan_product, 
+                        loan_products.name as loan_product, 
                         repayments.amount, 
                         repayments.repayment_date
                     FROM 
@@ -225,8 +230,13 @@
                         loan_applications ON repayments.loan_id = loan_applications.id
                     INNER JOIN 
                         borrowers ON loan_applications.borrower= borrowers.id
+                    INNER JOIN
+                        loan_products ON loan_applications.loan_product = loan_products.id
                     WHERE 
-                        repayments.repayment_date < CURDATE()";
+                        repayments.repayment_date < CURDATE() AND borrowers.loan_officer='$email'
+                    GROUP BY
+                        repayments.loan_id
+                        ";
 
     $result_overdue = $conn->query($sql_overdue);
     ?>

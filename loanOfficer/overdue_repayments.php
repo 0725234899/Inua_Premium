@@ -94,7 +94,7 @@ ini_set('display_startup_errors', 1); error_reporting(E_ALL);
 
     // Get the number of overdue days from the request or default to 30
     $days = isset($_GET['days']) ? (int)$_GET['days'] : 30;
-
+    $email=$_SESSION['email'];
     // Query to get overdue repayments
     $sql_overdue = "SELECT 
                         borrowers.full_name AS borrower_name, 
@@ -108,7 +108,7 @@ ini_set('display_startup_errors', 1); error_reporting(E_ALL);
                     INNER JOIN 
                         borrowers ON loan_applications.borrower = borrowers.id
                     WHERE 
-                        repayments.repayment_date < CURDATE() 
+                        repayments.repayment_date < CURDATE()  AND DATEDIFF(CURDATE(), repayments.repayment_date) > $days AND borrowers.loan_officer='$email'
                         ";
 
     $result_overdue = $conn->query($sql_overdue);

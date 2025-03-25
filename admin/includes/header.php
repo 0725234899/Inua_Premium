@@ -1,12 +1,12 @@
 <?php
-session_start();
+if(!isset($_SESSION)) { @session_start(); }
 ?>
 <!-- ======= Header ======= -->
 <header id="header" class="header" style="background-color:red">
         <div class="container-fluid d-flex align-items-center justify-content-between">
-            <a href="index.html" class="logo d-flex align-items-center me-auto me-xl-0">
-                <h1 class="sitename">Inua Premium Services</h1><span>.</span>
-            </a>
+            
+                <h1 class="sitename">Inua Premium Services</h1>
+            
 
             <nav id="navmenu" class="navmenu">
                 <ul>

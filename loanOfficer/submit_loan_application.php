@@ -55,8 +55,8 @@ $total_amount_inclusive = $principal + $total_interest + $processing_fee + $regi
 $total_amount=$principal + $total_interest;
 // Prepare SQL to insert loan application
 $sql = "INSERT INTO loan_applications 
-    (borrower, loan_product, principal, loan_release_date, interest, interest_method, loan_interest, loan_duration, repayment_cycle, number_of_repayments, processing_fee, registration_fee, loan_status, total_amount,total_amount_inclusive, id_photo_path) 
-    VALUES (:borrower, :loan_product, :principal, :loan_release_date, :interest, :interest_method, :loan_interest, :loan_duration, :repayment_cycle, :number_of_repayments, :processing_fee, :registration_fee, :loan_status, :total_amount,:total_amount_inclusive, :id_photo_path)";
+    (borrower, loan_product, principal, loan_release_date, interest, interest_method, loan_interest, loan_duration, repayment_cycle, number_of_repayments, processing_fee, registration_fee, loan_status, total_amount,total_amount_inclusive) 
+    VALUES (:borrower, :loan_product, :principal, :loan_release_date, :interest, :interest_method, :loan_interest, :loan_duration, :repayment_cycle, :number_of_repayments, :processing_fee, :registration_fee, :loan_status, :total_amount,:total_amount_inclusive)";
 
 $stmt = $conn->prepare($sql);
 $stmt->bindValue(':borrower', $borrower, PDO::PARAM_STR);
@@ -74,8 +74,6 @@ $stmt->bindValue(':registration_fee', $registration_fee, PDO::PARAM_STR);
 $stmt->bindValue(':loan_status', $loan_status, PDO::PARAM_STR);
 $stmt->bindValue(':total_amount', $total_amount, PDO::PARAM_STR);
 $stmt->bindValue(':total_amount_inclusive', $total_amount_inclusive, PDO::PARAM_STR);
-$stmt->bindValue(':id_photo_path', $target_file, PDO::PARAM_STR); // Store file path
-
 if ($stmt->execute()) {
     $loan_id = $conn->lastInsertId();
     echo "New loan application submitted successfully";
@@ -123,12 +121,48 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
         $start_date = $schedule_date;
     }
     ?>
-    <script>
+ <?php
+// Ensure $principal_amount is defined
+if (!isset($principal_amount)) {
+    die("Error: Principal amount is not set.");
+}
+
+$principal = number_format($principal_amount, 2);
+
+// Fetch recipient phone number
+$sqlLoanOfficer = "SELECT name FROM users WHERE role_id = 2";
+$stmtLoanOfficer = $conn->prepare($sqlLoanOfficer);
+$stmtLoanOfficer->execute();
+$resultLoanOfficer = $stmtLoanOfficer->fetch(PDO::FETCH_ASSOC);
+$name=$resultLoanOfficer['name'];
+
+$sqlRecipient = "SELECT phone FROM users WHERE role_id = 4";
+$stmtRecipient = $conn->prepare($sqlRecipient);
+$stmtRecipient->execute();
+$resultRecipient = $stmtRecipient->fetch(PDO::FETCH_ASSOC);
+
+if ($resultRecipient) {
+    $recipient = $resultRecipient['phone'];
+    // Ensure sendMessage function exists
+    if (function_exists('sendMessage')) {
+        $message = "A new loan application of $principal from loan officer by the name  $name has been submitted. Please review and approve it.";
+       // $message = "A new loan application of $principal from  has been submitted. Please review and approve it.";
+        sendMessage($recipient, $message);
+    } else {
+        die("Error: sendMessage() function is not defined.");
+    }
+} else {
+    die("Error: No recipient found with role_id = 4.");
+}
+?>
+
+<script>
     alert("Loan application successful");
     location.replace('index.php');
-    </script>
-    <?php
+</script>
+<?php
 }
+// Function to send SMS
 
 // Function to calculate repayment amount
 function calculateRepaymentAmount($principal_amount, $interest_amount, $number_of_repayments) {
