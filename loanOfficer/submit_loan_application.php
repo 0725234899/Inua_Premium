@@ -1,4 +1,5 @@
 <?php
+session_start();
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
@@ -128,9 +129,9 @@ if (!isset($principal_amount)) {
 }
 
 $principal = number_format($principal_amount, 2);
-
+$email=$_SESSION['email'];
 // Fetch recipient phone number
-$sqlLoanOfficer = "SELECT name FROM users WHERE role_id = 2";
+$sqlLoanOfficer = "SELECT name FROM users WHERE email = '$email'";
 $stmtLoanOfficer = $conn->prepare($sqlLoanOfficer);
 $stmtLoanOfficer->execute();
 $resultLoanOfficer = $stmtLoanOfficer->fetch(PDO::FETCH_ASSOC);
@@ -146,8 +147,9 @@ if ($resultRecipient) {
     // Ensure sendMessage function exists
     if (function_exists('sendMessage')) {
         $message = "A new loan application of $principal from loan officer by the name  $name has been submitted. Please review and approve it.";
+        echo $name;
        // $message = "A new loan application of $principal from  has been submitted. Please review and approve it.";
-        sendMessage($recipient, $message);
+     sendMessage($recipient, $message);
     } else {
         die("Error: sendMessage() function is not defined.");
     }

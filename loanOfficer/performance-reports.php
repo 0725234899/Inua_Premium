@@ -1,3 +1,7 @@
+<?php
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -125,6 +129,7 @@
         <?php include '../includes/sidebar.php'; ?>
     </div>
     <?php
+    $email=$_SESSION['email'];
     include 'db.php';
 
     // Function to update loan status
@@ -211,7 +216,7 @@
             INNER JOIN
                 loan_products ON loan_applications.loan_product = loan_products.id
             WHERE 
-                repayments.repayment_date >= CURDATE() AND borrowers.loan_officer='$email'
+                repayments.repayment_date >= CURDATE() AND borrowers.loan_officer='$email' AND DATEDIFF(CURDATE(), repayments.repayment_date) > 1
             GROUP BY 
                 repayments.loan_id, 
                 borrowers.full_name, 

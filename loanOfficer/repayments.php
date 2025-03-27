@@ -310,7 +310,7 @@ $result_overdue = $stmt_overdue->get_result();
             </div>
 
                 <div class="table-container">
-                    <h2>Overdue Repayments</h2>
+                    <h2>Overdue Repaymens</h2>
                     <table class="table table-striped table-danger">
                         <thead>
                             <tr>

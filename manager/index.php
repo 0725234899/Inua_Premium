@@ -6,7 +6,10 @@ include 'db.php';
 // Fetch total overdue amount
 $sql_total_overdue = "SELECT SUM(amount) AS total_overdue FROM repayments WHERE repayment_date < CURDATE()";
 $sql_total_paid = "SELECT SUM(paid) AS total_paid FROM repayments WHERE repayment_date < CURDATE()";
-
+$sql_paid = "SELECT SUM(paid) AS total_paid FROM repayments";
+$stmt_paid = $conn->prepare($sql_paid);
+$stmt_paid->execute();
+$total_paid = $stmt_paid->get_result()->fetch_assoc()['total_paid'] ?? 0;
 $stmt_total_overdue = $conn->prepare($sql_total_overdue);
 $stmt_total_overdue->execute();
 $total_overdue_amount = $stmt_total_overdue->get_result()->fetch_assoc()['total_overdue'] ?? 0;
@@ -23,7 +26,7 @@ $total_loan_amount = $stmt_total_loans->get_result()->fetch_assoc()['total_loans
 
 // Calculate Portfolio at Risk (PAR) - Assuming PAR is (Overdue / Total Loans) * 100
 $par = ($total_loan_amount > 0) ? ($total_arrears / $total_loan_amount) * 100 : 0;
-$performing_book=$total_loan_amount-$total_paid_amount;
+$performing_book=$total_loan_amount-$total_paid;
 $loan_book=$performing_book+$total_arrears;
 // Query for upcoming repayments
 $sql_due = "SELECT 
