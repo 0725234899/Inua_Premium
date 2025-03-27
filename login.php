@@ -73,18 +73,17 @@ if (isset($_POST['login'])) {
     
     <style>
         :root {
-            --primary-color: #e84545;
+            --primary-color:hsl(232, 40.50%, 92.70%);
             --secondary-color: #2a2c39;
-            --accent-color: #0ea2bd;
-            --light-color: #f8f9fa;
+            --light-color:rgb(158, 161, 164);
             --dark-color: #212529;
         }
         
         body.login-page {
-            background-color: #f5f5f5;
+            background: colorrgb(31, 139, 255);;
             background-image: url('assets/img/hero.jpeg');
             background-size: cover;
-            background-position: center;
+            background-position: fixed;
             background-attachment: fixed;
             position: relative;
         }
@@ -130,7 +129,7 @@ if (isset($_POST['login'])) {
         .form-control {
             padding: 12px 15px;
             border-radius: 8px;
-            border: 1px solid #ced4da;
+            border: 1px solidrgb(7, 242, 23);
             font-size: 16px;
             transition: all 0.3s ease;
         }
@@ -151,7 +150,7 @@ if (isset($_POST['login'])) {
         }
         
         .btn-primary:hover {
-            background-color: #d63030 !important;
+            background-color:rgb(20, 238, 74) !important;
             border-color: #d63030 !important;
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(232, 69, 69, 0.3);
@@ -315,8 +314,8 @@ if (isset($_POST['login'])) {
                                     </div>
                                     
                                     <div class="login-footer">
-                                        <p>Forgot your password? <a href="#">Reset it here</a></p>
-                                        <p>Don't have an account? <a href="#">Contact us</a></p>
+                                        
+                                        <p>Don't have an account? <a href="index.html#contact">Contact us</a></p>
                                     </div>
                                 </form>
                             </div>

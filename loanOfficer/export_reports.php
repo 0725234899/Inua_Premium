@@ -1,7 +1,8 @@
 <?php
+session_start();
 require_once('TCPDF/tcpdf.php');
 include 'db.php';
-
+$email = $_SESSION['email'];
 // Custom PDF class extending TCPDF
 class PDF extends TCPDF {
     public $logo;
@@ -50,6 +51,7 @@ function getLogo() {
 
 // Fetch all loan applications
 function fetchLoans() {
+    $email = $_SESSION['email'];
     global $conn;
     $sql = "SELECT l.id, b.full_name AS borrower_name, p.name AS loan_product_name, 
                    l.principal, l.interest, l.loan_interest, l.loan_duration, 
@@ -57,19 +59,22 @@ function fetchLoans() {
                    l.loan_release_date, l.loan_status
             FROM loan_applications l 
             INNER JOIN borrowers b ON l.borrower = b.id 
-            INNER JOIN loan_products p ON l.loan_product = p.id";
+            INNER JOIN loan_products p ON l.loan_product = p.id
+            WHERE b.loan_officer = '$email'
+            ";
     return $conn->query($sql);
 }
 
 // Fetch due repayments
 function fetchDueRepayments() {
+    $email = $_SESSION['email'];
     global $conn;
     $sql = "SELECT borrowers.full_name AS borrower_name, loan_applications.loan_product, 
                    SUM(repayments.amount) AS total_amount_due, repayments.repayment_date
             FROM repayments
             INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id
             INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
-            WHERE repayments.repayment_date >= CURDATE()
+            WHERE repayments.repayment_date >= CURDATE() AND DATEDIFF(CURDATE(), repayments.repayment_date) > 1 AND borrowers.loan_officer='$email' 
             GROUP BY repayments.loan_id, borrowers.full_name, 
                      loan_applications.loan_product, repayments.repayment_date";
     return $conn->query($sql);
@@ -77,13 +82,14 @@ function fetchDueRepayments() {
 
 // Fetch overdue repayments
 function fetchOverdueRepayments() {
+    $email = $_SESSION['email'];
     global $conn;
     $sql = "SELECT borrowers.full_name AS borrower_name, loan_applications.loan_product, 
                    repayments.amount, repayments.repayment_date
             FROM repayments
             INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id
             INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
-            WHERE repayments.repayment_date < CURDATE()";
+            WHERE repayments.repayment_date < CURDATE() AND borrowers.loan_officer='$email'";
     return $conn->query($sql);
 }
 

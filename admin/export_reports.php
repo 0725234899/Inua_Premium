@@ -69,7 +69,7 @@ function fetchDueRepayments() {
             FROM repayments
             INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id
             INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
-            WHERE repayments.repayment_date >= CURDATE()
+            WHERE repayments.repayment_date >= CURDATE() AND DATEDIFF(CURDATE(), repayments.repayment_date) > 1
             GROUP BY repayments.loan_id, borrowers.full_name, 
                      loan_applications.loan_product, repayments.repayment_date";
     return $conn->query($sql);
@@ -129,7 +129,7 @@ function generateTable($result, $columns, $isFinancial = false) {
     return $table;
 }
 
-// Generate PDF report
+// Generate PDF report and enable download
 function generatePDF($result, $title, $columns, $isFinancial = false) {
     $logo = getLogo();
     $pdf = new PDF($logo);
@@ -141,7 +141,9 @@ function generatePDF($result, $title, $columns, $isFinancial = false) {
 
     $table = generateTable($result, $columns, $isFinancial);
     $pdf->writeHTML($table, true, false, false, false, '');
-    $pdf->Output("$title.pdf", 'I');
+
+    // Force download instead of opening in browser
+    $pdf->Output("$title.pdf", 'D');
 }
 
 // Handle report exports
@@ -152,11 +154,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'Duration (months)', 'Repayment Cycle', 'Number of Repayments', 'Total Amount', 
             'Loan Release Date', 'Status'
         ], true);
-    } elseif (isset($_POST['export_due'])) {
+    } 
+    if (isset($_POST['export_due'])) {
         generatePDF(fetchDueRepayments(), "Due Repayments", [
             'Borrower', 'Loan Product', 'Total Amount Due', 'Due Date'
         ], true);
-    } elseif (isset($_POST['export_overdue'])) {
+    } 
+    if (isset($_POST['export_overdue'])) {
         generatePDF(fetchOverdueRepayments(), "Overdue Repayments", [
             'Borrower', 'Loan Product', 'Amount Due', 'Due Date'
         ], true);

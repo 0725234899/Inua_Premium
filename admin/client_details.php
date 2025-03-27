@@ -217,9 +217,14 @@ $result_loans = $stmt_loans->get_result();
                                         $total_amount = $loan['total_amount'] ?? 0;
                                         $total_paid = $loan['total_paid'] ?? 0;
                                         $outstanding_loans = $total_amount - $total_paid;
-                                   
+                                   $loanid = $loan['id'];
                                   ?>
-                                        <td><?php echo htmlspecialchars($loan['id']); ?></td>
+                                        <td>
+    <a href="<?php echo 'repayment_details.php?loanId=' . urlencode($loanid); ?>">
+        <?php echo htmlspecialchars($loan['id']); ?>
+    </a>
+</td>
+
                                         <td><?php echo number_format($loan['total_amount'], 2); ?></td>
                                         <td><?php echo number_format($outstanding_loans, 2) ?></td>
                                         <td><?php echo htmlspecialchars($loan['loan_release_date']); ?></td>
