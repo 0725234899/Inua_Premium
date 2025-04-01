@@ -1,212 +1,335 @@
+<?php
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
+include 'db.php';
+include '../includes/functions.php';
+
+$message = ""; // To store success or error messages
+
+// Search functionality
+if (isset($_POST['search'])) {
+    $search_key = trim($_POST['search_key']);
+    if (strlen($search_key) < 4 && !preg_match('/^\d{10}$/', $search_key)) {
+        $message = "<div class='alert alert-warning text-center'>Please enter at least 4 characters or a valid 10-digit phone number.</div>";
+    } else {
+        echo "<script>
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('search_btn').style.display = 'none';
+            document.getElementById('search_form').style.display = 'none';
+        });
+        </script>";
+        // Query to get loan details
+        $sql = "SELECT 
+                borrowers.id AS borrower_id, 
+                borrowers.full_name, 
+                borrowers.mobile, 
+                loan_products.name AS loan_product_name,
+                loan_applications.id AS loan_id, 
+                loan_applications.loan_product, 
+                COALESCE(SUM(repayments.amount), 0) AS total_due,
+                COALESCE(SUM(repayments.paid), 0) AS total_paid
+            FROM borrowers
+            INNER JOIN loan_applications ON borrowers.id = loan_applications.borrower
+            INNER JOIN loan_products ON loan_applications.loan_product = loan_products.id
+            INNER JOIN repayments ON loan_applications.id = repayments.loan_id
+            WHERE 
+                borrowers.mobile LIKE ? 
+                OR borrowers.full_name LIKE ? 
+                OR borrowers.unique_number LIKE ?
+            GROUP BY 
+                borrowers.id, borrowers.full_name, borrowers.mobile, 
+                loan_applications.id, loan_applications.loan_product
+            ORDER BY total_due DESC";
+
+        $search_term = "%$search_key%";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param("sss", $search_term, $search_term, $search_term);
+        $stmt->execute();
+        $result = $stmt->get_result();
+
+        if ($result->num_rows == 0) {
+            $message = "<div class='alert alert-danger text-center'>No such client on our database</div>";
+        }
+    }
+}
+
+// Repayment functionality
+if (isset($_POST['repay'])) {
+    $loan_id = $_POST['loan_id'];
+    $amount_paid = $_POST['amount_paid'];
+    
+    if ($amount_paid > 0) {
+        $message = distributeRepayment($loan_id, $amount_paid, $conn);
+        
+        $insertPayment = "INSERT INTO payment_date_records (loan_id, PaymentDate, Amount) VALUES (?, CURDATE(), ?)";
+        $insert_stmt = $conn->prepare($insertPayment);
+        $insert_stmt->bind_param("id", $loan_id, $amount_paid);
+        $insert_stmt->execute();
+    } else {
+        $message = "<div class='alert alert-warning text-center'>Please enter a valid amount.</div>";
+    }
+}
+
+// Function to distribute repayment
+function distributeRepayment($loan_id, $amount_paid, $conn) {
+    $sql = "SELECT * FROM repayments WHERE loan_id = ? AND COALESCE(paid, 0) < amount ORDER BY repayment_date ASC";
+    
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("i", $loan_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $total_distributed = 0;
+
+    while ($row = $result->fetch_assoc()) {
+        $installment_id = $row['id'];
+        $remaining_due = $row['amount'] - $row['paid'];
+
+        if ($amount_paid <= 0) {
+            break;
+        }
+
+        if ($amount_paid >= $remaining_due) {
+            $new_amount_paid = $row['amount']; // Full payment
+            $amount_paid -= $remaining_due;
+        } else {
+            $new_amount_paid = $row['paid'] + $amount_paid;
+            $amount_paid = 0;
+        }
+
+        // Update the installment with the new paid amount
+        $update_sql = "UPDATE repayments SET paid = ?, repaid_date = CURDATE() WHERE id = ?";
+        $update_stmt = $conn->prepare($update_sql);
+        $update_stmt->bind_param("di", $new_amount_paid, $installment_id);
+        $update_stmt->execute();
+        
+        $total_distributed += $new_amount_paid;
+    }
+
+    // Fetch the updated outstanding loan balance
+    $outstanding_sql = "SELECT SUM(amount - paid) AS outstanding_balance FROM repayments WHERE loan_id = ?";
+    $outstanding_stmt = $conn->prepare($outstanding_sql);
+    $outstanding_stmt->bind_param("i", $loan_id);
+    $outstanding_stmt->execute();
+    $outstanding_balance = $outstanding_stmt->get_result()->fetch_assoc()['outstanding_balance'] ?? 0;
+
+    if ($total_distributed > 0) {
+        return "<div class='alert alert-success text-center'>
+                    Successfully🤝. total paid is:" . number_format($total_distributed, 2) . " KES.<br>
+                    Outstanding Loan Balance: " . number_format($outstanding_balance, 2) . " KES.
+                </div>";
+    } else {
+        return "<div class='alert alert-warning text-center'>No repayments were necessary for this loan.</div>";
+    }
+}
+?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Add Repayments</title>
-    <link href="/assets/img/logo.png" rel="icon">
-    <link href="/assets/img/logo.png" rel="apple-touch-icon">
-    <link href="https://fonts.googleapis.com/css2?family=Open+Sans&family=Montserrat&family=Poppins&display=swap" rel="stylesheet">
-    <link href="assets/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
-    <link href="assets/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
-    <link href="assets/css/style.css" rel="stylesheet">
+    <title>Make Repayment</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css">
     <style>
-        .header {
-            background-color: #e84545;
-            color: #ffffff;
-            padding: 10px 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .header .logo h1 {
-            color: #ffffff;
+        body {
+            font-family: 'Poppins', sans-serif;
+            background-color: #f4f6f9;
             margin: 0;
-            font-size: 24px;
-        }
-        .header .navmenu ul {
-            list-style: none;
             padding: 0;
-            margin: 0;
-            display: flex;
         }
-        .header .navmenu ul li {
-            margin-right: 20px;
-        }
-        .header .navmenu ul li a {
-            color: #ffffff;
-            text-decoration: none;
-        }
-        .header .navmenu ul li a.active, .header .navmenu ul li a:hover {
-            color: #e84545;
-        }
-        .sidebar {
+
+        .container {
+            max-width: 700px;
+            margin: 50px auto;
             background-color: #ffffff;
-            color: #3a3939;
-            padding: 20px;
-            width: 250px;
-            position: fixed;
-            height: 100%;
-            overflow: auto;
+            border-radius: 12px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            padding: 30px;
         }
-        .sidebar .nav-item .nav-link {
-            color: #3a3939;
+
+        h2 {
+            font-size: 26px;
+            font-weight: bold;
+            text-align: center;
+            color: #343a40;
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            font-weight: 500;
+            color: #555;
+        }
+
+        .form-control {
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            padding: 10px;
+            font-size: 16px;
+        }
+
+        .btn-primary, .btn-success {
+            font-size: 16px;
+            font-weight: bold;
             padding: 10px 15px;
-            text-decoration: none;
-            display: block;
+            border-radius: 8px;
+            transition: 0.3s ease-in-out;
         }
-        .sidebar .nav-item .nav-link.active, .sidebar .nav-item .nav-link:hover {
-            color: #e84545;
+
+        .btn-primary {
+            background-color: #007bff;
+            border-color: #007bff;
         }
-        .main {
-            margin-left: 270px;
-            padding: 20px;
+
+        .btn-primary:hover {
+            background-color: #0056b3;
         }
+
+        .btn-success {
+            background-color: #28a745;
+            border-color: #28a745;
+        }
+
+        .btn-success:hover {
+            background-color: #1e7e34;
+        }
+
         .table-container {
-            overflow-x: auto;
-        }
-        .container h1 {
-            font-size: 28px;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             margin-bottom: 20px;
         }
-        .form-group {
-            margin-bottom: 20px;
-        }
-        .form-group label {
+
+        .table thead {
+            background-color: #007bff;
+            color: white;
             font-weight: bold;
         }
-        .loader {
-            border: 8px solid #f3f3f3;
-            border-radius: 50%;
-            border-top: 8px solid #3498db;
-            width: 40px;
-            height: 40px;
-            animation: spin 2s linear infinite;
-            display: none;
+
+        .table-striped tbody tr:nth-of-type(odd) {
+            background-color: #f8f9fa;
         }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+
+        .table td, .table th {
+            padding: 12px;
+            text-align: center;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                width: 90%;
+                padding: 20px;
+            }
+
+            .table {
+                font-size: 14px;
+            }
         }
     </style>
 </head>
 <body>
-    <?php 
-    include '../includes/functions.php';
-    include 'includes/header.php'; 
-    ?>
-    <div class="sidebar">
-        <?php include '../includes/sidebar.php'; ?>
-    </div>
-    <main class="main">
-        <section class="section">
-            <div class="container">
-                <h1>Add Repayments</h1>
-                <div class="row">
-                    <div class="col-md-6">
-                        <h2>Single or Multiple Repayments</h2>
-                        <form id="repaymentForm">
-                            <div id="repaymentContainer">
-                                <div class="repayment-entry">
-                                    <div class="form-group">
-                                        <label for="borrower">Borrower</label>
-                                        <input type="text" class="form-control" name="borrower[]" required>
-                                    </div>
-                                    <div class="form-group">
-                                        <label for="loan_product">Loan Product</label>
-                                        <input type="text" class="form-control" name="loan_product[]" required>
-                                    </div>
-                                    <div class="form-group">
-                                        <label for="amount">Amount</label>
-                                        <input type="number" class="form-control" name="amount[]" required>
-                                    </div>
-                                    <div class="form-group">
-                                        <label for="repayment_date">Repayment Date</label>
-                                        <input type="date" class="form-control" name="repayment_date[]" required>
-                                    </div>
-                                </div>
-                            </div>
-                            <button type="button" id="addRepayment" class="btn btn-secondary">Add Another Repayment</button>
-                            <button type="submit" class="btn btn-primary">Submit Repayments</button>
-                        </form>
-                        <div class="loader" id="formLoader"></div>
-                    </div>
-                    <div class="col-md-6">
-                        <h2>Bulk Repayments</h2>
-                        <form id="bulkRepaymentForm" enctype="multipart/form-data">
-                            <div class="form-group">
-                                <label for="bulk_file">Upload CSV File</label>
-                                <input type="file" class="form-control" id="bulk_file" name="bulk_file" accept=".csv" required>
-                            </div>
-                            <button type="submit" class="btn btn-primary">Upload</button>
-                        </form>
-                        <div class="loader" id="bulkFormLoader"></div>
-                    </div>
-                </div>
+    <div class="container mt-4">
+        <a href="manager_dashboard.php" class="btn btn-primary mb-3">
+            <i class="fa fa-arrow-left"></i> Back to Dashboard
+        </a>
+        <h2>Make a Loan Payments here 👇</h2>
+        <?= $message; ?>
+
+        <form method="POST" class="mb-4" id="search_form">
+            <label for="search_key" class="form-label">Enter Search Key:</label>
+            <input type="text" name="search_key" id="search_key" class="form-control" required placeholder="Search by Name, Phone, or Unique ID">
+            <button type="submit" name="search" id="search_btn" class="btn btn-primary mt-2">Search</button>
+        </form>
+
+        <script>
+            document.addEventListener('DOMContentLoaded', function () {
+                const searchInput = document.getElementById('search_key');
+                const suggestionsBox = document.createElement('div');
+                suggestionsBox.className = 'suggestions-box';
+                suggestionsBox.style.position = 'absolute';
+                suggestionsBox.style.zIndex = '1000';
+                suggestionsBox.style.backgroundColor = '#fff';
+                suggestionsBox.style.border = '1px solid #ddd';
+                suggestionsBox.style.width = searchInput.offsetWidth + 'px';
+                suggestionsBox.style.display = 'none';
+                document.body.appendChild(suggestionsBox);
+
+                searchInput.addEventListener('input', function () {
+                    const query = this.value.trim();
+                    if (query.length > 1) {
+                        fetch(`search_borrowers.php?query=${encodeURIComponent(query)}`)
+                            .then(response => response.json())
+                            .then(data => {
+                                suggestionsBox.innerHTML = '';
+                                if (data.length > 0) {
+                                    data.forEach(borrower => {
+                                        const suggestion = document.createElement('div');
+                                        suggestion.textContent = `${borrower.full_name} (${borrower.mobile})`;
+                                        suggestion.style.padding = '10px';
+                                        suggestion.style.cursor = 'pointer';
+                                        suggestion.addEventListener('click', function () {
+                                            searchInput.value = borrower.mobile;
+                                            suggestionsBox.style.display = 'none';
+                                        });
+                                        suggestionsBox.appendChild(suggestion);
+                                    });
+                                    suggestionsBox.style.display = 'block';
+                                    const rect = searchInput.getBoundingClientRect();
+                                    suggestionsBox.style.top = rect.bottom + window.scrollY + 'px';
+                                    suggestionsBox.style.left = rect.left + window.scrollX + 'px';
+                                } else {
+                                    suggestionsBox.style.display = 'none';
+                                }
+                            });
+                    } else {
+                        suggestionsBox.style.display = 'none';
+                    }
+                });
+
+                document.addEventListener('click', function (e) {
+                    if (!searchInput.contains(e.target) && !suggestionsBox.contains(e.target)) {
+                        suggestionsBox.style.display = 'none';
+                    }
+                });
+            });
+        </script>
+
+        <?php if (isset($result) && $result->num_rows > 0): ?>
+            <h3 class="text-center mb-4">Repayment Details</h3>
+            <div class="table-container">
+                <table class="table table-bordered table-hover shadow-sm">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>Borrower</th>
+                            <th>Phone</th>
+                            <th>Loan Product</th>
+                            <th>Amount Due</th>
+                            <th>Repay</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php while ($row = $result->fetch_assoc()): ?>
+                            <tr>
+                                <td><?= htmlspecialchars($row['full_name']); ?></td>
+                                <td><?= htmlspecialchars($row['mobile']); ?></td>
+                                <td><?= htmlspecialchars($row['loan_product_name']); ?></td>
+                                <td><strong><?= number_format($row['total_due'] - $row['total_paid'], 2); ?> KES</strong></td>
+                                <td>
+                                    <form method="POST" class="d-flex flex-column align-items-center">
+                                        <input type="hidden" name="loan_id" value="<?= $row['loan_id']; ?>">
+                                        <input type="number" name="amount_paid" class="form-control mb-2" required placeholder="Enter amount" style="width: 150px;">
+                                        <button type="submit" name="repay" class="btn btn-success btn-sm">Repay</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        <?php endwhile; ?>
+                    </tbody>
+                </table>
             </div>
-        </section>
-    </main>
-
-    <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
-    <script>
-        document.getElementById('addRepayment').addEventListener('click', function() {
-            const container = document.getElementById('repaymentContainer');
-            const newEntry = document.createElement('div');
-            newEntry.classList.add('repayment-entry');
-            newEntry.innerHTML = `
-                <div class="form-group">
-                    <label for="borrower">Borrower</label>
-                    <input type="text" class="form-control" name="borrower[]" required>
-                </div>
-                <div class="form-group">
-                    <label for="loan_product">Loan Product</label>
-                    <input type="text" class="form-control" name="loan_product[]" required>
-                </div>
-                <div class="form-group">
-                    <label for="amount">Amount</label>
-                    <input type="number" class="form-control" name="amount[]" required>
-                </div>
-                <div class="form-group">
-                    <label for="repayment_date">Repayment Date</label>
-                    <input type="date" class="form-control" name="repayment_date[]" required>
-                </div>
-            `;
-            container.appendChild(newEntry);
-        });
-
-        document.getElementById('repaymentForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            document.getElementById('formLoader').style.display = 'block';
-            const formData = new FormData(this);
-            fetch('process_multiple_repayments.php', {
-                method: 'POST',
-                body: formData
-            }).then(response => response.text())
-            .then(data => {
-                alert(data);
-                location.reload();
-            }).catch(error => console.error('Error:', error))
-            .finally(() => {
-                document.getElementById('formLoader').style.display = 'none';
-            });
-        });
-
-        document.getElementById('bulkRepaymentForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            document.getElementById('bulkFormLoader').style.display = 'block';
-            const formData = new FormData(this);
-            fetch('process_bulk_repayments.php', {
-                method: 'POST',
-                body: formData
-            }).then(response => response.text())
-            .then(data => {
-                alert(data);
-                location.reload();
-            }).catch(error => console.error('Error:', error))
-            .finally(() => {
-                document.getElementById('bulkFormLoader').style.display = 'none';
-            });
-        });
-    </script>
+        <?php endif; ?>
+    </div>
 </body>
 </html>

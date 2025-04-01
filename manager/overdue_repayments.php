@@ -1,19 +1,76 @@
 <?php
 ini_set('display_errors', 1); 
-ini_set('display_startup_errors', 1); error_reporting(E_ALL);
+ini_set('display_startup_errors', 1); 
+error_reporting(E_ALL);
+
+include 'db.php';
+
+// Fetch all loan officers
+$sql_officers = "SELECT id, name AS full_name FROM users WHERE role_id = '2'";
+$stmt_officers = $conn->prepare($sql_officers);
+$stmt_officers->execute();
+$result_officers = $stmt_officers->get_result();
+
+// Get selected loan officer (if any)
+$selected_officer = isset($_GET['officer_id']) ? $_GET['officer_id'] : 'all';
+$officer_filter = ($selected_officer !== 'all') ? "AND borrowers.loan_officer = (SELECT email FROM users WHERE id = ?)" : "";
+
+// Get the selected day from the request or default to all days
+$selected_day = isset($_GET['day']) ? $_GET['day'] : 'all';
+$day_filter = ($selected_day !== 'all') ? "AND DAYNAME(repayments.repayment_date) = ?" : "";
+
+// Query to get overdue repayments filtered by day and loan officer
+$sql_overdue = "SELECT 
+                    borrowers.full_name AS borrower_name, 
+                    borrowers.mobile AS phone_number, 
+                    repayments.amount, 
+                    repayments.paid, 
+                    DATE_FORMAT(repayments.repayment_date, '%d/%m/%Y') AS repayment_date
+                FROM 
+                    repayments
+                INNER JOIN 
+                    loan_applications ON repayments.loan_id = loan_applications.id
+                INNER JOIN 
+                    borrowers ON loan_applications.borrower = borrowers.id
+                WHERE 
+                    repayments.repayment_date < CURDATE()  
+                    AND (repayments.amount - repayments.paid) > 0 
+                    $day_filter
+                    $officer_filter
+                ORDER BY borrowers.full_name, repayments.repayment_date";
+
+$stmt_overdue = $conn->prepare($sql_overdue);
+if ($selected_day !== 'all' && $selected_officer !== 'all') {
+    $stmt_overdue->bind_param("ss", $selected_day, $selected_officer);
+} elseif ($selected_day !== 'all') {
+    $stmt_overdue->bind_param("s", $selected_day);
+} elseif ($selected_officer !== 'all') {
+    $stmt_overdue->bind_param("s", $selected_officer);
+}
+$stmt_overdue->execute();
+$result_overdue = $stmt_overdue->get_result();
+
+// Calculate total overdue and count
+$total_overdue = 0;
+$total_overdue_count = 0;
+while ($row = $result_overdue->fetch_assoc()) {
+    $total_overdue += $row['amount'] - $row['paid'];
+    $total_overdue_count++;
+}
+$result_overdue->data_seek(0); // Reset result pointer for display
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Repayments</title>
+    <title>Overdue Repayments</title>
     <link href="/assets/img/logo.png" rel="icon">
-    <link href="/assets/img/logo.png" rel="apple-touch-icon">
     <link href="https://fonts.googleapis.com/css2?family=Open+Sans&family=Montserrat&family=Poppins&display=swap" rel="stylesheet">
     <link href="assets/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
     <link href="assets/css/style.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
     <style>
         .header {
             background-color: #e84545;
@@ -79,6 +136,18 @@ ini_set('display_startup_errors', 1); error_reporting(E_ALL);
         .overdue {
             background-color: #f8d7da;
         }
+        @media (max-width: 768px) {
+            .sidebar {
+                position: relative;
+                width: 100%;
+            }
+            .main {
+                margin-left: 0;
+            }
+            .table {
+                font-size: 14px; /* Reduce table font size for smaller screens */
+            }
+        }
     </style>
 </head>
 <body>
@@ -89,73 +158,178 @@ ini_set('display_startup_errors', 1); error_reporting(E_ALL);
     <div class="sidebar">
         <?php include '../includes/sidebar.php'; ?>
     </div>
-    <?php
-    include 'db.php';
-
-    // Get the number of overdue days from the request or default to 30
-    $days = isset($_GET['days']) ? (int)$_GET['days'] : 30;
-
-    // Query to get overdue repayments
-    $sql_overdue = "SELECT 
-                        borrowers.full_name AS borrower_name, 
-                        loan_applications.loan_product, 
-                        repayments.amount, 
-                        repayments.repayment_date,repayments.paid
-                    FROM 
-                        repayments
-                    INNER JOIN 
-                        loan_applications ON repayments.loan_id = loan_applications.id
-                    INNER JOIN 
-                        borrowers ON loan_applications.borrower = borrowers.id
-                    WHERE 
-                        repayments.repayment_date < CURDATE() 
-                        ";
-
-    $result_overdue = $conn->query($sql_overdue);
-    ?>
     <main class="main">
         <section class="section">
-         
-            
             <div class="table-container">
-                <h2>Overdue Repayments > <?php echo $days; ?> days</h2>
-                <table class="table table-striped">
+                <h2 class="text-center">Overdue Repayments</h2>
+                <p class="text-center"><strong>Total Overdue:</strong> KSH <?= number_format($total_overdue, 2); ?></p>
+                <p class="text-center"><strong>Total Overdue Count:</strong> <?= $total_overdue_count; ?></p>
+
+                <!-- Search Input -->
+                <div class="mb-3">
+                    <input type="text" id="searchInput" class="form-control" placeholder="Search by Borrower Name or Phone Number" style="max-width: 400px;">
+                </div>
+
+                <!-- Loan Officer Tabs -->
+                <ul class="nav nav-tabs justify-content-center">
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_officer === 'all') ? 'active' : '' ?>" href="?officer_id=all&day=<?= htmlspecialchars($selected_day); ?>">All Loan Officers</a>
+                    </li>
+                    <?php while ($officer = $result_officers->fetch_assoc()): ?>
+                        <li class="nav-item">
+                            <a class="nav-link <?= ($selected_officer == $officer['id']) ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($officer['id']); ?>&day=<?= htmlspecialchars($selected_day); ?>">
+                                <?= htmlspecialchars($officer['full_name']); ?>
+                            </a>
+                        </li>
+                    <?php endwhile; ?>
+                </ul>
+
+                <ul class="nav nav-tabs justify-content-center mt-3">
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'all') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=all">All Days</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Monday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Monday">Monday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Tuesday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Tuesday">Tuesday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Wednesday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Wednesday">Wednesday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Thursday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Thursday">Thursday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Friday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Friday">Friday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Saturday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Saturday">Saturday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Sunday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Sunday">Sunday</a>
+                    </li>
+                </ul>
+
+                <!-- Download PDF Button -->
+                <div class="text-center mt-3">
+                    <button id="downloadPdf" class="btn btn-danger">Download PDF</button>
+                </div>
+
+                <table id="overdueTable" class="table table-striped mt-3">
                     <thead>
                         <tr>
                             <th>Borrower</th>
-                            <th>Loan Product</th>
+                            <th>Phone Number</th>
                             <th>Amount Due</th>
                             <th>Due Date</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php
-                        if ($result_overdue->num_rows > 0) {
-                            while ($row = $result_overdue->fetch_assoc()) {
-                                $diff=$row['amount']-$row['paid'];
-                                if($diff>1)
-                                {
-                                echo "<tr class='overdue'>
-                                        <td>{$row['borrower_name']}</td>
-                                        <td>{$row['loan_product']}</td>
-                                        <td>{$diff}</td>
-                                        <td>{$row['repayment_date']}</td></tr>";
-                            }
-                        }
-                        } else {
-                            echo "<tr><td colspan='4'>No overdue repayments found</td></tr>";
-                        }
+                        <?php 
+                        $currentBorrower = null;
+                        $borrowerSubtotal = 0;
+
+                        if ($result_overdue->num_rows > 0): 
+                            while ($row = $result_overdue->fetch_assoc()): 
+                                $arrears = $row['amount'] - $row['paid'];
+                                if ($arrears > 0): 
+                                    // Check if the borrower has changed
+                                    if ($currentBorrower !== $row['borrower_name'] && $currentBorrower !== null): 
                         ?>
+                                        <tr>
+                                            <td colspan="2" style="font-weight: bold;">Subtotal for <?= htmlspecialchars($currentBorrower); ?>:</td>
+                                            <td style="font-weight: bold;">KSH <?= number_format($borrowerSubtotal, 2); ?></td>
+                                            <td></td>
+                                        </tr>
+                        <?php 
+                                        $borrowerSubtotal = 0; // Reset subtotal for the next borrower
+                                    endif;
+
+                                    $currentBorrower = $row['borrower_name'];
+                                    $borrowerSubtotal += $arrears; // Add to the borrower's subtotal
+                        ?>
+                                    <tr class="overdue">
+                                        <td><?= htmlspecialchars($row['borrower_name']); ?></td>
+                                        <td><?= htmlspecialchars($row['phone_number']); ?></td>
+                                        <td>KSH <?= number_format($arrears, 2); ?></td>
+                                        <td><?= htmlspecialchars($row['repayment_date']); ?></td>
+                                    </tr>
+                        <?php 
+                                endif;
+                            endwhile;
+
+                            // Display the final subtotal for the last borrower
+                            if ($currentBorrower !== null): 
+                        ?>
+                                <tr>
+                                    <td colspan="2" style="font-weight: bold;">Subtotal for <?= htmlspecialchars($currentBorrower); ?>:</td>
+                                    <td style="font-weight: bold;">KSH <?= number_format($borrowerSubtotal, 2); ?></td>
+                                    <td></td>
+                                </tr>
+                        <?php 
+                            endif;
+                        else: 
+                        ?>
+                            <tr>
+                                <td colspan="4" class="text-center">No overdue repayments found.</td>
+                            </tr>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
         </section>
     </main>
 
+    <script>
+        // Search functionality
+        document.getElementById('searchInput').addEventListener('input', function () {
+            const filter = this.value.toLowerCase();
+            const rows = document.querySelectorAll('#overdueTable tbody tr');
+
+            rows.forEach(row => {
+                const borrowerName = row.cells[0]?.textContent.toLowerCase() || '';
+                const phoneNumber = row.cells[1]?.textContent.toLowerCase() || '';
+                row.style.display = (borrowerName.includes(filter) || phoneNumber.includes(filter)) ? '' : 'none';
+            });
+        });
+
+        // PDF Download functionality using jsPDF
+        document.getElementById('downloadPdf').addEventListener('click', function () {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+
+            // Add title
+            doc.setFontSize(18);
+            doc.text('Overdue Repayments', 10, 10);
+
+            // Add table
+            const table = document.getElementById('overdueTable');
+            const rows = table.querySelectorAll('tr');
+            let y = 20;
+
+            rows.forEach((row, index) => {
+                const cells = row.querySelectorAll('td, th');
+                let x = 10;
+
+                cells.forEach(cell => {
+                    doc.text(cell.innerText, x, y);
+                    x += 50; // Adjust column width
+                });
+
+                y += 10; // Adjust row height
+                if (y > 280) { // Create a new page if content exceeds page height
+                    doc.addPage();
+                    y = 10;
+                }
+            });
+
+            // Save the PDF
+            doc.save('Overdue_Repayments.pdf');
+        });
+    </script>
+
     <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
-    <script src="assets/vendor/aos/aos.js"></script>
-    <script src="assets/vendor/glightbox/js/glightbox.min.js"></script>
-    <script src="assets/vendor/swiper/swiper-bundle.min.js"></script>
     <script src="assets/js/main.js"></script>
 </body>
 </html>

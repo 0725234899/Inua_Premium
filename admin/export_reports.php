@@ -129,7 +129,7 @@ function generateTable($result, $columns, $isFinancial = false) {
     return $table;
 }
 
-// Generate PDF report and enable download
+// Generate PDF report
 function generatePDF($result, $title, $columns, $isFinancial = false) {
     $logo = getLogo();
     $pdf = new PDF($logo);
@@ -141,9 +141,7 @@ function generatePDF($result, $title, $columns, $isFinancial = false) {
 
     $table = generateTable($result, $columns, $isFinancial);
     $pdf->writeHTML($table, true, false, false, false, '');
-
-    // Force download instead of opening in browser
-    $pdf->Output("$title.pdf", 'D');
+    $pdf->Output("$title.pdf", 'I');
 }
 
 // Handle report exports
@@ -154,13 +152,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'Duration (months)', 'Repayment Cycle', 'Number of Repayments', 'Total Amount', 
             'Loan Release Date', 'Status'
         ], true);
-    } 
-    if (isset($_POST['export_due'])) {
+    } elseif (isset($_POST['export_due'])) {
         generatePDF(fetchDueRepayments(), "Due Repayments", [
             'Borrower', 'Loan Product', 'Total Amount Due', 'Due Date'
         ], true);
-    } 
-    if (isset($_POST['export_overdue'])) {
+    } elseif (isset($_POST['export_overdue'])) {
         generatePDF(fetchOverdueRepayments(), "Overdue Repayments", [
             'Borrower', 'Loan Product', 'Amount Due', 'Due Date'
         ], true);

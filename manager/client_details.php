@@ -25,10 +25,18 @@ if (!$client) {
 }
 
 // Fetch loan details for this client
-$sql_loans = "SELECT l.id, l.total_amount, l.loan_status, l.loan_release_date, SUM(r.paid) AS total_paid
-              FROM loan_applications l 
-                LEFT JOIN repayments r ON l.id = r.loan_id
-              WHERE l.borrower = ?";
+$sql_loans = "SELECT 
+    l.id, 
+    l.total_amount, 
+    l.loan_status, 
+    DATE_FORMAT(l.loan_release_date, '%d/%m/%Y') AS loan_release_date, 
+    SUM(r.paid) AS total_paid
+FROM 
+    loan_applications l 
+LEFT JOIN 
+    repayments r ON l.id = r.loan_id
+WHERE 
+    l.borrower = ?";
 $stmt_loans = $conn->prepare($sql_loans);
 $stmt_loans->bind_param("i", $client_id);
 $stmt_loans->execute();

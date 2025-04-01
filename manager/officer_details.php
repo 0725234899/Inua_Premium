@@ -75,10 +75,12 @@ $par = ($total_loan_amount > 0) ? ($overdue_loan_amount / $total_loan_amount) * 
     <link href="../assets/css/style.css" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
-    <style>
+     <style>
         body {
             background-color: #ffffff;
             font-family: 'Open Sans', sans-serif;
+            color: #212529;
+            margin: 0;
         }
         .container {
             margin-top: 30px;
@@ -87,69 +89,33 @@ $par = ($total_loan_amount > 0) ? ($overdue_loan_amount / $total_loan_amount) * 
             border-radius: 10px;
             box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
             margin-bottom: 20px;
-        }
-        .table-container {
-            overflow-x: auto;
-        }
-        body {
-            background-color: #ffffff;
-            color: #212529;
-            font-family: 'Open Sans', sans-serif;
-            margin: 0;
+            padding: 20px;
         }
         .header {
             background-color: #e84545;
             color: #ffffff;
-            padding: 10px 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .header .logo h1 {
-            color: #ffffff;
-            margin: 0;
+            padding: 15px;
+            text-align: center;
             font-size: 24px;
-        }
-        .header .navmenu ul {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-            display: flex;
-        }
-        .header .navmenu ul li {
-            margin-right: 20px;
-        }
-        .header .navmenu ul li a {
-            color: #ffffff;
-            text-decoration: none;
-        }
-        .header .navmenu ul li a.active, .header .navmenu ul li a:hover {
-            color: #e84545;
-        }
-        .sidebar {
-            background-color: #ffffff;
-            color: #3a3939;
-            padding: 20px;
-            width: 250px;
-            position: fixed;
-            height: 100%;
-            overflow: auto;
-        }
-        .sidebar .nav-item .nav-link {
-            color: #3a3939;
-            padding: 10px 15px;
-            text-decoration: none;
-            display: block;
-        }
-        .sidebar .nav-item .nav-link.active, .sidebar .nav-item .nav-link:hover {
-            color: #e84545;
-        }
-        .main {
-            margin-left: 270px;
-            padding: 20px;
         }
         .table-container {
             overflow-x: auto;
+        }
+        .table th {
+            background-color: #e84545;
+            color: white;
+        }
+        .btn-back {
+            background-color: #e84545;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            text-decoration: none;
+        }
+        .btn-back:hover {
+            background-color: #d23838;
+            color: white;
         }
     </style>
 </head>
