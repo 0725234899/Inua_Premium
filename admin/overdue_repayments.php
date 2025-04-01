@@ -92,15 +92,14 @@ ini_set('display_startup_errors', 1); error_reporting(E_ALL);
     <?php
     include 'db.php';
 
-    // Get the number of overdue days from the request or default to 30
-    $days = isset($_GET['days']) ? (int)$_GET['days'] : 30;
-
     // Query to get overdue repayments
     $sql_overdue = "SELECT 
                         borrowers.full_name AS borrower_name,  
                         loan_products.name AS loan_product,
                         repayments.amount, 
-                        repayments.repayment_date,repayments.paid
+                        repayments.repayment_date, 
+                        repayments.paid,
+                        borrowers.id AS borrower_id
                     FROM 
                         repayments
                     INNER JOIN 
@@ -110,18 +109,19 @@ ini_set('display_startup_errors', 1); error_reporting(E_ALL);
                     INNER JOIN 
                         borrowers ON loan_applications.borrower = borrowers.id
                     WHERE 
-                        repayments.repayment_date < CURDATE() 
-                        ";
+                        repayments.repayment_date < CURDATE()";
 
     $result_overdue = $conn->query($sql_overdue);
     ?>
     <main class="main">
         <section class="section">
-         
-            
             <div class="table-container">
-                <h2>Overdue Repayments > <?php echo $days; ?> days</h2>
-                <table class="table table-striped">
+                <h2 class="text-center">Overdue Repayments</h2>
+                <div class="d-flex justify-content-between mb-3">
+                    <button id="downloadButton" class="btn btn-primary">Download PDF</button>
+                    <input type="text" id="searchInput" placeholder="Search by borrower or product..." class="form-control" style="width: 300px;">
+                </div>
+                <table class="table table-striped" id="overdueTable">
                     <thead>
                         <tr>
                             <th>Borrower</th>
@@ -134,16 +134,16 @@ ini_set('display_startup_errors', 1); error_reporting(E_ALL);
                         <?php
                         if ($result_overdue->num_rows > 0) {
                             while ($row = $result_overdue->fetch_assoc()) {
-                                $diff=$row['amount']-$row['paid'];
-                                if($diff>1)
-                                {
-                                echo "<tr class='overdue'>
-                                        <td>{$row['borrower_name']}</td>
-                                        <td>{$row['loan_product']}</td>
-                                        <td>{$diff}</td>
-                                        <td>{$row['repayment_date']}</td></tr>";
+                                $diff = $row['amount'] - $row['paid'];
+                                if ($diff > 1) {
+                                    echo "<tr class='overdue'>
+                                            <td><a href='client_details.php?borrower_id={$row['borrower_id']}'>{$row['borrower_name']}</a></td>
+                                            <td>{$row['loan_product']}</td>
+                                            <td>KSH " . number_format($diff, 2) . "</td>
+                                            <td>{$row['repayment_date']}</td>
+                                          </tr>";
+                                }
                             }
-                        }
                         } else {
                             echo "<tr><td colspan='4'>No overdue repayments found</td></tr>";
                         }
@@ -154,10 +154,50 @@ ini_set('display_startup_errors', 1); error_reporting(E_ALL);
         </section>
     </main>
 
+    <script>
+        document.getElementById('searchInput').addEventListener('input', function () {
+            const filter = this.value.toLowerCase();
+            const rows = document.querySelectorAll('.table tbody tr');
+
+            rows.forEach(row => {
+                const cells = row.querySelectorAll('td');
+                const match = Array.from(cells).some((cell, index) => 
+                    (index === 0 || index === 1) && cell.textContent.toLowerCase().includes(filter)
+                );
+                row.style.display = match ? '' : 'none';
+            });
+        });
+
+        document.getElementById('downloadButton').addEventListener('click', function () {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+
+            // Add title
+            doc.setFontSize(18);
+            doc.text('Overdue Repayments', 10, 10);
+
+            // Extract table data
+            const table = document.getElementById('overdueTable');
+            const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+            const rows = Array.from(table.querySelectorAll('tbody tr')).map(row => 
+                Array.from(row.querySelectorAll('td')).map(td => td.textContent.trim())
+            );
+
+            // Add table to PDF
+            doc.autoTable({
+                head: [headers],
+                body: rows,
+                startY: 20,
+            });
+
+            // Save the PDF
+            doc.save('overdue_repayments.pdf');
+        });
+    </script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
     <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
-    <script src="assets/vendor/aos/aos.js"></script>
-    <script src="assets/vendor/glightbox/js/glightbox.min.js"></script>
-    <script src="assets/vendor/swiper/swiper-bundle.min.js"></script>
     <script src="assets/js/main.js"></script>
 </body>
 </html>

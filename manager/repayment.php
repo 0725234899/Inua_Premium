@@ -11,7 +11,12 @@ $message = ""; // To store success or error messages
 // Search functionality
 if (isset($_POST['search'])) {
     $phone_number = trim($_POST['phone_number']);
-
+    echo "<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        document.getElementById('search_btn').style.display = 'none';
+        document.getElementById('search_form').style.display = 'none';
+    });
+  </script>";
     // Query to get loan details
     $sql = "SELECT 
             borrowers.id AS borrower_id, 
@@ -99,6 +104,12 @@ function distributeRepayment($loan_id, $amount_paid, $conn) {
 
     if ($total_distributed > 0) {
         return "<div class='alert alert-success text-center'>Repayment successfully distributed. Total: " . number_format($total_distributed, 2) . " KES.</div>";
+        ?>
+        <script>
+            redirect('manager-dashboard.php');
+            </script>
+
+<?php
     } else {
         return "<div class='alert alert-warning text-center'>No repayments were necessary for this loan.</div>";
     }
@@ -215,10 +226,10 @@ function distributeRepayment($loan_id, $amount_paid, $conn) {
         <h2>Make a Loan Repayment</h2>
         <?= $message; ?>
 
-        <form method="POST" class="mb-4">
+        <form method="POST" class="mb-4" id="search_form">
             <label for="phone_number" class="form-label">Enter Search Key:</label>
             <input type="text" name="phone_number" id="phone_number" class="form-control" required>
-            <button type="submit" name="search" class="btn btn-primary mt-2">Search</button>
+            <button type="submit" name="search" id="search_btn" class="btn btn-primary mt-2">Search</button>
         </form>
 
         <?php if (isset($result) && $result->num_rows > 0): ?>

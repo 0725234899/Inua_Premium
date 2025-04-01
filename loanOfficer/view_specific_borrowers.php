@@ -10,23 +10,29 @@ $sql = "
     SELECT 
         b.full_name, 
         b.business_name, 
-        b.unique_number, 
         b.mobile, 
-        b.email, 
-        b.status,
         b.loan_officer,
-        COALESCE(SUM(l.principal + l.interest), 0) AS total_loan_taken,
-        COALESCE(SUM(l.principal + l.interest - r.amount), 0) AS open_loans_balance
+        COALESCE(SUM(l.principal), 0) AS total_loan_taken,
+        COALESCE(SUM(l.total_amount - r.total_paid), 0) AS open_loans_balance,
+        COALESCE(SUM(CASE WHEN r.total_paid < l.total_amount THEN l.total_amount - r.total_paid ELSE 0 END), 0) AS arrears_amount
     FROM 
         borrowers b
     LEFT JOIN 
-        loan_applications l ON b.id = l.id
+        loan_applications l ON b.id = l.borrower
     LEFT JOIN 
-        repayments r ON l.id = r.loan_id
-        WHERE 
+        (
+            SELECT 
+                loan_id, 
+                SUM(paid) AS total_paid 
+            FROM 
+                repayments 
+            GROUP BY 
+                loan_id
+        ) r ON l.id = r.loan_id
+    WHERE 
         b.loan_officer = '".$_SESSION['email']."'
     GROUP BY 
-        b.full_name, b.business_name, b.unique_number, b.mobile, b.email, b.status
+        b.full_name, b.business_name, b.mobile
 ";
 
 $result = $conn->query($sql);
@@ -154,6 +160,122 @@ if (!$result) {
         .metric p {
             margin: 5px 0 0;
         }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            background-color: var(--surface-color);
+            box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        table th, table td {
+            padding: 12px 15px;
+            text-align: left;
+            border: 1px solid var(--default-color);
+        }
+
+        table th {
+            background-color: var(--accent-color);
+            color: var(--contrast-color);
+            font-weight: bold;
+        }
+
+        table tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+
+        table tr:hover {
+            background-color: #f1f1f1;
+        }
+
+        table td {
+            color: var(--default-color);
+        }
+
+        .search-container {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 10px;
+        }
+
+        .search-container input {
+            padding: 8px;
+            border: 1px solid var(--default-color);
+            border-radius: 4px;
+            width: 250px;
+        }
+
+        .table-responsive {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .print-button {
+            margin-top: 10px;
+            background-color: var(--accent-color);
+            color: var(--contrast-color);
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        .print-button:hover {
+            background-color: #d43d3d;
+        }
+
+        @media print {
+            body * {
+                visibility: hidden;
+            }
+
+            .printable-area, .printable-area * {
+                visibility: visible;
+            }
+
+            .printable-area {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                padding: 20px;
+            }
+
+            .print-button, .search-container {
+                display: none;
+            }
+        }
+
+        .print-logo {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .print-logo img {
+            max-width: 150px;
+        }
+
+        .print-header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .print-header h1 {
+            font-size: 24px;
+            color: var(--accent-color);
+        }
+
+        .print-content {
+            margin-top: 20px;
+        }
+
+        .print-content div {
+            margin-bottom: 10px;
+            font-size: 16px;
+            color: var(--default-color);
+        }
     </style>
 
     <!-- Favicons -->
@@ -169,6 +291,8 @@ if (!$result) {
 
     <!-- Main CSS File -->
     <link href="assets/css/style.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
 </head>
 
 <body class="admin-page">
@@ -181,43 +305,50 @@ if (!$result) {
     <!-- ======= Main ======= -->
     <main class="main">
         <section id="admin-dashboard" class="admin-dashboard section">
-            <div class="container">
-                
-                <h2>View Borrowers</h2>
-                <table border="1" class="table">
-                    <tr>
-                        <th>Full Name</th>
-                        <th>Business Name</th>
-                        <th>Unique Number</th>
-                        <th>Mobile</th>
-                        <th>Email</th>
-                        <th>Total Loan Taken</th>
-                        <th>Open Loans Balance</th>
-                        <th>Status</th>
-                    </tr>
-                    <?php
-                    if ($result->num_rows > 0) {
-                        while($row = $result->fetch_assoc()) {
-                            if($row['loan_officer']==$_SESSION['email'])
-                            {
-                            echo "<tr>
-                                    <td>".$row["full_name"]."</td>
-                                    <td>".$row["business_name"]."</td>
-                                    <td>".$row["unique_number"]."</td>
-                                    <td>".$row["mobile"]."</td>
-                                    <td>".$row["email"]."</td>
-                                    <td>".number_format($row["total_loan_taken"], 2)."</td>
-                                    <td>".number_format($row["open_loans_balance"], 2)."</td>
-                                    <td>".$row["status"]."</td>
-                                  </tr>";
+            <div class="container mt-3">
+                <div class="search-container">
+                    <input type="text" id="searchInput" placeholder="Search borrowers...">
+                </div>
+                <div class="table-responsive printable-area" id="printableArea">
+                    <div class="print-logo">
+                        <img src="/assets/img/logo.png" alt="Logo">
+                    </div>
+                    <div class="print-header">
+                        <h1>Borrowers Report</h1>
+                    </div>
+                    <table class="table" id="borrowersTable">
+                        <thead>
+                            <tr>
+                                <th>Full Name</th>
+                                <th>Business Name</th>
+                                <th>Mobile</th>
+                                <th>Total Loan Taken</th>
+                                <th>Open Loans Balance</th>
+                                <th>Arrears Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php
+                            if ($result->num_rows > 0) {
+                                while ($row = $result->fetch_assoc()) {
+                                    if ($row['loan_officer'] == $_SESSION['email']) {
+                                        echo "<tr>
+                                                <td>" . htmlspecialchars($row["full_name"]) . "</td>
+                                                <td>" . htmlspecialchars($row["business_name"]) . "</td>
+                                                <td>" . htmlspecialchars($row["mobile"]) . "</td>
+                                                <td>KSH " . number_format($row["total_loan_taken"], 2) . "</td>
+                                                <td>KSH " . number_format($row["open_loans_balance"], 2) . "</td>
+                                                <td>KSH " . number_format($row["arrears_amount"], 2) . "</td>
+                                              </tr>";
+                                    }
+                                }
+                            } else {
+                                echo "<tr><td colspan='6' style='text-align: center;'>No borrowers found</td></tr>";
                             }
-                            
-                        }
-                    } else {
-                        echo "<tr><td colspan='8'>No borrowers found</td></tr>";
-                    }
-                    ?>
-                </table>
+                            ?>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </section><!-- End Admin Dashboard Section -->
     </main><!-- End Main -->
@@ -230,6 +361,29 @@ if (!$result) {
 
     <!-- Main JS File -->
     <script src="assets/js/main.js"></script>
+    <script>
+        function printTable() {
+            const printContents = document.getElementById('printableArea').innerHTML;
+            const originalContents = document.body.innerHTML;
+
+            document.body.innerHTML = printContents;
+            window.print();
+            document.body.innerHTML = originalContents;
+        }
+
+        document.getElementById('searchInput').addEventListener('input', function () {
+            const filter = this.value.toLowerCase();
+            const rows = document.querySelectorAll('#borrowersTable tbody tr');
+
+            rows.forEach(row => {
+                const cells = row.querySelectorAll('td');
+                const match = Array.from(cells).some(cell =>
+                    cell.textContent.toLowerCase().includes(filter)
+                );
+                row.style.display = match ? '' : 'none';
+            });
+        });
+    </script>
 </body>
 </html>
 
