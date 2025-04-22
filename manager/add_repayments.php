@@ -74,7 +74,7 @@ if (isset($_POST['repay'])) {
 
 // Function to distribute repayment
 function distributeRepayment($loan_id, $amount_paid, $conn) {
-    $sql = "SELECT * FROM repayments WHERE loan_id = ? AND COALESCE(paid, 0) < amount ORDER BY repayment_date ASC";
+    $sql = "SELECT * FROM repayments WHERE loan_id = ? AND COALESCE(paid, 0) < amount ORDER BY DATE_FORMAT(repayment_date, '%d/%m/%Y') ASC";
     
     $stmt = $conn->prepare($sql);
     $stmt->bind_param("i", $loan_id);
@@ -316,7 +316,7 @@ function distributeRepayment($loan_id, $amount_paid, $conn) {
                                 <td><?= htmlspecialchars($row['full_name']); ?></td>
                                 <td><?= htmlspecialchars($row['mobile']); ?></td>
                                 <td><?= htmlspecialchars($row['loan_product_name']); ?></td>
-                                <td><strong><?= number_format($row['total_due'] - $row['total_paid'], 2); ?> KES</strong></td>
+                                <td><strong><?php echo number_format(ceil($row['total_due'] - $row['total_paid'])); ?> KES</strong></td>
                                 <td>
                                     <form method="POST" class="d-flex flex-column align-items-center">
                                         <input type="hidden" name="loan_id" value="<?= $row['loan_id']; ?>">

@@ -15,17 +15,15 @@ $result_officers = $stmt_officers->get_result();
 $selected_officer = isset($_GET['officer_id']) ? $_GET['officer_id'] : 'all';
 $officer_filter = ($selected_officer !== 'all') ? "AND borrowers.loan_officer = (SELECT email FROM users WHERE id = ?)" : "";
 
-// Get the selected day from the request or default to all days
+// Get selected day (if any)
 $selected_day = isset($_GET['day']) ? $_GET['day'] : 'all';
 $day_filter = ($selected_day !== 'all') ? "AND DAYNAME(repayments.repayment_date) = ?" : "";
 
-// Query to get overdue repayments filtered by day and loan officer
+// Query to get overdue repayments grouped by borrower
 $sql_overdue = "SELECT 
                     borrowers.full_name AS borrower_name, 
                     borrowers.mobile AS phone_number, 
-                    repayments.amount, 
-                    repayments.paid, 
-                    DATE_FORMAT(repayments.repayment_date, '%d/%m/%Y') AS repayment_date
+                    SUM(repayments.amount - repayments.paid) AS total_overdue
                 FROM 
                     repayments
                 INNER JOIN 
@@ -35,17 +33,20 @@ $sql_overdue = "SELECT
                 WHERE 
                     repayments.repayment_date < CURDATE()  
                     AND (repayments.amount - repayments.paid) > 0 
-                    $day_filter
                     $officer_filter
-                ORDER BY borrowers.full_name, repayments.repayment_date";
+                    $day_filter
+                GROUP BY 
+                    borrowers.full_name, borrowers.mobile
+                ORDER BY 
+                    borrowers.full_name";
 
 $stmt_overdue = $conn->prepare($sql_overdue);
-if ($selected_day !== 'all' && $selected_officer !== 'all') {
-    $stmt_overdue->bind_param("ss", $selected_day, $selected_officer);
-} elseif ($selected_day !== 'all') {
-    $stmt_overdue->bind_param("s", $selected_day);
+if ($selected_officer !== 'all' && $selected_day !== 'all') {
+    $stmt_overdue->bind_param("ss", $selected_officer, $selected_day);
 } elseif ($selected_officer !== 'all') {
     $stmt_overdue->bind_param("s", $selected_officer);
+} elseif ($selected_day !== 'all') {
+    $stmt_overdue->bind_param("s", $selected_day);
 }
 $stmt_overdue->execute();
 $result_overdue = $stmt_overdue->get_result();
@@ -54,11 +55,12 @@ $result_overdue = $stmt_overdue->get_result();
 $total_overdue = 0;
 $total_overdue_count = 0;
 while ($row = $result_overdue->fetch_assoc()) {
-    $total_overdue += $row['amount'] - $row['paid'];
+    $total_overdue += $row['total_overdue'];
     $total_overdue_count++;
 }
 $result_overdue->data_seek(0); // Reset result pointer for display
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -66,270 +68,212 @@ $result_overdue->data_seek(0); // Reset result pointer for display
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Overdue Repayments</title>
     <link href="/assets/img/logo.png" rel="icon">
-    <link href="https://fonts.googleapis.com/css2?family=Open+Sans&family=Montserrat&family=Poppins&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600&family=Montserrat:wght@500;700&display=swap" rel="stylesheet">
     <link href="assets/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
-    <link href="assets/css/style.css" rel="stylesheet">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
+    <link href="../assets/css/style.css" rel="stylesheet">
     <style>
+        body {
+            font-family: 'Open Sans', sans-serif;
+            background-color: #f8f9fa;
+            color: #212529;
+        }
         .header {
             background-color: #e84545;
             color: #ffffff;
-            padding: 10px 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            padding: 15px 0;
+            text-align: center;
         }
-        .header .logo h1 {
-            color: #ffffff;
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 600;
             margin: 0;
-            font-size: 24px;
         }
-        .header .navmenu ul {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-            display: flex;
-        }
-        .header .navmenu ul li {
-            margin-right: 20px;
-        }
-        .header .navmenu ul li a {
-            color: #ffffff;
-            text-decoration: none;
-        }
-        .header .navmenu ul li a.active, .header .navmenu ul li a:hover {
-            color: #e84545;
-        }
-        .sidebar {
+        .table {
+            margin-top: 20px;
             background-color: #ffffff;
-            color: #3a3939;
-            padding: 20px;
-            width: 250px;
-            position: fixed;
-            height: 100%;
-            overflow: auto;
+            border-radius: 10px;
+            overflow: hidden;
         }
-        .sidebar .nav-item .nav-link {
-            color: #3a3939;
-            padding: 10px 15px;
-            text-decoration: none;
-            display: block;
+        .table th {
+            background-color: #e84545;
+            color: #ffffff;
+            text-align: center;
         }
-        .sidebar .nav-item .nav-link.active, .sidebar .nav-item .nav-link:hover {
+        .table td {
+            text-align: center;
+        }
+        .btn-primary {
+            background-color: #e84545;
+            border: none;
+            transition: all 0.3s ease-in-out;
+        }
+        .btn-primary:hover {
+            background-color: #d43d3d;
+        }
+        .section-title {
+            font-size: 1.8rem;
+            font-weight: 600;
             color: #e84545;
-        }
-        .main {
-            margin-left: 270px;
-            padding: 20px;
-        }
-        .table-container {
-            overflow-x: auto;
-        }
-        .container h1 {
-            font-size: 28px;
             margin-bottom: 20px;
-        }
-        .table thead th {
-            background-color: #f5f5f5;
-        }
-        .overdue {
-            background-color: #f8d7da;
-        }
-        @media (max-width: 768px) {
-            .sidebar {
-                position: relative;
-                width: 100%;
-            }
-            .main {
-                margin-left: 0;
-            }
-            .table {
-                font-size: 14px; /* Reduce table font size for smaller screens */
-            }
+            text-align: center;
         }
     </style>
 </head>
 <body>
-    <?php 
-    include '../includes/functions.php';
-    include 'includes/header.php'; 
-    ?>
-    <div class="sidebar">
-        <?php include '../includes/sidebar.php'; ?>
+    <div class="header">
+        <h1>Overdue Repayments</h1>
     </div>
-    <main class="main">
-        <section class="section">
-            <div class="table-container">
-                <h2 class="text-center">Overdue Repayments</h2>
-                <p class="text-center"><strong>Total Overdue:</strong> KSH <?= number_format($total_overdue, 2); ?></p>
-                <p class="text-center"><strong>Total Overdue Count:</strong> <?= $total_overdue_count; ?></p>
+    <div class="container mt-5">
+        <div class="d-flex justify-content-start mb-3">
+            <a href="index.php" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
+        <p class="text-center"><strong>Total Overdue:</strong> KSH <?= number_format($total_overdue, 2); ?></p>
+        <ul class="nav nav-tabs justify-content-center">
+            <li class="nav-item">
+                <a class="nav-link <?= ($selected_officer === 'all') ? 'active' : '' ?>" href="?officer_id=all">All Loan Officers</a>
+            </li>
+            <?php while ($officer = $result_officers->fetch_assoc()): ?>
+                <li class="nav-item">
+                    <a class="nav-link <?= ($selected_officer == $officer['id']) ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($officer['id']); ?>">
+                        <?= htmlspecialchars($officer['full_name']); ?>
+                    </a>
+                </li>
+            <?php endwhile; ?>
+        </ul>
 
-                <!-- Search Input -->
-                <div class="mb-3">
-                    <input type="text" id="searchInput" class="form-control" placeholder="Search by Borrower Name or Phone Number" style="max-width: 400px;">
-                </div>
+        <!-- Day Tabs -->
+        <ul class="nav nav-tabs justify-content-center mt-3">
+            <li class="nav-item">
+                <a class="nav-link <?= (!isset($_GET['day']) || $_GET['day'] === 'all') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=all">All Days</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link <?= ($_GET['day'] ?? '') === 'Monday' ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Monday">Monday</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link <?= ($_GET['day'] ?? '') === 'Tuesday' ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Tuesday">Tuesday</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link <?= ($_GET['day'] ?? '') === 'Wednesday' ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Wednesday">Wednesday</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link <?= ($_GET['day'] ?? '') === 'Thursday' ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Thursday">Thursday</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link <?= ($_GET['day'] ?? '') === 'Friday' ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Friday">Friday</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link <?= ($_GET['day'] ?? '') === 'Saturday' ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Saturday">Saturday</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link <?= ($_GET['day'] ?? '') === 'Sunday' ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Sunday">Sunday</a>
+            </li>
+        </ul>
 
-                <!-- Loan Officer Tabs -->
-                <ul class="nav nav-tabs justify-content-center">
-                    <li class="nav-item">
-                        <a class="nav-link <?= ($selected_officer === 'all') ? 'active' : '' ?>" href="?officer_id=all&day=<?= htmlspecialchars($selected_day); ?>">All Loan Officers</a>
-                    </li>
-                    <?php while ($officer = $result_officers->fetch_assoc()): ?>
-                        <li class="nav-item">
-                            <a class="nav-link <?= ($selected_officer == $officer['id']) ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($officer['id']); ?>&day=<?= htmlspecialchars($selected_day); ?>">
-                                <?= htmlspecialchars($officer['full_name']); ?>
-                            </a>
-                        </li>
-                    <?php endwhile; ?>
-                </ul>
+        <h3 class="section-title mt-4">Overdue Repayments</h3>
+        <table id="overdueRepaymentsTable" class="table table-bordered">
+            <thead>
+                <tr>
+                    <th>Borrower</th>
+                    <th>Phone Number</th>
+                    <th>Total Overdue Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php while ($row = $result_overdue->fetch_assoc()): ?>
+                    <tr>
+                        <td><?= htmlspecialchars($row['borrower_name']); ?></td>
+                        <td><?= htmlspecialchars($row['phone_number']); ?></td>
+                        <td>KSH <?= number_format($row['total_overdue'], 2); ?></td>
+                    </tr>
+                <?php endwhile; ?>
+                <?php if ($result_overdue->num_rows === 0): ?>
+                    <tr><td colspan="3">No overdue repayments found.</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
 
-                <ul class="nav nav-tabs justify-content-center mt-3">
-                    <li class="nav-item">
-                        <a class="nav-link <?= ($selected_day === 'all') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=all">All Days</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= ($selected_day === 'Monday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Monday">Monday</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= ($selected_day === 'Tuesday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Tuesday">Tuesday</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= ($selected_day === 'Wednesday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Wednesday">Wednesday</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= ($selected_day === 'Thursday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Thursday">Thursday</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= ($selected_day === 'Friday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Friday">Friday</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= ($selected_day === 'Saturday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Saturday">Saturday</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= ($selected_day === 'Sunday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Sunday">Sunday</a>
-                    </li>
-                </ul>
-
-                <!-- Download PDF Button -->
-                <div class="text-center mt-3">
-                    <button id="downloadPdf" class="btn btn-danger">Download PDF</button>
-                </div>
-
-                <table id="overdueTable" class="table table-striped mt-3">
-                    <thead>
-                        <tr>
-                            <th>Borrower</th>
-                            <th>Phone Number</th>
-                            <th>Amount Due</th>
-                            <th>Due Date</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php 
-                        $currentBorrower = null;
-                        $borrowerSubtotal = 0;
-
-                        if ($result_overdue->num_rows > 0): 
-                            while ($row = $result_overdue->fetch_assoc()): 
-                                $arrears = $row['amount'] - $row['paid'];
-                                if ($arrears > 0): 
-                                    // Check if the borrower has changed
-                                    if ($currentBorrower !== $row['borrower_name'] && $currentBorrower !== null): 
-                        ?>
-                                        <tr>
-                                            <td colspan="2" style="font-weight: bold;">Subtotal for <?= htmlspecialchars($currentBorrower); ?>:</td>
-                                            <td style="font-weight: bold;">KSH <?= number_format($borrowerSubtotal, 2); ?></td>
-                                            <td></td>
-                                        </tr>
-                        <?php 
-                                        $borrowerSubtotal = 0; // Reset subtotal for the next borrower
-                                    endif;
-
-                                    $currentBorrower = $row['borrower_name'];
-                                    $borrowerSubtotal += $arrears; // Add to the borrower's subtotal
-                        ?>
-                                    <tr class="overdue">
-                                        <td><?= htmlspecialchars($row['borrower_name']); ?></td>
-                                        <td><?= htmlspecialchars($row['phone_number']); ?></td>
-                                        <td>KSH <?= number_format($arrears, 2); ?></td>
-                                        <td><?= htmlspecialchars($row['repayment_date']); ?></td>
-                                    </tr>
-                        <?php 
-                                endif;
-                            endwhile;
-
-                            // Display the final subtotal for the last borrower
-                            if ($currentBorrower !== null): 
-                        ?>
-                                <tr>
-                                    <td colspan="2" style="font-weight: bold;">Subtotal for <?= htmlspecialchars($currentBorrower); ?>:</td>
-                                    <td style="font-weight: bold;">KSH <?= number_format($borrowerSubtotal, 2); ?></td>
-                                    <td></td>
-                                </tr>
-                        <?php 
-                            endif;
-                        else: 
-                        ?>
-                            <tr>
-                                <td colspan="4" class="text-center">No overdue repayments found.</td>
-                            </tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </section>
-    </main>
+        <div class="text-center mt-3">
+            <button id="downloadOverdueRepayments" class="btn btn-danger">Download Overdue Repayments</button>
+        </div>
+        <div class="text-center mt-3">
+            <button id="downloadOverdueRepaymentsCSV" class="btn btn-secondary">Download Overdue Repayments (CSV)</button>
+        </div>
+    </div>
+    <footer class="text-center mt-5">
+        <p><em>Powered by AntonTech</em></p>
+    </footer>
 
     <script>
-        // Search functionality
-        document.getElementById('searchInput').addEventListener('input', function () {
-            const filter = this.value.toLowerCase();
-            const rows = document.querySelectorAll('#overdueTable tbody tr');
+        document.addEventListener('DOMContentLoaded', function () {
+            function downloadTableAsPDF(tableId, title) {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF();
 
-            rows.forEach(row => {
-                const borrowerName = row.cells[0]?.textContent.toLowerCase() || '';
-                const phoneNumber = row.cells[1]?.textContent.toLowerCase() || '';
-                row.style.display = (borrowerName.includes(filter) || phoneNumber.includes(filter)) ? '' : 'none';
+                // Add logo
+                const logoPath = "/Inua_Premium_services/assets/img/logo.png";
+                const img = new Image();
+                img.src = logoPath;
+
+                img.onload = function () {
+                    const pageWidth = doc.internal.pageSize.getWidth();
+                    const logoWidth = 50;
+                    const logoHeight = 30;
+                    const logoX = (pageWidth - logoWidth) / 2;
+
+                    doc.addImage(img, 'PNG', logoX, 10, logoWidth, logoHeight);
+
+                    // Add title
+                    doc.setFontSize(18);
+                    doc.text(title, pageWidth / 2, 50, { align: 'center' });
+
+                    // Extract table data
+                    const table = document.getElementById(tableId);
+                    const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+                    const rows = Array.from(table.querySelectorAll('tbody tr')).map(row =>
+                        Array.from(row.querySelectorAll('td')).map(td => td.textContent.trim())
+                    );
+
+                    // Add table to PDF
+                    doc.autoTable({
+                        head: [headers],
+                        body: rows,
+                        startY: 60,
+                        headStyles: { fillColor: [232, 69, 69], textColor: [255, 255, 255] },
+                    });
+
+                    // Save the PDF
+                    doc.save(`${title.replace(/\s+/g, '_')}.pdf`);
+                };
+
+                img.onerror = function () {
+                    alert("Failed to load the logo. Please check the logo path.");
+                };
+            }
+
+            document.getElementById('downloadOverdueRepayments').addEventListener('click', function () {
+                downloadTableAsPDF('overdueRepaymentsTable', 'Overdue Repayments');
             });
-        });
 
-        // PDF Download functionality using jsPDF
-        document.getElementById('downloadPdf').addEventListener('click', function () {
-            const { jsPDF } = window.jspdf;
-            const doc = new jsPDF();
+            function downloadTableAsCSV(tableId, filename) {
+                const table = document.getElementById(tableId);
+                const rows = Array.from(table.querySelectorAll('tr'));
+                const csvContent = rows.map(row => {
+                    const cells = Array.from(row.querySelectorAll('th, td'));
+                    return cells.map(cell => `"${cell.textContent.trim()}"`).join(',');
+                }).join('\n');
 
-            // Add title
-            doc.setFontSize(18);
-            doc.text('Overdue Repayments', 10, 10);
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = filename;
+                link.click();
+            }
 
-            // Add table
-            const table = document.getElementById('overdueTable');
-            const rows = table.querySelectorAll('tr');
-            let y = 20;
-
-            rows.forEach((row, index) => {
-                const cells = row.querySelectorAll('td, th');
-                let x = 10;
-
-                cells.forEach(cell => {
-                    doc.text(cell.innerText, x, y);
-                    x += 50; // Adjust column width
-                });
-
-                y += 10; // Adjust row height
-                if (y > 280) { // Create a new page if content exceeds page height
-                    doc.addPage();
-                    y = 10;
-                }
+            document.getElementById('downloadOverdueRepaymentsCSV').addEventListener('click', function () {
+                downloadTableAsCSV('overdueRepaymentsTable', 'Overdue_Repayments.csv');
             });
-
-            // Save the PDF
-            doc.save('Overdue_Repayments.pdf');
         });
     </script>
-
-    <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
-    <script src="assets/js/main.js"></script>
 </body>
 </html>

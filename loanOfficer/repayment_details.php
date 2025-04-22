@@ -13,26 +13,28 @@ $loanId = intval($_GET['loanId']); // Secure the input
 
 // Fetch loan details
 $sql_loan = "SELECT 
-    borrowers.full_name AS borrower_name, 
-    borrowers.mobile AS phone_number,
-    borrowers.unique_number AS id_number,
-    loan_products.name AS loan_product_name,
-    loan_applications.loan_product, 
-    loan_applications.principal AS principal_amount,
-    SUM(repayments.amount) AS total_amount_due, 
-    SUM(repayments.paid) AS total_amount_paid 
-FROM 
-    repayments
-INNER JOIN 
-    loan_applications ON repayments.loan_id = loan_applications.id
-INNER JOIN 
-    borrowers ON loan_applications.borrower = borrowers.id
-INNER JOIN 
-    loan_products ON loan_applications.loan_product = loan_products.id
-WHERE 
-    repayments.loan_id = ?
-GROUP BY 
-    repayments.loan_id, borrowers.full_name, borrowers.mobile, borrowers.unique_number, loan_applications.loan_product, loan_applications.principal";
+                borrowers.full_name AS borrower_name, 
+                borrowers.mobile AS phone_number,
+                borrowers.unique_number AS id_number,
+                loan_products.name AS loan_product_name,
+                loan_applications.loan_product, 
+                loan_applications.principal AS principal_amount,
+                SUM(repayments.amount) AS total_amount_due, 
+                SUM(repayments.paid) AS total_amount_paid,
+                MAX(repayments.repayment_date) AS last_repayment_date
+            FROM 
+                repayments
+            INNER JOIN 
+                loan_applications ON repayments.loan_id = loan_applications.id
+            INNER JOIN 
+                borrowers ON loan_applications.borrower = borrowers.id
+            INNER JOIN 
+                loan_products ON loan_applications.loan_product = loan_products.id
+            WHERE 
+                repayments.loan_id = ?
+            GROUP BY 
+                repayments.loan_id, borrowers.full_name, borrowers.mobile, borrowers.unique_number, 
+                loan_applications.loan_product, loan_applications.principal";
 
 $stmt_loan = $conn->prepare($sql_loan);
 $stmt_loan->bind_param("i", $loanId);
@@ -48,17 +50,42 @@ $totalDue = $loan['total_amount_due'];
 $totalPaid = $loan['total_amount_paid'];
 $balance = $totalDue - $totalPaid;
 
-// Fetch repayment history
-$sql_history = "SELECT amount, paid, repayment_date FROM repayments WHERE loan_id = ? ORDER BY repayment_date DESC";
+// Fetch repayment history with adjusted logic
+$sql_history = "SELECT 
+                    amount, 
+                    paid, 
+                    repayment_date 
+                FROM repayments 
+                WHERE loan_id = ? 
+                ORDER BY repayment_date ASC";
 $stmt_history = $conn->prepare($sql_history);
 $stmt_history->bind_param("i", $loanId);
 $stmt_history->execute();
 $result_history = $stmt_history->get_result();
-$sql_records = "SELECT Amount, PaymentDate FROM payment_date_records WHERE loan_id = ? ORDER BY PaymentDate DESC";
+
+$adjusted_history = [];
+$remaining_paid = $totalPaid; // Start with the total paid amount
+
+while ($row = $result_history->fetch_assoc()) {
+    $amount_due = $row['amount'];
+    $paid_for_this_due = min($amount_due, $remaining_paid); // Deduct from the remaining paid amount
+    $remaining_paid -= $paid_for_this_due;
+
+    $adjusted_history[] = [
+        'amount_due' => $amount_due,
+        'paid' => $paid_for_this_due,
+        'repayment_date' => date('d/m/Y', strtotime($row['repayment_date'])) // Format date as dd/mm/yyyy
+    ];
+}
+
+$sql_records = "SELECT Amount, PaymentDate 
+                FROM payment_date_records 
+                WHERE loan_id = ? 
+                ORDER BY PaymentDate DESC";
 $stmt_records = $conn->prepare($sql_records);
 $stmt_records->bind_param("i", $loanId);
 $stmt_records->execute();
-$result_records= $stmt_records->get_result();
+$result_records = $stmt_records->get_result();
 ?>
 
 <!DOCTYPE html>
@@ -148,8 +175,10 @@ $result_records= $stmt_records->get_result();
             <div class="card-body">
                 <h5 class="card-title">Loan Information</h5>
                 <div class="row">
-                    <div class="col-md-6">
+                    <div class="col-md-12">
                         <p><strong>Borrower:</strong> <?php echo htmlspecialchars($loan['borrower_name']); ?></p>
+                    </div>
+                    <div class="col-md-6">
                         <p><strong>Phone Number:</strong> <?php echo htmlspecialchars($loan['phone_number']); ?></p>
                         <p><strong>ID Number:</strong> <?php echo htmlspecialchars($loan['id_number']); ?></p>
                     </div>
@@ -158,7 +187,7 @@ $result_records= $stmt_records->get_result();
                         <p><strong>Principal Amount:</strong> <?php echo number_format($loan['principal_amount'], 2); ?> KES</p>
                         <p><strong>Total Amount:</strong> <?php echo number_format($totalDue, 2); ?> KES</p>
                         <p><strong>Total Paid:</strong> <?php echo number_format($totalPaid, 2); ?> KES</p>
-                        <p><strong>Balance:</strong> <?php echo number_format($balance, 2); ?> KES</p>
+                        <p><strong>Total Due Overdue Repayment Amount:</strong> <?php echo number_format($balance, 2); ?> KES</p>
                     </div>
                 </div>
             </div>
@@ -186,9 +215,9 @@ $result_records= $stmt_records->get_result();
                 <?php endif; ?>
             </tbody>
         </table>
-        <h3 class="section-title">Repayment History</h3>
+        <h3 class="section-title">Repayment Schedule</h3>
         <div class="d-flex justify-content-end download-btn">
-            <button id="downloadRepaymentHistory" class="btn btn-primary">Download Repayment History</button>
+            <button id="downloadRepaymentHistory" class="btn btn-primary">Download Repayment Schedule</button>
         </div>
         <table class="table table-bordered" id="repaymentHistoryTable">
             <thead>
@@ -199,52 +228,153 @@ $result_records= $stmt_records->get_result();
                 </tr>
             </thead>
             <tbody>
-                <?php while ($row = $result_history->fetch_assoc()): ?>
+                <?php foreach ($adjusted_history as $row): ?>
                     <tr>
-                        <td><?php echo number_format($row['amount'], 2); ?> KES</td>
+                        <td><?php echo number_format($row['amount_due'], 2); ?> KES</td>
                         <td><?php echo number_format($row['paid'], 2); ?> KES</td>
                         <td><?php echo htmlspecialchars($row['repayment_date']); ?></td>
                     </tr>
-                <?php endwhile; ?>
-                <?php if ($result_history->num_rows === 0): ?>
+                <?php endforeach; ?>
+                <?php if (empty($adjusted_history)): ?>
                     <tr><td colspan="3">No repayment history found.</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
     </div>
+    <footer class="text-center mt-5">
+        <p><em>Powered by AntonTech</em></p>
+    </footer>
     <script>
-        function downloadTableAsPDF(tableId, title) {
-            const { jsPDF } = window.jspdf;
-            const doc = new jsPDF();
+        document.addEventListener('DOMContentLoaded', function () {
+            function downloadTableAsPDF(tableId, title) {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF();
 
-            // Add title
-            doc.setFontSize(18);
-            doc.text(title, 10, 10);
+                // Add logo
+                const logoPath = "/Inua_Premium_services/assets/img/logo.png";
+                const img = new Image();
+                img.src = logoPath;
 
-            // Extract table data
-            const table = document.getElementById(tableId);
-            const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
-            const rows = Array.from(table.querySelectorAll('tbody tr')).map(row =>
-                Array.from(row.querySelectorAll('td')).map(td => td.textContent.trim())
-            );
+                img.onload = function () {
+                    // Center the logo
+                    const logoWidth = 50;
+                    const logoHeight = 30;
+                    const pageWidth = doc.internal.pageSize.getWidth();
+                    const logoX = (pageWidth - logoWidth) / 2;
+                    doc.addImage(img, 'PNG', logoX, 10, logoWidth, logoHeight);
 
-            // Add table to PDF
-            doc.autoTable({
-                head: [headers],
-                body: rows,
-                startY: 20,
+                    // Add company name below the logo on the left side
+                    doc.setFontSize(14);
+                    doc.text('Inua Premium Services', 10, 50); // Adjusted position for the company name
+
+                    // Add borrower's name on the right side of the company name
+                    doc.setFontSize(14);
+                    doc.text('Borrower: <?php echo htmlspecialchars($loan["borrower_name"]); ?>', pageWidth - 80, 50); // Adjusted position for the borrower's name
+
+                    // Add "Loan Terms" header
+                    doc.setFontSize(14);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text('Loan Terms', pageWidth / 2, 65, { align: 'center' });
+
+                    // Add "Loan Terms" table-like structure
+                    const loanTermsX = 10;
+                    const loanTermsY = 70;
+                    const loanTermsWidth = pageWidth - 20;
+
+                    // Loan details data for the first column
+                    const loanDetailsColumn1 = [
+                        ['Loan ID:', "<?php echo htmlspecialchars($loanId); ?>"],
+                        ['Released Date:', "<?php echo htmlspecialchars($loan['released_date'] ?? 'N/A'); ?>"],
+                        ['Maturity Date:', "<?php echo htmlspecialchars($loan['last_repayment_date'] ?? 'N/A'); ?>"], // Updated to use 'last_repayment_date'
+                        ['Repayment Cycle:', "<?php echo htmlspecialchars($loan['repayment_cycle'] ?? 'N/A'); ?>"],
+                        ['Principal Amount:', "<?php echo number_format($loan['principal_amount'], 2); ?> KES"],
+                        ['Duration:', "<?php echo htmlspecialchars($loan['duration'] ?? 'N/A'); ?>"]
+                    ];
+
+                    // Loan details data for the second column
+                    const loanDetailsColumn2 = [
+                        ['Phone Number:', "<?php echo htmlspecialchars($loan['phone_number']); ?>"],
+                        ['ID Number:', "<?php echo htmlspecialchars($loan['id_number']); ?>"],
+                        ['Loan Product:', "<?php echo htmlspecialchars($loan['loan_product_name']); ?>"],
+                        ['Total Amount:', "<?php echo number_format($totalDue, 2); ?> KES"],
+                        ['Total Paid:', "<?php echo number_format($totalPaid, 2); ?> KES"],
+                        ['Balance:', "<?php echo number_format($balance, 2); ?> KES"]
+                    ];
+
+                    // Calculate dynamic height based on the number of loan details
+                    const rowHeight = 7; // Height of each row
+                    const tableHeight = Math.max(loanDetailsColumn1.length, loanDetailsColumn2.length) * rowHeight + 10; // Add padding for header
+
+                    // Draw boundary
+                    doc.setDrawColor(0);
+                    doc.setLineWidth(0.5);
+                    doc.rect(loanTermsX, loanTermsY, loanTermsWidth, tableHeight);
+
+                    // Draw vertical line to split into two columns
+                    const columnSplitX = loanTermsX + loanTermsWidth / 2;
+                    doc.line(columnSplitX, loanTermsY, columnSplitX, loanTermsY + tableHeight);
+
+                    // Add loan details inside the boundary in the first column
+                    doc.setFont('helvetica', 'normal');
+                    let textY = loanTermsY + 10;
+                    const column1X = loanTermsX + 5;
+
+                    loanDetailsColumn1.forEach(detail => {
+                        const [label, value] = detail;
+                        doc.text(label, column1X, textY);
+                        doc.text(value, column1X + 50, textY); // Adjusted spacing for value
+                        textY += rowHeight;
+                    });
+
+                    // Add loan details inside the boundary in the second column
+                    textY = loanTermsY + 10; // Reset textY for the second column
+                    const column2X = columnSplitX + 5;
+
+                    loanDetailsColumn2.forEach(detail => {
+                        const [label, value] = detail;
+                        doc.text(label, column2X, textY);
+                        doc.text(value, column2X + 50, textY); // Adjusted spacing for value
+                        textY += rowHeight;
+                    });
+
+                    // Extract table data
+                    const table = document.getElementById(tableId);
+                    const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+                    const rows = Array.from(table.querySelectorAll('tbody tr')).map(row =>
+                        Array.from(row.querySelectorAll('td')).map(td => td.textContent.trim())
+                    );
+
+                    // Add table to PDF
+                    doc.autoTable({
+                        head: [headers],
+                        body: rows,
+                        startY: loanTermsY + tableHeight + 10, // Start below the "Loan Terms" section
+                        headStyles: { fontStyle: 'italic' }
+                    });
+
+                    // Add footer with sky blue text
+                    doc.setFontSize(10);
+                    doc.setFont('helvetica', 'italic');
+                    doc.setTextColor(135, 206, 235); // Sky blue color
+                    doc.text('Powered by AntonTech', pageWidth / 2, doc.internal.pageSize.getHeight() - 10, { align: 'center' });
+
+                    // Save the PDF
+                    const sanitizedBorrowerName = "<?php echo preg_replace('/[^a-zA-Z0-9]/', '_', $loan['borrower_name']); ?>";
+                    doc.save(`${sanitizedBorrowerName}_${title.replace(/\s+/g, '_').toLowerCase()}.pdf`);
+                };
+
+                img.onerror = function () {
+                    alert("Failed to load the logo. Please check the logo path.");
+                };
+            }
+
+            document.getElementById('downloadPaymentRecords').addEventListener('click', function () {
+                downloadTableAsPDF('paymentRecordsTable', 'Payment Records');
             });
 
-            // Save the PDF
-            doc.save(`${title.replace(/\s+/g, '_').toLowerCase()}.pdf`);
-        }
-
-        document.getElementById('downloadPaymentRecords').addEventListener('click', function () {
-            downloadTableAsPDF('paymentRecordsTable', 'Payment Records');
-        });
-
-        document.getElementById('downloadRepaymentHistory').addEventListener('click', function () {
-            downloadTableAsPDF('repaymentHistoryTable', 'Repayment History');
+            document.getElementById('downloadRepaymentHistory').addEventListener('click', function () {
+                downloadTableAsPDF('repaymentHistoryTable', 'Repayment Schedule');
+            });
         });
     </script>
     <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>

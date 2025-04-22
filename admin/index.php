@@ -101,6 +101,42 @@ $sql_clients_in_arrears = "SELECT COUNT(DISTINCT borrowers.id) AS clients_in_arr
 $stmt_clients_in_arrears = $conn->prepare($sql_clients_in_arrears);
 $stmt_clients_in_arrears->execute();
 $clients_in_arrears = $stmt_clients_in_arrears->get_result()->fetch_assoc()['clients_in_arrears'] ?? 0;
+
+// Fetch total due loans for today
+$sql_due_loans = "SELECT SUM(repayments.amount - repayments.paid) AS total_due_loans 
+                  FROM repayments 
+                  INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
+                  WHERE repayments.repayment_date = CURDATE() 
+                  AND loan_applications.loan_status = 'approved'";
+$stmt_due_loans = $conn->prepare($sql_due_loans);
+$stmt_due_loans->execute();
+$total_due_loans = $stmt_due_loans->get_result()->fetch_assoc()['total_due_loans'] ?? 0;
+
+// Fetch details of clients in arrears
+$sql_clients_in_arrears_details = "SELECT borrowers.full_name AS client_name, 
+                                   SUM(repayments.amount - repayments.paid) AS arrears_amount 
+                                   FROM borrowers
+                                   INNER JOIN loan_applications ON borrowers.id = loan_applications.borrower
+                                   INNER JOIN repayments ON loan_applications.id = repayments.loan_id
+                                   WHERE repayments.repayment_date < CURDATE() 
+                                     AND (repayments.amount - repayments.paid) > 0
+                                   GROUP BY borrowers.id";
+$stmt_clients_in_arrears_details = $conn->prepare($sql_clients_in_arrears_details);
+$stmt_clients_in_arrears_details->execute();
+$result_clients_in_arrears_details = $stmt_clients_in_arrears_details->get_result();
+
+// Fetch details of clients with due repayments today
+$sql_clients_due_today = "SELECT borrowers.full_name AS client_name, 
+                          SUM(repayments.amount - repayments.paid) AS due_amount 
+                          FROM borrowers
+                          INNER JOIN loan_applications ON borrowers.id = loan_applications.borrower
+                          INNER JOIN repayments ON loan_applications.id = repayments.loan_id
+                          WHERE repayments.repayment_date = CURDATE() 
+                            AND loan_applications.loan_status = 'approved'
+                          GROUP BY borrowers.id";
+$stmt_clients_due_today = $conn->prepare($sql_clients_due_today);
+$stmt_clients_due_today->execute();
+$result_clients_due_today = $stmt_clients_due_today->get_result();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -197,19 +233,19 @@ $clients_in_arrears = $stmt_clients_in_arrears->get_result()->fetch_assoc()['cli
         <div class="dashboard-metrics">
             <!-- Metrics -->
             <a href="overdue_repayments.php"><div class="metric">
-                <h2>KSH <?php echo number_format($total_arrears, 2); ?></h2>
+                <h2>KSH <?php echo number_format(ceil($total_arrears)); ?></h2>
                 <p>Total Arrears</p>
             </div></a>
             <a href="approved-loans.php"><div class="metric">
-                <h2>KSH <?php echo number_format($total_loan_amount, 2); ?></h2>
+                <h2>KSH <?php echo number_format(ceil($total_loan_amount)); ?></h2>
                 <p>Total Disbursed Loans</p>
             </div></a>
             <a href="performingBook.php"><div class="metric">
-                <h2>KSH <?php echo number_format($performing_book, 2); ?></h2>
+                <h2>KSH <?php echo number_format(ceil($performing_book)); ?></h2>
                 <p>Performing Book</p>
             </div></a>
             <div class="metric loan-book">
-                <h2>KSH <?php echo number_format($loan_book, 2); ?></h2>
+                <h2>KSH <?php echo number_format(ceil($loan_book)); ?></h2>
                 <p>Loan Book</p>
             </div>
             <div class="metric">
@@ -224,7 +260,23 @@ $clients_in_arrears = $stmt_clients_in_arrears->get_result()->fetch_assoc()['cli
                 <h2><?php echo $clients_in_arrears; ?></h2>
                 <p>Clients in Arrears</p>
             </div>
+            <div class="metric">
+                <h2>KSH <?php echo number_format(ceil($total_due_loans)); ?></h2>
+                <p>Due Loans</p>
+            </div>
         </div>
+
+        <marquee behavior="scroll" direction="left" style="background-color: #f8f9fa; padding: 10px; font-weight: bold; color: #e84545; border: 1px solid #ddd; border-radius: 5px;">
+            <?php while ($row = $result_clients_in_arrears_details->fetch_assoc()): ?>
+                <?php echo htmlspecialchars($row['client_name']) . " (Arrears: KSH " . number_format($row['arrears_amount'], 2) . ")"; ?> &nbsp;&nbsp;&nbsp;
+            <?php endwhile; ?>
+        </marquee>
+
+        <marquee behavior="scroll" direction="left" style="background-color: #f8f9fa; padding: 10px; font-weight: bold; color: #28a745; border: 1px solid #ddd; border-radius: 5px; margin-top: 10px;">
+            <?php while ($row = $result_clients_due_today->fetch_assoc()): ?>
+                <?php echo htmlspecialchars($row['client_name']) . " (Due Today: KSH " . number_format($row['due_amount'], 2) . ")"; ?> &nbsp;&nbsp;&nbsp;
+            <?php endwhile; ?>
+        </marquee>
 
         <div class="chart-container mt-5">
             <canvas id="loanChart"></canvas>

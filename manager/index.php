@@ -4,7 +4,7 @@ ini_set('display_errors', 1);
 include 'db.php';
 
 // Fetch total overdue amount for approved loans
-$sql_total_overdue = "SELECT SUM(amount - paid) AS total_overdue 
+$sql_total_overdue = "SELECT CEIL(SUM(amount - paid)) AS total_overdue 
                       FROM repayments 
                       INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
                       WHERE repayment_date < CURDATE() 
@@ -15,7 +15,7 @@ $stmt_total_overdue->execute();
 $total_overdue_amount = $stmt_total_overdue->get_result()->fetch_assoc()['total_overdue'] ?? 0;
 
 // Fetch total paid amount for approved loans
-$sql_total_paid = "SELECT SUM(paid) AS total_paid 
+$sql_total_paid = "SELECT CEIL(SUM(paid)) AS total_paid 
                    FROM repayments 
                    INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
                    WHERE loan_applications.loan_status = 'approved'";
@@ -23,19 +23,16 @@ $stmt_total_paid = $conn->prepare($sql_total_paid);
 $stmt_total_paid->execute();
 $total_paid_amount = $stmt_total_paid->get_result()->fetch_assoc()['total_paid'] ?? 0;
 
-// Calculate total arrears
+// Calculate total arrears (overdue repayments)
 $total_arrears = $total_overdue_amount;
 
-// Fetch total disbursed loans
-$sql_total_loans = "SELECT SUM(total_amount) AS total_loans 
+// Fetch total disbursed loans (including interest)
+$sql_total_loans = "SELECT CEIL(SUM(loan_applications.total_amount)) AS total_loans 
                     FROM loan_applications 
                     WHERE loan_status = 'approved'";
 $stmt_total_loans = $conn->prepare($sql_total_loans);
 $stmt_total_loans->execute();
 $total_loan_amount = $stmt_total_loans->get_result()->fetch_assoc()['total_loans'] ?? 0;
-
-// Calculate Portfolio at Risk (PAR)
-$par = ($total_loan_amount > 0) ? ($total_arrears / $total_loan_amount) * 100 : 0;
 
 // Calculate Performing Book
 $performing_book = max(0, $total_loan_amount - $total_arrears - $total_paid_amount);
@@ -43,8 +40,11 @@ $performing_book = max(0, $total_loan_amount - $total_arrears - $total_paid_amou
 // Calculate Loan Book
 $loan_book = $performing_book + $total_arrears;
 
+// Calculate Portfolio at Risk (PAR)
+$par = ($total_loan_amount > 0) ? ($total_arrears / $total_loan_amount) * 100 : 0;
+
 // Fetch total performing loans
-$sql_total_performing = "SELECT SUM(amount - paid) AS total_performing 
+$sql_total_performing = "SELECT CEIL(SUM(amount - paid)) AS total_performing 
                          FROM repayments 
                          INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
                          WHERE loan_applications.loan_status = 'approved' 
@@ -53,8 +53,11 @@ $stmt_total_performing = $conn->prepare($sql_total_performing);
 $stmt_total_performing->execute();
 $total_performing_loans = $stmt_total_performing->get_result()->fetch_assoc()['total_performing'] ?? 0;
 
-// Fetch total number of clients
-$sql_total_clients = "SELECT COUNT(*) AS total_clients FROM borrowers";
+// Fetch total number of approved clients
+$sql_total_clients = "SELECT COUNT(DISTINCT borrowers.id) AS total_clients 
+                      FROM borrowers
+                      INNER JOIN loan_applications ON borrowers.id = loan_applications.borrower
+                      WHERE loan_applications.loan_status = 'approved'";
 $stmt_total_clients = $conn->prepare($sql_total_clients);
 $stmt_total_clients->execute();
 $total_clients = $stmt_total_clients->get_result()->fetch_assoc()['total_clients'] ?? 0;
@@ -70,6 +73,17 @@ $stmt_clients_in_arrears = $conn->prepare($sql_clients_in_arrears);
 $stmt_clients_in_arrears->execute();
 $clients_in_arrears = $stmt_clients_in_arrears->get_result()->fetch_assoc()['clients_in_arrears'] ?? 0;
 
+// Fetch total due loans
+$sql_due_loans = "SELECT CEIL(SUM(amount - paid)) AS total_due_loans 
+                  FROM repayments 
+                  INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
+                  WHERE repayment_date = CURDATE() 
+                  AND loan_applications.loan_status = 'approved' 
+                  AND (amount - paid) > 0";
+$stmt_due_loans = $conn->prepare($sql_due_loans);
+$stmt_due_loans->execute();
+$total_due_loans = $stmt_due_loans->get_result()->fetch_assoc()['total_due_loans'] ?? 0;
+
 // Query for upcoming repayments
 $sql_due = "SELECT 
                 borrowers.full_name,
@@ -77,7 +91,7 @@ $sql_due = "SELECT
                 loan_applications.loan_product,
                 loan_applications.total_amount, 
                 SUM(repayments.amount - repayments.paid) AS total_amount_due, 
-                MIN(repayments.repayment_date) AS next_due_date 
+                DATE_FORMAT(MIN(repayments.repayment_date), '%d/%m/%Y') AS next_due_date 
             FROM repayments 
             INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
             INNER JOIN borrowers ON loan_applications.borrower = borrowers.id 
@@ -95,7 +109,7 @@ $sql_overdue = "SELECT borrowers.full_name,
                        loan_applications.loan_product, 
                        loan_applications.loan_status, 
                        SUM(repayments.amount - repayments.paid) AS total_amount, 
-                       MIN(repayments.repayment_date) AS earliest_due_date 
+                       DATE_FORMAT(MIN(repayments.repayment_date), '%d/%m/%Y') AS earliest_due_date 
                 FROM repayments 
                 INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
                 INNER JOIN borrowers ON loan_applications.borrower = borrowers.id 
@@ -205,19 +219,19 @@ $result_overdue = $stmt_overdue->get_result();
         <div class="dashboard-metrics">
             <!-- Metrics -->
             <a href="overdue_repayments.php"><div class="metric">
-                <h2>KSH <?php echo number_format($total_arrears, 2); ?></h2>
+                <h2>KSH <?php echo number_format(ceil($total_arrears)); ?></h2>
                 <p>Total Arrears</p>
             </div></a>
             <a href="approved-loans.php"><div class="metric">
-                <h2>KSH <?php echo number_format($total_loan_amount, 2); ?></h2>
+                <h2>KSH <?php echo number_format(ceil($total_loan_amount)); ?></h2>
                 <p>Total Disbursed Loans</p>
             </div></a>
             <a href="performingBook.php"><div class="metric">
-                <h2>KSH <?php echo number_format($performing_book, 2); ?></h2>
+                <h2>KSH <?php echo number_format(ceil($performing_book)); ?></h2>
                 <p>Performing Book</p>
             </div></a>
             <div class="metric loan-book">
-                <h2>KSH <?php echo number_format($loan_book, 2); ?></h2>
+                <h2>KSH <?php echo number_format(ceil($loan_book)); ?></h2>
                 <p>Loan Book</p>
             </div>
             <div class="metric">
@@ -232,24 +246,56 @@ $result_overdue = $stmt_overdue->get_result();
                 <h2><?php echo $clients_in_arrears; ?></h2>
                 <p>Clients in Arrears</p>
             </div>
+            <a href="due_loans.php"><div class="metric">
+                <h2>KSH <?php echo number_format(ceil($total_due_loans)); ?></h2>
+                <p>Due Loans</p>
+            </div></a>
         </div>
 
-        <div class="chart-container mt-5">
-            <canvas id="loanChart"></canvas>
+        <div class="chart-container mt-5 d-flex flex-wrap justify-content-center">
+            <!-- Pie Chart for PAR -->
+            <div style="flex: 1; min-width: 300px; max-width: 400px;">
+                <canvas id="parPieChart" style="width: 100%; height: 300px;"></canvas>
+            </div>
+            <!-- Bar Chart for Loan Metrics -->
+            <div style="flex: 1; min-width: 300px; max-width: 400px;">
+                <canvas id="loanChart" style="width: 100%; height: 300px;"></canvas>
+            </div>
         </div>
     </div>
 </main>
 
 <script>
-    const ctx = document.getElementById('loanChart').getContext('2d');
-    new Chart(ctx, {
+    // Pie Chart for PAR
+    new Chart(document.getElementById('parPieChart'), {
+        type: 'pie',
+        data: {
+            labels: ['At Risk', 'Performing'],
+            datasets: [{
+                data: [<?php echo $par; ?>, <?php echo 100 - $par; ?>],
+                backgroundColor: ['#ef5350', '#42a5f5']
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'bottom'
+                }
+            }
+        }
+    });
+
+    // Bar Chart for Loan Metrics
+    new Chart(document.getElementById('loanChart'), {
         type: 'bar',
         data: {
-            labels: ['Total Disbursed Loans', 'Total Overdue', 'Portfolio At Risk'],
+            labels: ['Total Principal', 'Performing Book', 'Loan Book'],
             datasets: [{
                 label: 'Loan Metrics',
-                data: [<?php echo $total_loan_amount; ?>, <?php echo $total_arrears; ?>, <?php echo $par; ?>],
-                backgroundColor: ['#42a5f5', '#ef5350', '#ffca28']
+                data: [<?php echo $total_loan_amount; ?>, <?php echo $performing_book; ?>, <?php echo $loan_book; ?>],
+                backgroundColor: ['#42a5f5', '#66bb6a', '#ffca28']
             }]
         },
         options: {

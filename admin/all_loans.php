@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Loan Applications</title>
+    <title>All Loans</title>
     <link href="/assets/img/logo.png" rel="icon">
     <link href="/assets/img/logo.png" rel="apple-touch-icon">
     <link href="https://fonts.googleapis.com/css2?family=Open+Sans&family=Montserrat&family=Poppins&display=swap" rel="stylesheet">
@@ -13,96 +13,48 @@
     <link href="assets/css/style.css" rel="stylesheet">
     <style>
         body {
+            font-family: 'Poppins', sans-serif;
             background-color: #f8f9fa;
-            color: #212529;
-            font-family: 'Open Sans', sans-serif;
-            margin: 0;
         }
-
-        .header {
-            background-color: #e84545;
-            color: #ffffff;
-            padding: 10px 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .header .logo h1 {
-            color: #ffffff;
-            margin: 0;
-            font-size: 24px;
-        }
-
-        .header .navmenu ul {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-            display: flex;
-        }
-
-        .header .navmenu ul li {
-            margin-right: 20px;
-        }
-
-        .header .navmenu ul li a {
-            color: #ffffff;
-            text-decoration: none;
-        }
-
-        .header .navmenu ul li a.active,
-        .header .navmenu ul li a:hover {
-            color: #e84545;
-        }
-
-        .sidebar {
-            background-color: #ffffff;
-            color: #3a3939;
-            padding: 20px;
-            width: 250px;
-            position: fixed;
-            height: 100%;
-            overflow: auto;
-        }
-
-        .sidebar .nav-item .nav-link {
-            color: #3a3939;
-            padding: 10px 15px;
-            text-decoration: none;
-            display: block;
-        }
-
-        .sidebar .nav-item .nav-link.active,
-        .sidebar .nav-item .nav-link:hover {
-            color: #e84545;
-        }
-
-        .main {
-            margin-left: 270px;
-            padding: 20px;
-        }
-
         .container {
-            margin-top: 20px;
+            margin-top: 30px;
         }
-
-        table {
+        .table-container {
+            overflow-x: auto;
+            background-color: #ffffff;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+        }
+        .table {
             width: 100%;
-            margin-bottom: 1rem;
-            background-color: #fff;
+            border-collapse: collapse;
         }
-
-        table thead th {
-            vertical-align: bottom;
+        .table thead th {
+            background-color: #007bff;
+            color: #ffffff;
+            text-align: center;
+            padding: 10px;
             border-bottom: 2px solid #dee2e6;
         }
-
-        table tbody tr {
+        .table tbody tr:nth-child(odd) {
+            background-color: #f9f9f9;
+        }
+        .table tbody tr:hover {
+            background-color: #f1f1f1;
+        }
+        .table tbody td {
+            padding: 10px;
+            text-align: center;
             border-bottom: 1px solid #dee2e6;
         }
-
-        table tbody td {
-            vertical-align: middle;
+        .btn-primary {
+            background-color: #007bff;
+            border: none;
+            transition: background-color 0.3s ease;
+        }
+        .btn-primary:hover {
+            background-color: #0056b3;
         }
     </style>
 </head>
@@ -111,164 +63,62 @@
     <?php 
     include '../includes/functions.php';
     include 'includes/header.php'; 
-    ?>
-    <div class="sidebar">
-        <?php include '../includes/sidebar.php'; ?>
-    </div>
-    <?php
     include 'db.php';
 
-    // Function to update loan status
-    function updateLoanStatus($loan_id, $status) {
-        global $conn;
-        $sql = "UPDATE loan_applications SET loan_status = ? WHERE id = ?";
-        $stmt = $conn->prepare($sql);
-        $stmt->bind_param("si", $status, $loan_id);
-        if ($stmt->execute()) {
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    // Check for approve or deny actions
-    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        $loan_id = $_POST['loan_id'];
-        $action = $_POST['action'];
-        $status = ($action === 'approve') ? 'approved' : 'denied';
-
-        if (updateLoanStatus($loan_id, $status)) {
-            echo "<div class='alert alert-success'>Loan $action successfully.</div>";
-        } else {
-            echo "<div class='alert alert-danger'>Failed to $action the loan.</div>";
-        }
-    }
-
-    // Function to get loans
-    function getLoans() {
-        global $conn;
-        $loans = array();
-
-        $sql = "SELECT 
-                    l.id, 
+    // Fetch all loans
+    $sql_loans = "SELECT 
+                    l.id AS loan_id, 
                     b.full_name AS borrower_name, 
                     p.name AS loan_product_name, 
                     l.principal, 
-                    l.interest, 
-                    l.interest_method, 
-                    l.loan_interest, 
                     l.loan_duration, 
-                    l.repayment_cycle, 
-                    l.number_of_repayments, 
-                    l.processing_fee, 
-                    l.registration_fee, 
-                    l.total_amount, 
-                    l.loan_release_date,
-                    l.loan_status
-                FROM loan_applications l 
-                INNER JOIN borrowers b ON l.borrower = b.id 
-                INNER JOIN loan_products p ON l.loan_product = p.id";
+                    l.loan_status, 
+                    DATE_FORMAT(loan_release_date, '%d/%m/%Y') AS formatted_date 
+                  FROM 
+                    loan_applications l
+                  INNER JOIN 
+                    borrowers b ON l.borrower = b.id
+                  INNER JOIN 
+                    loan_products p ON l.loan_product = p.id
+                  ORDER BY l.loan_status, b.full_name";
 
-        $result = $conn->query($sql);
-
-        if ($result === FALSE) {
-            echo "Error: " . $conn->error;
-            return $loans;
-        }
-
-        if ($result->num_rows > 0) {
-            while($row = $result->fetch_assoc()) {
-                $loans[] = $row;
-            }
-        } else {
-            echo "No records found.";
-        }
-
-        return $loans;
-    }
-    
-    $loans = getLoans();
+    $result_loans = $conn->query($sql_loans);
     ?>
-    <main class="main">
-        <section class="section">
-            <div class="container">
-                <h1>Loan Applications</h1>
-                <a href="generate_pdf.php" class="btn btn-primary">Export Report as PDF</a>
-                <table class="table table-bordered">
-                    <thead>
+    <div class="container">
+        <h2 class="text-center mb-4">All Loans</h2>
+        <div class="table-container">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Borrower</th>
+                        <th>Loan Product</th>
+                        <th>Principal Amount (KSH)</th>
+                        <th>Duration (Months)</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if ($result_loans->num_rows > 0): ?>
+                        <?php while ($row = $result_loans->fetch_assoc()): ?>
+                            <tr>
+                                <td><?php echo htmlspecialchars($row['borrower_name']); ?></td>
+                                <td><?php echo htmlspecialchars($row['loan_product_name']); ?></td>
+                                <td><?php echo number_format(ceil($row['principal'])); ?></td>
+                                <td><?php echo htmlspecialchars($row['loan_duration']); ?></td>
+                                <td><?php echo ucfirst(htmlspecialchars($row['loan_status'])); ?></td>
+                            </tr>
+                        <?php endwhile; ?>
+                    <?php else: ?>
                         <tr>
-                            <th>ID</th>
-                            <th>Borrower</th>
-                            <th>Loan Product</th>
-                            <th>Principal</th>
-                            <th>Interest</th>
-                            <th>Interest Method</th>
-                            <th>Loan Interest %</th>
-                            <th>Duration (months)</th>
-                            <th>Repayment Cycle</th>
-                            <th>Number of Repayments</th>
-                            <th>Processing Fee %</th>
-                            <th>Registration Fee %</th>
-                            <th>Total Amount</th>
-                            <th>Loan Release Date</th>
-                            <th>Status</th>
-                            <th>Actions</th>
+                            <td colspan="5" class="text-center">No loan records found.</td>
                         </tr>
-                    </thead>
-                    <tbody>
-                        <?php
-                        if (count($loans) > 0) {
-                            foreach ($loans as $loan) {
-                                echo "<tr>
-                                    <td>{$loan['id']}</td>
-                                    <td>{$loan['borrower_name']}</td>
-                                    <td>{$loan['loan_product_name']}</td>
-                                    <td>{$loan['principal']}</td>
-                                    <td>{$loan['interest']}</td>
-                                    <td>{$loan['interest_method']}</td>
-                                    <td>{$loan['loan_interest']}</td>
-                                    <td>{$loan['loan_duration']}</td>
-                                    <td>{$loan['repayment_cycle']}</td>
-                                    <td>{$loan['number_of_repayments']}</td>
-                                    <td>{$loan['processing_fee']}</td>
-                                    <td>{$loan['registration_fee']}</td>
-                                    <td>{$loan['total_amount']}</td>
-                                    <td>{$loan['loan_release_date']}</td>
-                                    <td>{$loan['loan_status']}</td>
-                                    <td>
-                                        <form method='POST' style='display:inline-block;'>
-                                            <input type='hidden' name='loan_id' value='{$loan['id']}'>
-                                            <input type='hidden' name='action' value='approve'>
-                                            <button type='submit' class='btn btn-success btn-sm'>Approve</button>
-                                        </form>
-                                        <form method='POST' style='display:inline-block;'>
-                                            <input type='hidden' name='loan_id' value='{$loan['id']}'>
-                                            <input type='hidden' name='action' value='deny'>
-                                            <button type='submit' class='btn btn-danger btn-sm'>Deny</button>
-                                        </form>
-                                        <!-- Add Guarantors Button -->
-                                        <form method='GET' action='manage_guarantors.php' style='display:inline-block;'>
-                                            <input type='hidden' name='loan_id' value='{$loan['id']}'>
-                                            <button type='submit' class='btn btn-warning btn-sm'>Add Guarantors</button>
-                                        </form>
-                                    </td>
-                                </tr>";
-                            }
-                        } else {
-                            echo "<tr><td colspan='15'>No loans found</td></tr>";
-                        }
-                        ?>
-                    </tbody>
-                </table>
-            </div>
-        </section>
-    </main>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
 
     <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
-    <script src="assets/vendor/aos/aos.js"></script>
-    <script src="assets/vendor/glightbox/js/glightbox.min.js"></script>
-    <script src="assets/vendor/swiper/swiper-bundle.min.js"></script>
-    <script src="assets/js/main.js"></script>
 </body>
 
 </html>

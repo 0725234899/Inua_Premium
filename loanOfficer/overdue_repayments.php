@@ -64,8 +64,8 @@ $result_overdue->data_seek(0); // Reset result pointer for display
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, 1.0">
-    <title>Repayments</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Overdue Repayments</title>
     <link href="/assets/img/logo.png" rel="icon">
     <link href="/assets/img/logo.png" rel="apple-touch-icon">
     <link href="https://fonts.googleapis.com/css2?family=Open+Sans&family=Montserrat&family=Poppins&display=swap" rel="stylesheet">
@@ -171,10 +171,13 @@ $result_overdue->data_seek(0); // Reset result pointer for display
     </div>
     <main class="main">
         <section class="section">
-            <div class="table-container">
-                <h2 class="text-center">Overdue Repayments</h2>
-                <p class="text-center"><strong>Total Overdue:</strong> KSH <?= number_format($total_overdue, 2); ?></p>
-                <p class="text-center"><strong>Total Overdue Count:</strong> <?= $total_overdue_count; ?></p>
+            <div class="container">
+                <a href="index.php" class="btn btn-primary mb-3">
+                    <i class="bi bi-arrow-left"></i> Back to Dashboard
+                </a>
+                <h2 class="text-center">Arrears List</h2>
+                <p class="text-center"><strong>Total Arrears:</strong> KSH <?= number_format($total_overdue, 2); ?></p>
+                <p class="text-center"><strong>Total clients in arrears:</strong> <?= $total_overdue_count; ?></p>
 
                 <!-- Search Input -->
                 <div class="mb-3">
@@ -236,9 +239,8 @@ $result_overdue->data_seek(0); // Reset result pointer for display
                                     if ($currentBorrower !== $row['borrower_name'] && $currentBorrower !== null): 
                         ?>
                                         <tr>
-                                            <td colspan="2" style="font-weight: bold;">Subtotal for <?= htmlspecialchars($currentBorrower); ?>:</td>
-                                            <td style="font-weight: bold;">KSH <?= number_format($borrowerSubtotal, 2); ?></td>
-                                            <td></td>
+                                            <td colspan="3" style="font-weight: bold;">Subtotal for <?= htmlspecialchars($currentBorrower); ?>:</td>
+                                            <td style="font-weight: bold; text-align: right;">KSH <?= number_format($borrowerSubtotal, 2); ?></td>
                                         </tr>
                         <?php 
                                         $borrowerSubtotal = 0; // Reset subtotal for the next borrower
@@ -261,9 +263,8 @@ $result_overdue->data_seek(0); // Reset result pointer for display
                             if ($currentBorrower !== null): 
                         ?>
                                 <tr>
-                                    <td colspan="2" style="font-weight: bold;">Subtotal for <?= htmlspecialchars($currentBorrower); ?>:</td>
-                                    <td style="font-weight: bold;">KSH <?= number_format($borrowerSubtotal, 2); ?></td>
-                                    <td></td>
+                                    <td colspan="3" style="font-weight: bold;">Subtotal for <?= htmlspecialchars($currentBorrower); ?>:</td>
+                                    <td style="font-weight: bold; text-align: right;">KSH <?= number_format($borrowerSubtotal, 2); ?></td>
                                 </tr>
                         <?php 
                             endif;
@@ -302,10 +303,15 @@ $result_overdue->data_seek(0); // Reset result pointer for display
             doc.setFontSize(18);
             doc.text('Overdue Repayments', 10, 10);
 
+            // Add loan officer's name
+            const loanOfficerName = "<?= htmlspecialchars($_SESSION['email']); ?>"; // Loan officer's email
+            doc.setFontSize(12);
+            doc.text(`Loan Officer: ${loanOfficerName}`, 10, 20);
+
             // Add table
             const table = document.getElementById('overdueTable');
             const rows = table.querySelectorAll('tr');
-            let y = 20;
+            let y = 30;
 
             rows.forEach((row, index) => {
                 const cells = row.querySelectorAll('td, th');
@@ -324,7 +330,7 @@ $result_overdue->data_seek(0); // Reset result pointer for display
             });
 
             // Save the PDF
-            doc.save('Overdue_Repayments.pdf');
+            doc.save(`Overdue_Repayments_${loanOfficerName}.pdf`);
         });
     </script>
 
