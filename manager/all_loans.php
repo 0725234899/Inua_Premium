@@ -150,24 +150,15 @@
         $loans = array();
 
         $sql = "SELECT 
-                    l.id, 
+                    l.id AS loan_id, 
                     b.full_name AS borrower_name, 
-                    p.name AS loan_product_name, 
                     l.principal, 
-                    l.interest, 
-                    l.interest_method, 
-                    l.loan_interest, 
-                    l.loan_duration, 
-                    l.repayment_cycle, 
-                    l.number_of_repayments, 
-                    l.processing_fee, 
-                    l.registration_fee, 
+                    l.loan_duration AS duration, 
+                    l.number_of_repayments AS repayments_count, 
                     l.total_amount, 
-                    l.loan_release_date,
-                    l.loan_status
+                    l.loan_status AS status
                 FROM loan_applications l 
-                INNER JOIN borrowers b ON l.borrower = b.id 
-                INNER JOIN loan_products p ON l.loan_product = p.id";
+                INNER JOIN borrowers b ON l.borrower = b.id";
 
         $result = $conn->query($sql);
 
@@ -194,70 +185,43 @@
             <div class="container">
                 <h1>Loan Applications</h1>
                 <a href="generate_pdf.php" class="btn btn-primary">Export Report as PDF</a>
-                <table class="table table-bordered">
+                <table class="table table-striped">
                     <thead>
                         <tr>
-                            <th>ID</th>
-                            <th>Borrower</th>
-                            <th>Loan Product</th>
+                            <th>Borrower's Name</th>
                             <th>Principal</th>
-                            <th>Interest</th>
-                            <th>Interest Method</th>
-                            <th>Loan Interest %</th>
-                            <th>Duration (months)</th>
-                            <th>Repayment Cycle</th>
-                            <th>Number of Repayments</th>
-                            <th>Processing Fee %</th>
-                            <th>Registration Fee %</th>
+                            <!-- Duration column hidden -->
+                            <!-- Number of Repayments column hidden -->
                             <th>Total Amount</th>
-                            <th>Loan Release Date</th>
                             <th>Status</th>
-                            <th>Actions</th>
+                            <th>Action</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php
-                        if (count($loans) > 0) {
-                            foreach ($loans as $loan) {
-                                echo "<tr>
-                                    <td>{$loan['id']}</td>
-                                    <td>{$loan['borrower_name']}</td>
-                                    <td>{$loan['loan_product_name']}</td>
-                                    <td>{$loan['principal']}</td>
-                                    <td>{$loan['interest']}</td>
-                                    <td>{$loan['interest_method']}</td>
-                                    <td>{$loan['loan_interest']}</td>
-                                    <td>{$loan['loan_duration']}</td>
-                                    <td>{$loan['repayment_cycle']}</td>
-                                    <td>{$loan['number_of_repayments']}</td>
-                                    <td>{$loan['processing_fee']}</td>
-                                    <td>{$loan['registration_fee']}</td>
-                                    <td>{$loan['total_amount']}</td>
-                                    <td>{$loan['loan_release_date']}</td>
-                                    <td>{$loan['loan_status']}</td>
-                                    <td>
-                                        <form method='POST' style='display:inline-block;'>
-                                            <input type='hidden' name='loan_id' value='{$loan['id']}'>
-                                            <input type='hidden' name='action' value='approve'>
-                                            <button type='submit' class='btn btn-success btn-sm'>Approve</button>
-                                        </form>
-                                        <form method='POST' style='display:inline-block;'>
-                                            <input type='hidden' name='loan_id' value='{$loan['id']}'>
-                                            <input type='hidden' name='action' value='deny'>
-                                            <button type='submit' class='btn btn-danger btn-sm'>Deny</button>
-                                        </form>
-                                        <!-- Add Guarantors Button -->
-                                        <form method='GET' action='manage_guarantors.php' style='display:inline-block;'>
-                                            <input type='hidden' name='loan_id' value='{$loan['id']}'>
-                                            <button type='submit' class='btn btn-warning btn-sm'>Add Guarantors</button>
-                                        </form>
-                                    </td>
-                                </tr>";
-                            }
-                        } else {
-                            echo "<tr><td colspan='15'>No loans found</td></tr>";
-                        }
-                        ?>
+                        <?php foreach ($loans as $loan): ?>
+                            <tr>
+                                <td><?= htmlspecialchars($loan['borrower_name']); ?></td>
+                                <td><?= number_format($loan['principal'], 2); ?> KES</td>
+                                <!-- Duration column hidden -->
+                                <!-- Number of Repayments column hidden -->
+                                <td><?= number_format($loan['total_amount'], 2); ?> KES</td>
+                                <td><?= htmlspecialchars($loan['status']); ?></td>
+                                <td>
+                                    <!-- Approve Button -->
+                                    <form method="POST" style="display:inline-block;">
+                                        <input type="hidden" name="loan_id" value="<?= $loan['loan_id']; ?>">
+                                        <input type="hidden" name="action" value="approve">
+                                        <button type="submit" class="btn btn-success btn-sm">Approve</button>
+                                    </form>
+                                    <!-- Deny Button -->
+                                    <form method="POST" style="display:inline-block;">
+                                        <input type="hidden" name="loan_id" value="<?= $loan['loan_id']; ?>">
+                                        <input type="hidden" name="action" value="deny">
+                                        <button type="submit" class="btn btn-danger btn-sm">Deny</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
                     </tbody>
                 </table>
             </div>

@@ -67,12 +67,16 @@ ini_set('display_startup_errors', 1); error_reporting(E_ALL);
     <?php
     include 'db.php';
 
-    // Query to get performing book data
+    // Get the selected day from the request or default to all days
+    $selected_day = isset($_GET['day']) ? $_GET['day'] : 'all';
+    $day_filter = ($selected_day !== 'all') ? "AND DAYNAME(l.loan_release_date) = ?" : "";
+
+    // Query to get performing book data filtered by day
     $email = $_SESSION['email'];
     $sql_performing = "SELECT 
                         l.id AS loan_id,
                         b.full_name AS borrower_name,
-                        l.loan_release_date,
+                        DATE_FORMAT(l.loan_release_date, '%d/%m/%Y') AS loan_release_date,
                         l.principal,
                         p.name AS loan_product_name,
                         SUM(r.amount) AS total_amount,
@@ -87,16 +91,52 @@ ini_set('display_startup_errors', 1); error_reporting(E_ALL);
                     LEFT JOIN 
                         repayments r ON l.id = r.loan_id
                     WHERE 
-                        l.loan_status = 'approved' AND b.loan_officer = '$email'
+                        l.loan_status = 'approved' 
+                        AND b.loan_officer = '$email'
+                        $day_filter
                     GROUP BY 
                         l.id, b.full_name, p.name";
 
-    $result_performing = $conn->query($sql_performing);
+    $stmt_performing = $conn->prepare($sql_performing);
+    if ($selected_day !== 'all') {
+        $stmt_performing->bind_param("s", $selected_day);
+    }
+    $stmt_performing->execute();
+    $result_performing = $stmt_performing->get_result();
     ?>
     <main class="main">
         <section class="section">
             <div class="table-container">
                 <h2 class="text-center">Performing Book</h2>
+
+                <!-- Day Tabs -->
+                <ul class="nav nav-tabs justify-content-center mt-3">
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'all') ? 'active' : '' ?>" href="?day=all">All Days</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Monday') ? 'active' : '' ?>" href="?day=Monday">Monday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Tuesday') ? 'active' : '' ?>" href="?day=Tuesday">Tuesday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Wednesday') ? 'active' : '' ?>" href="?day=Wednesday">Wednesday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Thursday') ? 'active' : '' ?>" href="?day=Thursday">Thursday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Friday') ? 'active' : '' ?>" href="?day=Friday">Friday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Saturday') ? 'active' : '' ?>" href="?day=Saturday">Saturday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Sunday') ? 'active' : '' ?>" href="?day=Sunday">Sunday</a>
+                    </li>
+                </ul>
+
                 <div class="d-flex justify-content-between mb-3">
                     <button id="downloadButton" class="btn btn-primary">Download PDF</button>
                     <input type="text" id="searchInput" placeholder="Search by borrower or product..." class="form-control" style="width: 300px;">
@@ -123,10 +163,10 @@ ini_set('display_startup_errors', 1); error_reporting(E_ALL);
                                         <td><a href='repayment_details.php?loanId={$row['loan_id']}'>{$row['borrower_name']}</a></td>
                                         <td>{$row['loan_product_name']}</td>
                                         <td>{$row['loan_release_date']}</td>
-                                        <td>KSH " . number_format($row['principal'], 2) . "</td>
-                                        <td>KSH " . number_format($row['total_amount'], 2) . "</td>
-                                        <td>KSH " . number_format($row['total_paid'], 2) . "</td>
-                                        <td>KSH " . number_format($row['loan_balance'], 2) . "</td>
+                                        <td>KSH " . number_format(ceil($row['principal'])) . "</td>
+                                        <td>KSH " . number_format(ceil($row['total_amount'])) . "</td>
+                                        <td>KSH " . number_format(ceil($row['total_paid'])) . "</td>
+                                        <td>KSH " . number_format(ceil($row['loan_balance'])) . "</td>
                                       </tr>";
                             }
                         } else {

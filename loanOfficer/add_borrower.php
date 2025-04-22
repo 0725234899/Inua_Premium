@@ -172,11 +172,9 @@ include("includes/header.php");
         
         Mobile: <input type="text" name="mobile" class="form-control"><br>
         
-        Email: <input type="email" name="email" class="form-control"><br>
-        
         <!-- Hidden Fields for Loan Data -->
         <input type="number" step="0.01" value="0.00" class="form-control" name="total_paid" hidden><br>
-        <input type="number" value="0.00" step="0.01" class="form-control" name="open_loans_balance" hidden><br>
+        <input type="number" step="0.01" value="0.00" class="form-control" name="open_loans_balance" hidden><br>
         
         Working Status: <input type="text" name="status" class="form-control"><br>
 

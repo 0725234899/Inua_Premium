@@ -233,8 +233,8 @@ $result_loans = $stmt_loans->get_result();
     </a>
 </td>
 
-                                        <td><?php echo number_format($loan['total_amount'], 2); ?></td>
-                                        <td><?php echo number_format($outstanding_loans, 2) ?></td>
+                                        <td><?php echo number_format(ceil($loan['total_amount'])); ?></td>
+                                        <td><?php echo number_format(ceil($outstanding_loans)); ?></td>
                                         <td><?php echo htmlspecialchars($loan['loan_release_date']); ?></td>
                                        
                                     </tr>

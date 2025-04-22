@@ -355,3 +355,14 @@
     <script src="assets/js/main.js"></script>
 </body>
 </html>
+<?php
+$sql = "SELECT 
+            id, 
+            borrower, 
+            loan_product, 
+            principal, 
+            interest, 
+            DATE_FORMAT(application_date, '%d/%m/%Y') AS formatted_application_date, 
+            DATE_FORMAT(loan_release_date, '%d/%m/%Y') AS formatted_loan_release_date 
+        FROM loan_applications";
+?>

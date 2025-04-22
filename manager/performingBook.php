@@ -9,7 +9,7 @@ include("includes/header.php");
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Loan Applications</title>
+    <title>Performing Book</title>
     <link href="/assets/img/logo.png" rel="icon">
     <link href="/assets/img/logo.png" rel="apple-touch-icon">
     <link href="https://fonts.googleapis.com/css2?family=Open+Sans&family=Montserrat&family=Poppins&display=swap" rel="stylesheet">
@@ -201,17 +201,17 @@ include("includes/header.php");
                         <?php
                         if (count($loans) > 0) {
                             foreach ($loans as $loan) {
-                                $balance=$loan['total_amount']-$loan['total_paid_amount'];
-                                $loanId=$loan['id'];
+                                $balance = $loan['total_amount'] - $loan['total_paid_amount'];
+                                $loanId = $loan['id'];
                                 echo "<tr>
-                                    <td><a href='repayment_details.php?loanId=$loanId'>{$loan['id']}</a></td>
-                                    <td><a href='repayment_details.php?loanId=$loanId'>{$loan['borrower_name']}</a></td>
-                                    <td>{$loan['loan_release_date']}</td>
-                                    <td>{$loan['principal']}</td>
-                                    <td>{$loan['loan_product_name']}</td>
-                                    <td>{$loan['total_amount']}</td>
-                                    <td><a href='repayment_details.php?loanId=$loanId'>{$loan['total_paid_amount']}</a></td>
-                                    <td>{$balance}</td>
+                                    <td><a href='repayment_details.php?loanId=" . htmlspecialchars($loanId) . "'>" . htmlspecialchars($loan['id']) . "</a></td>
+                                    <td><a href='repayment_details.php?loanId=" . htmlspecialchars($loanId) . "'>" . htmlspecialchars($loan['borrower_name']) . "</a></td>
+                                    <td>" . htmlspecialchars($loan['loan_release_date']) . "</td>
+                                    <td>" . number_format(ceil($loan['principal'])) . "</td>
+                                    <td>" . htmlspecialchars($loan['loan_product_name']) . "</td>
+                                    <td>" . number_format(ceil($loan['total_amount'])) . "</td>
+                                    <td><a href='repayment_details.php?loanId=" . htmlspecialchars($loanId) . "'>" . number_format(ceil($loan['total_paid_amount'])) . "</a></td>
+                                    <td>" . number_format(ceil($balance)) . "</td>
                                 </tr>";
                             }
                         } else {
