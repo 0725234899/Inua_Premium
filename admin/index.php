@@ -266,6 +266,10 @@ $result_clients_due_today = $stmt_clients_due_today->get_result();
             </div>
         </div>
 
+        <div class="d-flex justify-content-end mt-3">
+            <a href="add_savings_client.php" class="btn btn-success">Add Savings Client</a>
+        </div>
+
         <marquee behavior="scroll" direction="left" style="background-color: #f8f9fa; padding: 10px; font-weight: bold; color: #e84545; border: 1px solid #ddd; border-radius: 5px;">
             <?php while ($row = $result_clients_in_arrears_details->fetch_assoc()): ?>
                 <?php echo htmlspecialchars($row['client_name']) . " (Arrears: KSH " . number_format($row['arrears_amount'], 2) . ")"; ?> &nbsp;&nbsp;&nbsp;

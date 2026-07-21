@@ -119,8 +119,21 @@ $roles = getRoles();
                                         <td><?php echo htmlspecialchars($officer['phone']); ?></td>
                                         <td><?php echo getRole($officer['role_id'])['name'];?></td>
                                         <td>
-                                            <a href="edit_loan_officer.php?id=<?php echo htmlspecialchars($officer['id']); ?>" class="btn btn-primary">Edit</a>
-                                            <a href="delete_loan_officer.php?id=<?php echo htmlspecialchars($officer['id']); ?>" class="btn btn-danger">Delete</a>
+                                            <button type="button" class="btn btn-primary btn-sm edit-staff-btn"
+                                                    data-id="<?php echo htmlspecialchars($officer['id']); ?>"
+                                                    data-name="<?php echo htmlspecialchars($officer['name'], ENT_QUOTES); ?>"
+                                                    data-email="<?php echo htmlspecialchars($officer['email'], ENT_QUOTES); ?>"
+                                                    data-phone="<?php echo htmlspecialchars($officer['phone'], ENT_QUOTES); ?>"
+                                                    data-area="<?php echo htmlspecialchars($officer['area'] ?? '', ENT_QUOTES); ?>"
+                                                    data-role="<?php echo htmlspecialchars($officer['role_id'] ?? '', ENT_QUOTES); ?>"
+                                                    data-bs-toggle="modal"
+                                                    data-bs-target="#editStaffModal">
+                                                Edit
+                                            </button>
+                                            <form action="delete_staff.php" method="POST" class="d-inline">
+                                                <input type="hidden" name="id" value="<?php echo htmlspecialchars($officer['id']); ?>">
+                                                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete this staff member?')">Delete</button>
+                                            </form>
                                         </td>
                                     </tr>
                                 <?php endforeach; ?>
@@ -188,6 +201,61 @@ $roles = getRoles();
                 </div>
             </div>
         </div>
+
+        <!-- Edit Staff Modal -->
+        <div class="modal fade" id="editStaffModal" tabindex="-1" aria-labelledby="editStaffModalLabel" aria-hidden="true">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="editStaffModalLabel">Edit Staff</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <form action="update_staff.php" method="POST">
+                        <div class="modal-body">
+                            <input type="hidden" name="staffId" id="editStaffId">
+                            <div class="mb-3">
+                                <label for="editOfficerName" class="form-label">Name</label>
+                                <input type="text" class="form-control" id="editOfficerName" name="officerName" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="editOfficerEmail" class="form-label">Email</label>
+                                <input type="email" class="form-control" id="editOfficerEmail" name="officerEmail" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="editOfficerPhone" class="form-label">Phone</label>
+                                <input type="text" class="form-control" id="editOfficerPhone" name="officerPhone" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="editOfficerPassword" class="form-label">New Password (leave blank to keep current)</label>
+                                <input type="password" class="form-control" id="editOfficerPassword" name="officerPassword">
+                            </div>
+                            <div class="mb-3">
+                                <label for="editAreaId" class="form-label">Area</label>
+                                <select class="form-select" id="editAreaId" name="areaId" required>
+                                    <option value="">Select Area</option>
+                                    <?php foreach ($areas as $area): ?>
+                                        <option value="<?php echo htmlspecialchars($area['area_id']); ?>"><?php echo htmlspecialchars($area['area_name']); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label for="editRoleId" class="form-label">Role</label>
+                                <select class="form-select" id="editRoleId" name="roleId" required>
+                                    <option value="">Select Role</option>
+                                    <?php foreach ($roles as $role): ?>
+                                        <option value="<?php echo htmlspecialchars($role['id']); ?>"><?php echo htmlspecialchars($role['name']); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                            <button type="submit" class="btn btn-primary" name="updateStaff">Save Changes</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
     </main>
     <!-- Vendor JS Files -->
     
@@ -198,5 +266,20 @@ $roles = getRoles();
     <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/js/bootstrap.min.js" integrity="sha512-ykZ1QQr0Jy/4ZkvKuqWn4iF3lqPZyij9iRv6sGqLRdTPkY69YX6+7wvVGmsdBbiIfN/8OdsI7HABjvEok6ZopQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <!-- Main JS File -->
     <script src="assets/js/main.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            document.querySelectorAll('.edit-staff-btn').forEach(function (button) {
+                button.addEventListener('click', function () {
+                    document.getElementById('editStaffId').value = this.getAttribute('data-id');
+                    document.getElementById('editOfficerName').value = this.getAttribute('data-name');
+                    document.getElementById('editOfficerEmail').value = this.getAttribute('data-email');
+                    document.getElementById('editOfficerPhone').value = this.getAttribute('data-phone');
+                    document.getElementById('editAreaId').value = this.getAttribute('data-area');
+                    document.getElementById('editRoleId').value = this.getAttribute('data-role');
+                    document.getElementById('editOfficerPassword').value = '';
+                });
+            });
+        });
+    </script>
 </body>
 </html>

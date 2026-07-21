@@ -19,7 +19,7 @@ $sql_loan = "SELECT
                 loan_products.name AS loan_product_name,
                 loan_applications.loan_product, 
                 loan_applications.principal AS principal_amount,
-                SUM(repayments.amount) AS total_amount_due, 
+                SUM(CASE WHEN repayments.amount - repayments.paid > 0 THEN repayments.amount - repayments.paid ELSE 0 END) AS total_amount_due, 
                 SUM(repayments.paid) AS total_amount_paid,
                 MAX(repayments.repayment_date) AS last_repayment_date
             FROM 
@@ -50,7 +50,7 @@ $totalDue = $loan['total_amount_due'];
 $totalPaid = $loan['total_amount_paid'];
 $balance = $totalDue - $totalPaid;
 
-// Fetch repayment history with adjusted logic
+// Fetch repayment history
 $sql_history = "SELECT 
                     amount, 
                     paid, 
@@ -64,16 +64,10 @@ $stmt_history->execute();
 $result_history = $stmt_history->get_result();
 
 $adjusted_history = [];
-$remaining_paid = $totalPaid; // Start with the total paid amount
-
 while ($row = $result_history->fetch_assoc()) {
-    $amount_due = $row['amount'];
-    $paid_for_this_due = min($amount_due, $remaining_paid); // Deduct from the remaining paid amount
-    $remaining_paid -= $paid_for_this_due;
-
     $adjusted_history[] = [
-        'amount_due' => $amount_due,
-        'paid' => $paid_for_this_due,
+        'amount_due' => $row['amount'],
+        'paid' => $row['paid'],
         'repayment_date' => date('d/m/Y', strtotime($row['repayment_date'])) // Format date as dd/mm/yyyy
     ];
 }

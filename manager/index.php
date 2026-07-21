@@ -3,16 +3,40 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 include 'db.php';
 
-// Fetch total overdue amount for approved loans
-$sql_total_overdue = "SELECT CEIL(SUM(amount - paid)) AS total_overdue 
-                      FROM repayments 
-                      INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
-                      WHERE repayment_date < CURDATE() 
-                      AND loan_applications.loan_status = 'approved' 
-                      AND (amount - paid) > 0";
+// Fetch total overdue amount using same calculation as overdue_repayments.php (sum per-borrower amounts)
+$sql_total_overdue = "SELECT 
+                    borrowers.full_name AS borrower_name, 
+                    borrowers.mobile AS phone_number, 
+                    GREATEST(
+                        COALESCE(SUM(CASE 
+                            WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
+                            ELSE 0 
+                        END), 0) 
+                        - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
+                        0
+                    ) AS total_overdue
+                FROM 
+                    borrowers
+                LEFT JOIN 
+                    loan_applications ON borrowers.id = loan_applications.borrower
+                LEFT JOIN 
+                    repayments ON loan_applications.id = repayments.loan_id
+                WHERE 
+                    1=1
+                    AND loan_applications.loan_status = 'approved'
+                GROUP BY 
+                    borrowers.full_name, borrowers.mobile
+                HAVING 
+                    total_overdue > 0";
 $stmt_total_overdue = $conn->prepare($sql_total_overdue);
 $stmt_total_overdue->execute();
-$total_overdue_amount = $stmt_total_overdue->get_result()->fetch_assoc()['total_overdue'] ?? 0;
+$result_total_overdue = $stmt_total_overdue->get_result();
+
+// Calculate total overdue amount
+$total_overdue_amount = 0;
+while ($row = $result_total_overdue->fetch_assoc()) {
+    $total_overdue_amount += $row['total_overdue'];
+}
 
 // Fetch total paid amount for approved loans
 $sql_total_paid = "SELECT CEIL(SUM(paid)) AS total_paid 
@@ -25,6 +49,21 @@ $total_paid_amount = $stmt_total_paid->get_result()->fetch_assoc()['total_paid']
 
 // Calculate total arrears (overdue repayments)
 $total_arrears = $total_overdue_amount;
+
+// Fetch total interest and combined fee totals for approved loans
+$sql_total_interest = "SELECT CEIL(COALESCE(SUM(total_amount - principal), 0)) AS total_interest
+                       FROM loan_applications
+                       WHERE loan_status = 'approved'";
+$stmt_total_interest = $conn->prepare($sql_total_interest);
+$stmt_total_interest->execute();
+$total_interest_amount = $stmt_total_interest->get_result()->fetch_assoc()['total_interest'] ?? 0;
+
+$sql_total_fees = "SELECT CEIL(COALESCE(SUM(processing_fee + registration_fee), 0)) AS total_fees
+                   FROM loan_applications
+                   WHERE loan_status = 'approved'";
+$stmt_total_fees = $conn->prepare($sql_total_fees);
+$stmt_total_fees->execute();
+$total_fee_amount = $stmt_total_fees->get_result()->fetch_assoc()['total_fees'] ?? 0;
 
 // Fetch total disbursed loans (including interest)
 $sql_total_loans = "SELECT CEIL(SUM(loan_applications.total_amount)) AS total_loans 
@@ -53,22 +92,40 @@ $stmt_total_performing = $conn->prepare($sql_total_performing);
 $stmt_total_performing->execute();
 $total_performing_loans = $stmt_total_performing->get_result()->fetch_assoc()['total_performing'] ?? 0;
 
-// Fetch total number of approved clients
-$sql_total_clients = "SELECT COUNT(DISTINCT borrowers.id) AS total_clients 
-                      FROM borrowers
-                      INNER JOIN loan_applications ON borrowers.id = loan_applications.borrower
-                      WHERE loan_applications.loan_status = 'approved'";
+// Fetch total number of clients with outstanding loan balance > 0
+$sql_total_clients = "SELECT COUNT(*) AS total_clients 
+                      FROM (
+                          SELECT borrowers.id
+                          FROM borrowers
+                          LEFT JOIN loan_applications ON borrowers.id = loan_applications.borrower
+                          LEFT JOIN repayments ON loan_applications.id = repayments.loan_id
+                          WHERE loan_applications.loan_status = 'approved'
+                          GROUP BY borrowers.id
+                          HAVING SUM(COALESCE(repayments.amount - repayments.paid, 0)) > 0
+                      ) AS clients_with_balance";
 $stmt_total_clients = $conn->prepare($sql_total_clients);
 $stmt_total_clients->execute();
 $total_clients = $stmt_total_clients->get_result()->fetch_assoc()['total_clients'] ?? 0;
 
-// Fetch total number of clients in arrears
-$sql_clients_in_arrears = "SELECT COUNT(DISTINCT borrowers.id) AS clients_in_arrears 
-                           FROM borrowers
-                           INNER JOIN loan_applications ON borrowers.id = loan_applications.borrower
-                           INNER JOIN repayments ON loan_applications.id = repayments.loan_id
-                           WHERE repayments.repayment_date < CURDATE() 
-                           AND (repayments.amount - repayments.paid) > 0";
+// Fetch total number of clients in arrears (with total overdue amount > 0)
+$sql_clients_in_arrears = "SELECT COUNT(*) AS clients_in_arrears 
+                           FROM (
+                               SELECT borrowers.id,
+                                   GREATEST(
+                                       COALESCE(SUM(CASE 
+                                           WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
+                                           ELSE 0 
+                                       END), 0) 
+                                       - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
+                                       0
+                                   ) AS total_overdue
+                               FROM borrowers
+                               LEFT JOIN loan_applications ON borrowers.id = loan_applications.borrower
+                               LEFT JOIN repayments ON loan_applications.id = repayments.loan_id
+                               WHERE loan_applications.loan_status = 'approved'
+                               GROUP BY borrowers.id
+                               HAVING total_overdue > 0
+                           ) AS arrears_summary";
 $stmt_clients_in_arrears = $conn->prepare($sql_clients_in_arrears);
 $stmt_clients_in_arrears->execute();
 $clients_in_arrears = $stmt_clients_in_arrears->get_result()->fetch_assoc()['clients_in_arrears'] ?? 0;
@@ -196,9 +253,40 @@ $result_overdue = $stmt_overdue->get_result();
             font-size: 24px; /* Reduced font size */
             color: #000; /* Removed theme color */
         }
+        .sidebar-toggle-btn {
+            border: 1px solid #1976d2;
+            color: #1976d2;
+            background: #fff;
+            border-radius: 6px;
+            padding: 6px 10px;
+            margin-right: 10px;
+        }
+        .sidebar-toggle-btn:hover {
+            background: #1976d2;
+            color: #fff;
+        }
+        .sidebar {
+            transition: all 0.3s ease;
+        }
+        .sidebar.collapsed {
+            display: none;
+        }
+        .main {
+            transition: margin-left 0.3s ease;
+            margin-left: 250px;
+        }
+        .main.sidebar-collapsed {
+            margin-left: 0;
+        }
         @media (max-width: 768px) {
             .metric {
                 flex: 1 1 100%; /* Stack metrics vertically on smaller screens */
+            }
+            .main {
+                margin-left: 0;
+            }
+            .main.sidebar-collapsed {
+                margin-left: 0;
             }
         }
     </style>
@@ -208,19 +296,25 @@ $result_overdue = $stmt_overdue->get_result();
     include '../includes/functions.php';
     include 'includes/header.php'; 
 ?>
-<div class="sidebar">
+<div class="sidebar" id="sidebarWrapper">
     <?php include '../includes/sidebar.php'; ?>
 </div>
-<main class="main">
-    <div class="header">
-        <h1>Manager Dashboard</h1>
+<main class="main" id="mainContent">
+    <div class="header d-flex justify-content-between align-items-center">
+        <div class="d-flex align-items-center">
+            <button type="button" class="sidebar-toggle-btn" id="sidebarToggle" aria-label="Toggle navigation">
+                <i class="bi bi-list"></i>
+            </button>
+            <h1 class="mb-0">Manager Dashboard</h1>
+        </div>
+        <a href="add_repayments.php" class="btn btn-primary" style="margin-right:20px;">Add Repayments</a>
     </div>
     <div class="container mt-4">
         <div class="dashboard-metrics">
             <!-- Metrics -->
             <a href="overdue_repayments.php"><div class="metric">
                 <h2>KSH <?php echo number_format(ceil($total_arrears)); ?></h2>
-                <p>Total Arrears</p>
+                <p>Total Overdue Amount</p>
             </div></a>
             <a href="approved-loans.php"><div class="metric">
                 <h2>KSH <?php echo number_format(ceil($total_loan_amount)); ?></h2>
@@ -237,6 +331,14 @@ $result_overdue = $stmt_overdue->get_result();
             <div class="metric">
                 <h2><?php echo number_format($par, 2); ?>%</h2>
                 <p>Portfolio At Risk</p>
+            </div>
+            <div class="metric">
+                <h2>KSH <?php echo number_format(ceil($total_interest_amount)); ?></h2>
+                <p>Total Interest</p>
+            </div>
+            <div class="metric">
+                <h2>KSH <?php echo number_format(ceil($total_fee_amount)); ?></h2>
+                <p>Processing + Registration Fees</p>
             </div>
             <div class="metric">
                 <h2><?php echo $total_clients; ?></h2>
@@ -266,6 +368,19 @@ $result_overdue = $stmt_overdue->get_result();
 </main>
 
 <script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const toggleButton = document.getElementById('sidebarToggle');
+        const sidebarWrapper = document.getElementById('sidebarWrapper');
+        const mainContent = document.getElementById('mainContent');
+
+        if (toggleButton && sidebarWrapper && mainContent) {
+            toggleButton.addEventListener('click', function () {
+                sidebarWrapper.classList.toggle('collapsed');
+                mainContent.classList.toggle('sidebar-collapsed');
+            });
+        }
+    });
+
     // Pie Chart for PAR
     new Chart(document.getElementById('parPieChart'), {
         type: 'pie',

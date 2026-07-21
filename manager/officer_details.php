@@ -8,6 +8,87 @@ if (!isset($_GET['id']) || empty($_GET['id'])) {
 }
 
 $officer_id = intval($_GET['id']); // Ensure ID is an integer
+$messages = [];
+$errors = [];
+$editingClientId = isset($_GET['edit_client']) ? intval($_GET['edit_client']) : 0;
+$editClient = null;
+
+if (isset($_GET['delete_client'])) {
+    $deleteClientId = intval($_GET['delete_client']);
+    if ($deleteClientId > 0) {
+        $conn->begin_transaction();
+        try {
+            $stmtLoanApps = $conn->prepare("SELECT id FROM loan_applications WHERE borrower = ?");
+            $stmtLoanApps->bind_param("i", $deleteClientId);
+            $stmtLoanApps->execute();
+            $loanAppIds = $stmtLoanApps->get_result()->fetch_all(MYSQLI_ASSOC);
+
+            if (!empty($loanAppIds)) {
+                $loanAppIdList = array_map(function ($row) { return (int) $row['id']; }, $loanAppIds);
+                $placeholders = implode(',', array_fill(0, count($loanAppIdList), '?'));
+                $stmtRepay = $conn->prepare("DELETE FROM repayments WHERE loan_id IN ($placeholders)");
+                $stmtRepay->bind_param(str_repeat('i', count($loanAppIdList)), ...$loanAppIdList);
+                $stmtRepay->execute();
+
+                $stmtDeleteApps = $conn->prepare("DELETE FROM loan_applications WHERE borrower = ?");
+                $stmtDeleteApps->bind_param("i", $deleteClientId);
+                $stmtDeleteApps->execute();
+            }
+
+            $stmtDeleteClient = $conn->prepare("DELETE FROM borrowers WHERE id = ?");
+            $stmtDeleteClient->bind_param("i", $deleteClientId);
+            $stmtDeleteClient->execute();
+            $conn->commit();
+            $messages[] = 'Client removed successfully.';
+        } catch (Exception $e) {
+            $conn->rollback();
+            $errors[] = 'Unable to remove the client: ' . $e->getMessage();
+        }
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_client'])) {
+    $clientId = intval($_POST['client_id'] ?? 0);
+    $loanOfficerEmail = trim($_POST['loanOfficer'] ?? '');
+    $fullName = trim($_POST['full_name'] ?? '');
+    $mobile = trim($_POST['mobile'] ?? '');
+    $idNumber = trim($_POST['id_number'] ?? '');
+    $businessName = trim($_POST['business_name'] ?? '');
+    $email = trim($_POST['email'] ?? '');
+    $guarantorName = trim($_POST['guarantor_name'] ?? '');
+    $guarantorPhone = trim($_POST['guarantor_phone'] ?? '');
+
+    if ($clientId <= 0) {
+        $errors[] = 'The client reference is missing.';
+    }
+    if ($loanOfficerEmail === '') {
+        $errors[] = 'Please select a loan officer.';
+    }
+    if ($fullName === '') {
+        $errors[] = 'Please enter the client full name.';
+    }
+    if ($idNumber === '') {
+        $errors[] = 'Please enter the ID number.';
+    }
+
+    if (empty($errors)) {
+        $stmt = $conn->prepare("UPDATE borrowers SET full_name = ?, business_name = ?, unique_number = ?, mobile = ?, email = ?, loan_officer = ?, guarantor_name = ?, guarantor_phone = ? WHERE id = ?");
+        $stmt->bind_param("ssssssssi", $fullName, $businessName, $idNumber, $mobile, $email, $loanOfficerEmail, $guarantorName, $guarantorPhone, $clientId);
+        if ($stmt->execute()) {
+            $messages[] = 'Client details updated successfully.';
+            $editingClientId = 0;
+        } else {
+            $errors[] = 'Unable to update client details.';
+        }
+    }
+}
+
+if ($editingClientId > 0) {
+    $stmtEdit = $conn->prepare("SELECT id, full_name, business_name, unique_number, mobile, email, loan_officer, guarantor_name, guarantor_phone FROM borrowers WHERE id = ? LIMIT 1");
+    $stmtEdit->bind_param("i", $editingClientId);
+    $stmtEdit->execute();
+    $editClient = $stmtEdit->get_result()->fetch_assoc();
+}
 
 // Fetch loan officer details using INNER JOIN to get role name
 $sql_officer = "SELECT u.*, r.name AS role_name 
@@ -23,6 +104,10 @@ $officer = $result_officer->fetch_assoc();
 if (!$officer) {
     die("Loan officer not found.");
 }
+
+$loanOfficersStmt = $conn->prepare("SELECT id, name AS full_name, email FROM users WHERE role_id = '2' ORDER BY name");
+$loanOfficersStmt->execute();
+$loanOfficers = $loanOfficersStmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
 // Fetch clients assigned to this officer using INNER JOIN
 $sql_clients = "SELECT b.id, b.full_name, b.email, b.mobile 
@@ -144,6 +229,69 @@ $par = ($total_loan_amount > 0) ? ($overdue_loan_amount / $total_loan_amount) * 
         </div>
 
         <h2 class="mt-4">Assigned Clients</h2>
+        <?php foreach ($messages as $message): ?>
+            <div class="alert alert-success"><?php echo htmlspecialchars($message, ENT_QUOTES); ?></div>
+        <?php endforeach; ?>
+        <?php foreach ($errors as $error): ?>
+            <div class="alert alert-danger"><?php echo htmlspecialchars($error, ENT_QUOTES); ?></div>
+        <?php endforeach; ?>
+
+        <?php if ($editClient): ?>
+            <div class="card p-3 mb-3">
+                <h4>Edit Client</h4>
+                <form action="officer_details.php?id=<?php echo (int)$officer_id; ?>&edit_client=<?php echo (int)$editingClientId; ?>" method="post">
+                    <input type="hidden" name="update_client" value="1">
+                    <input type="hidden" name="client_id" value="<?php echo (int)$editClient['id']; ?>">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Loan Officer</label>
+                            <select name="loanOfficer" class="form-control" required>
+                                <option value="">Select loan officer</option>
+                                <?php foreach ($loanOfficers as $loanOfficer): ?>
+                                    <option value="<?php echo htmlspecialchars($loanOfficer['email'], ENT_QUOTES); ?>"
+                                        <?php echo (($editClient['loan_officer'] ?? '') === $loanOfficer['email']) ? 'selected' : ''; ?>>
+                                        <?php echo htmlspecialchars($loanOfficer['full_name'] . ' (' . $loanOfficer['email'] . ')', ENT_QUOTES); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Full Name</label>
+                            <input type="text" name="full_name" class="form-control" value="<?php echo htmlspecialchars($editClient['full_name'] ?? '', ENT_QUOTES); ?>" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Mobile</label>
+                            <input type="text" name="mobile" class="form-control" value="<?php echo htmlspecialchars($editClient['mobile'] ?? '', ENT_QUOTES); ?>">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">ID Number</label>
+                            <input type="text" name="id_number" class="form-control" value="<?php echo htmlspecialchars($editClient['unique_number'] ?? '', ENT_QUOTES); ?>" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Email</label>
+                            <input type="email" name="email" class="form-control" value="<?php echo htmlspecialchars($editClient['email'] ?? '', ENT_QUOTES); ?>">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Business Name</label>
+                            <input type="text" name="business_name" class="form-control" value="<?php echo htmlspecialchars($editClient['business_name'] ?? '', ENT_QUOTES); ?>">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Guarantor Name</label>
+                            <input type="text" name="guarantor_name" class="form-control" value="<?php echo htmlspecialchars($editClient['guarantor_name'] ?? '', ENT_QUOTES); ?>">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Guarantor Phone</label>
+                            <input type="text" name="guarantor_phone" class="form-control" value="<?php echo htmlspecialchars($editClient['guarantor_phone'] ?? '', ENT_QUOTES); ?>">
+                        </div>
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-primary">Save Changes</button>
+                            <a href="officer_details.php?id=<?php echo (int)$officer_id; ?>" class="btn btn-secondary ms-2">Cancel</a>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        <?php endif; ?>
+
         <div class="table-container">
             <table class="table table-striped">
                 <thead>
@@ -152,6 +300,7 @@ $par = ($total_loan_amount > 0) ? ($overdue_loan_amount / $total_loan_amount) * 
                         <th>Client Name</th>
                         <th>Email</th>
                         <th>Phone</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -163,11 +312,15 @@ $par = ($total_loan_amount > 0) ? ($overdue_loan_amount / $total_loan_amount) * 
 
                                 <td><?php echo htmlspecialchars($client['email']); ?></td>
                                 <td><?php echo htmlspecialchars($client['mobile']); ?></td>
+                                <td>
+                                    <a href="officer_details.php?id=<?php echo (int)$officer_id; ?>&edit_client=<?php echo (int)$client['id']; ?>" class="btn btn-sm btn-secondary">Edit</a>
+                                    <a href="officer_details.php?id=<?php echo (int)$officer_id; ?>&delete_client=<?php echo (int)$client['id']; ?>" class="btn btn-sm btn-danger ms-1" onclick="return confirm('Remove this client from the database?');">Delete</a>
+                                </td>
                             </tr>
                         <?php endwhile; ?>
                     <?php else: ?>
                         <tr>
-                            <td colspan="4">No clients assigned to this officer.</td>
+                            <td colspan="5">No clients assigned to this officer.</td>
                         </tr>
                     <?php endif; ?>
                 </tbody>

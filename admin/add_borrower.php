@@ -1,5 +1,12 @@
 <?php
 session_start();
+require_once 'db.php';
+
+$selectedLoanOfficerEmail = isset($_SESSION['email']) ? $_SESSION['email'] : '';
+$officerStmt = $conn->prepare("SELECT email, name AS full_name FROM users WHERE role_id = '2' ORDER BY name");
+$officerStmt->execute();
+$officerResult = $officerStmt->get_result();
+$loanOfficers = $officerResult->fetch_all(MYSQLI_ASSOC);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -154,9 +161,19 @@ include("includes/header.php");
 
     <h2>Add Borrower</h2>
     <form action="insert_borrower.php" method="post" enctype="multipart/form-data">
-        Loan Officer: <input type="text" name="loanOfficer" value="<?php echo $_SESSION['email']; ?>" class="form-control" required readonly><br>
+        Loan Officer:
+        <select name="loanOfficer" class="form-control" required>
+            <option value="">Select loan officer</option>
+            <?php foreach ($loanOfficers as $officer): ?>
+                <option value="<?php echo htmlspecialchars($officer['email'], ENT_QUOTES); ?>"
+                    <?php echo ($selectedLoanOfficerEmail === $officer['email']) ? 'selected' : ''; ?>>
+                    <?php echo htmlspecialchars($officer['full_name'] . ' (' . $officer['email'] . ')'); ?>
+                </option>
+            <?php endforeach; ?>
+        </select><br>
         
         Full Name: <input type="text" name="full_name" class="form-control" required><br>
+        Mobile: <input type="text" name="mobile" class="form-control"><br>
          <!-- Passport Photo -->
          Passport Photo:
         <input type="file" name="passport_photo" class="form-control" accept=".jpg, .jpeg, .png" required><br>
@@ -168,9 +185,10 @@ include("includes/header.php");
          <!-- ID Upload -->
          Upload ID Document (PDF or Image): 
         <input type="file" name="id_upload" class="form-control" accept=".pdf, .jpg, .jpeg, .png" required><br>
+        Guarantor Name: <input type="text" name="guarantor_name" class="form-control"><br>
+        Guarantor Phone Number: <input type="text" name="guarantor_phone" class="form-control"><br>
         Business Name: <input type="text" name="business_name" class="form-control"><br>
         
-        Mobile: <input type="text" name="mobile" class="form-control"><br>
         
         Email: <input type="email" name="email" class="form-control"><br>
         

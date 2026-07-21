@@ -148,6 +148,7 @@ include '../includes/sidebar.php';
                 <ul>
                     <h3>Settings</h3>
                     <li><a href="account_settings.php">Account Settings</a></li>
+                    <li><a href="email-accounts.php">Email Settings</a></li>
                 </ul>
                 <ul>
                     <h3>Manage Staff</h3>
@@ -163,6 +164,11 @@ include '../includes/sidebar.php';
                     <h3>Manage Branch</h3>
                     <li><a href="branches.php">Branches</a></li>
                     <li><a href="branch_holidays.php">Branch holidays</a></li>
+                </ul>
+                <ul>
+                    <h3>Savings</h3>
+                    <li><a href="savings_template.php">Savings template</a></li>
+                    <li><a href="add_savings_client.php">Add savings client</a></li>
                 </ul>
      
             </div>

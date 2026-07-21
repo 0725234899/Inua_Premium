@@ -4,6 +4,19 @@ ini_set('display_errors', 1);
 include 'db.php';
 
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
+    // Ensure guarantor columns exist
+    $ensure_columns = [
+        ['guarantor_name', 'VARCHAR(255) NULL DEFAULT NULL'],
+        ['guarantor_phone', 'VARCHAR(20) NULL DEFAULT NULL']
+    ];
+
+    foreach ($ensure_columns as $column) {
+        $check = $conn->query("SHOW COLUMNS FROM borrowers LIKE '" . $column[0] . "'");
+        if ($check->num_rows === 0) {
+            $conn->query("ALTER TABLE borrowers ADD COLUMN " . $column[0] . " " . $column[1]);
+        }
+    }
+
     // Sanitize input data
     $loanOfficer = mysqli_real_escape_string($conn, $_POST['loanOfficer']);
     $full_name = mysqli_real_escape_string($conn, $_POST['full_name']);
@@ -11,6 +24,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $id_number = mysqli_real_escape_string($conn, $_POST['id_number']); // Changed from unique_number
     $mobile = mysqli_real_escape_string($conn, $_POST['mobile']);
     $email = mysqli_real_escape_string($conn, $_POST['email']);
+    $guarantor_name = mysqli_real_escape_string($conn, $_POST['guarantor_name'] ?? '');
+    $guarantor_phone = mysqli_real_escape_string($conn, $_POST['guarantor_phone'] ?? '');
     $total_paid = mysqli_real_escape_string($conn, $_POST['total_paid']);
     $open_loans_balance = mysqli_real_escape_string($conn, $_POST['open_loans_balance']);
     $status = mysqli_real_escape_string($conn, $_POST['status']);
@@ -39,8 +54,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $passport_photo = uploadFile('passport_photo', $upload_dir);
 
     // Insert borrower details into the database
-    $sql = "INSERT INTO borrowers (full_name, business_name, unique_number, mobile, email, total_paid, open_loans_balance, status, loan_officer, id_upload,passport_photo)
-            VALUES ('$full_name', '$business_name', '$id_number', '$mobile', '$email', '$total_paid', '$open_loans_balance', '$status', '$loanOfficer', '$id_upload', '$passport_photo')";
+        $sql = "INSERT INTO borrowers (full_name, business_name, unique_number, mobile, email, total_paid, open_loans_balance, status, loan_officer, id_upload, passport_photo, guarantor_name, guarantor_phone)
+            VALUES ('$full_name', '$business_name', '$id_number', '$mobile', '$email', '$total_paid', '$open_loans_balance', '$status', '$loanOfficer', '$id_upload', '$passport_photo', '$guarantor_name', '$guarantor_phone')";
 
     if ($conn->query($sql) === TRUE) {
         echo "<script>

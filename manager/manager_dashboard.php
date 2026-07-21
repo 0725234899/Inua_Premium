@@ -4,67 +4,148 @@ ini_set('display_errors', 1);
 include 'db.php';
 include '../includes/functions.php';
 
-// Fetch all loan officers
-$sql_officers = "SELECT id, name AS full_name FROM users WHERE role_id = '2'";
+function bindDynamicParams($stmt, $params) {
+    if (empty($params)) {
+        return;
+    }
+
+    $types = '';
+    foreach ($params as $param) {
+        $types .= is_int($param) || is_float($param) ? 'i' : 's';
+    }
+
+    $stmt->bind_param($types, ...$params);
+}
+
+// Fetch available areas for loan officers
+$sql_areas = "SELECT area_id, area_name FROM areas ORDER BY area_name";
+$result_areas = $conn->query($sql_areas);
+$areas = [];
+while ($area = $result_areas->fetch_assoc()) {
+    $areas[] = $area;
+}
+
+// Get selected area and loan officer
+$selected_area = isset($_GET['area_id']) ? $_GET['area_id'] : 'all';
+$selected_area = ($selected_area !== 'all' && !is_numeric($selected_area)) ? 'all' : $selected_area;
+$selected_officer = isset($_GET['officer_id']) ? $_GET['officer_id'] : 'all';
+$selected_officer = ($selected_officer !== 'all' && !is_numeric($selected_officer)) ? 'all' : $selected_officer;
+
+$filter_sql = '';
+$filter_params = [];
+if ($selected_officer !== 'all') {
+    $filter_sql .= " AND users.id = ?";
+    $filter_params[] = (int) $selected_officer;
+}
+if ($selected_area !== 'all') {
+    $filter_sql .= " AND users.area = ?";
+    $filter_params[] = (int) $selected_area;
+}
+
+// Fetch loan officers for the selected area
+$sql_officers = "SELECT id, name AS full_name, area FROM users WHERE role_id = '2'";
+if ($selected_area !== 'all') {
+    $sql_officers .= " AND area = ?";
+}
 $stmt_officers = $conn->prepare($sql_officers);
+if ($selected_area !== 'all') {
+    $stmt_officers->bind_param('i', $selected_area);
+}
 $stmt_officers->execute();
 $result_officers = $stmt_officers->get_result();
 
-// Get selected loan officer (if any)
-$selected_officer = isset($_GET['officer_id']) ? $_GET['officer_id'] : 'all';
-$officer_filter = ($selected_officer !== 'all') ? "AND users.id = ?" : "";
-
-// Fetch total overdue amount for the selected loan officer
+// Fetch total overdue amount using same calculation as index.php (sum per-borrower amounts)
 $sql_total_overdue = "SELECT 
-                        SUM(repayments.amount - repayments.paid) AS total_overdue 
-                      FROM 
-                        repayments
-                      INNER JOIN 
-                        loan_applications ON repayments.loan_id = loan_applications.id
-                      INNER JOIN 
-                        borrowers ON loan_applications.borrower = borrowers.id
-                      INNER JOIN 
-                        users ON borrowers.loan_officer = users.email
-                      WHERE 
-                        repayments.repayment_date < CURDATE() 
-                        AND (repayments.amount - repayments.paid) > 0
-                        $officer_filter";
+                    borrowers.full_name AS borrower_name, 
+                    borrowers.mobile AS phone_number, 
+                    GREATEST(
+                        COALESCE(SUM(CASE 
+                            WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
+                            ELSE 0 
+                        END), 0) 
+                        - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
+                        0
+                    ) AS total_overdue
+                FROM 
+                    borrowers
+                LEFT JOIN 
+                    loan_applications ON borrowers.id = loan_applications.borrower
+                LEFT JOIN 
+                    repayments ON loan_applications.id = repayments.loan_id
+                LEFT JOIN 
+                    users ON borrowers.loan_officer = users.email
+                WHERE 
+                    1=1
+                    $filter_sql
+                GROUP BY 
+                    borrowers.full_name, borrowers.mobile
+                HAVING 
+                    total_overdue > 0";
 
 $stmt_total_overdue = $conn->prepare($sql_total_overdue);
-if ($selected_officer !== 'all') {
-    $stmt_total_overdue->bind_param("i", $selected_officer);
-}
+bindDynamicParams($stmt_total_overdue, $filter_params);
 $stmt_total_overdue->execute();
-$total_overdue_amount = $stmt_total_overdue->get_result()->fetch_assoc()['total_overdue'] ?? 0;
+$result_total_overdue = $stmt_total_overdue->get_result();
+
+// Calculate total overdue amount
+$total_overdue_amount = 0;
+while ($row = $result_total_overdue->fetch_assoc()) {
+    $total_overdue_amount += $row['total_overdue'];
+}
 
 // Calculate total arrears (overdue repayments)
 $total_arrears = $total_overdue_amount;
 
-// Fetch total disbursed loans
-$sql_total_loans = "SELECT SUM(total_amount) AS total_loans 
+// Fetch total paid amount for approved loans
+$sql_total_paid = "SELECT CEIL(SUM(paid)) AS total_paid 
+                   FROM repayments 
+                   INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
+                   INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
+                   INNER JOIN users ON borrowers.loan_officer = users.email
+                   WHERE loan_applications.loan_status = 'approved'
+                   $filter_sql";
+$stmt_total_paid = $conn->prepare($sql_total_paid);
+bindDynamicParams($stmt_total_paid, $filter_params);
+$stmt_total_paid->execute();
+$total_paid_amount = $stmt_total_paid->get_result()->fetch_assoc()['total_paid'] ?? 0;
+
+// Fetch total interest and combined fee totals for approved loans
+$sql_total_interest = "SELECT CEIL(COALESCE(SUM(total_amount - principal), 0)) AS total_interest
+                       FROM loan_applications
+                       INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
+                       INNER JOIN users ON borrowers.loan_officer = users.email
+                       WHERE loan_applications.loan_status = 'approved'
+                       $filter_sql";
+$stmt_total_interest = $conn->prepare($sql_total_interest);
+bindDynamicParams($stmt_total_interest, $filter_params);
+$stmt_total_interest->execute();
+$total_interest_amount = $stmt_total_interest->get_result()->fetch_assoc()['total_interest'] ?? 0;
+
+$sql_total_fees = "SELECT CEIL(COALESCE(SUM(processing_fee + registration_fee), 0)) AS total_fees
+                   FROM loan_applications
+                   INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
+                   INNER JOIN users ON borrowers.loan_officer = users.email
+                   WHERE loan_applications.loan_status = 'approved'
+                   $filter_sql";
+$stmt_total_fees = $conn->prepare($sql_total_fees);
+bindDynamicParams($stmt_total_fees, $filter_params);
+$stmt_total_fees->execute();
+$total_fee_amount = $stmt_total_fees->get_result()->fetch_assoc()['total_fees'] ?? 0;
+
+// Fetch total disbursed loans (including interest)
+$sql_total_loans = "SELECT CEIL(SUM(loan_applications.total_amount)) AS total_loans 
                     FROM loan_applications 
                     INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
                     INNER JOIN users ON borrowers.loan_officer = users.email
-                    WHERE loan_status = 'approved' $officer_filter";
-
+                    WHERE loan_applications.loan_status = 'approved'
+                    $filter_sql";
 $stmt_total_loans = $conn->prepare($sql_total_loans);
-if ($selected_officer !== 'all') {
-    $stmt_total_loans->bind_param("i", $selected_officer);
-}
+bindDynamicParams($stmt_total_loans, $filter_params);
 $stmt_total_loans->execute();
 $total_loan_amount = $stmt_total_loans->get_result()->fetch_assoc()['total_loans'] ?? 0;
 
-// Fetch total paid amount
-$sql_paid = "SELECT SUM(paid) AS total_paid FROM repayments";
-$stmt_paid = $conn->prepare($sql_paid);
-$stmt_paid->execute();
-$total_paid = $stmt_paid->get_result()->fetch_assoc()['total_paid'] ?? 0;
-
-// Calculate outstanding loan balance
-$outstanding_loan_balance = $total_loan_amount - $total_paid;
-
 // Calculate Performing Book
-$performing_book = max(0, $total_loan_amount - $total_arrears);
+$performing_book = max(0, $total_loan_amount - $total_arrears - $total_paid_amount);
 
 // Calculate Loan Book
 $loan_book = $performing_book + $total_arrears;
@@ -73,37 +154,94 @@ $loan_book = $performing_book + $total_arrears;
 $par = ($total_loan_amount > 0) ? ($total_arrears / $total_loan_amount) * 100 : 0;
 
 // Fetch total due loans for today
-$sql_due_loans = "SELECT SUM(repayments.amount - repayments.paid) AS total_due_loans 
+$sql_due_loans = "SELECT CEIL(SUM(amount - paid)) AS total_due_loans 
                   FROM repayments 
                   INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
                   INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
                   INNER JOIN users ON borrowers.loan_officer = users.email
-                  WHERE repayments.repayment_date = CURDATE() 
-                  AND loan_applications.loan_status = 'approved'
-                  $officer_filter";
+                  WHERE repayment_date = CURDATE() 
+                  AND loan_applications.loan_status = 'approved' 
+                  AND (amount - paid) > 0
+                  $filter_sql";
 $stmt_due_loans = $conn->prepare($sql_due_loans);
-if ($selected_officer !== 'all') {
-    $stmt_due_loans->bind_param("i", $selected_officer);
-}
+bindDynamicParams($stmt_due_loans, $filter_params);
 $stmt_due_loans->execute();
 $total_due_loans = $stmt_due_loans->get_result()->fetch_assoc()['total_due_loans'] ?? 0;
 
-// Fetch names of clients in arrears and their arrears amounts
+// Fetch total number of clients with outstanding loan balance > 0
+$sql_total_clients = "SELECT COUNT(*) AS total_clients 
+                      FROM (
+                          SELECT borrowers.id
+                          FROM borrowers
+                          LEFT JOIN loan_applications ON borrowers.id = loan_applications.borrower
+                          LEFT JOIN repayments ON loan_applications.id = repayments.loan_id
+                          LEFT JOIN users ON borrowers.loan_officer = users.email
+                          WHERE loan_applications.loan_status = 'approved'
+                          $filter_sql
+                          GROUP BY borrowers.id
+                          HAVING SUM(COALESCE(repayments.amount - repayments.paid, 0)) > 0
+                      ) AS clients_with_balance";
+$stmt_total_clients = $conn->prepare($sql_total_clients);
+bindDynamicParams($stmt_total_clients, $filter_params);
+$stmt_total_clients->execute();
+$total_clients = $stmt_total_clients->get_result()->fetch_assoc()['total_clients'] ?? 0;
+
+// Fetch total number of clients in arrears (with total overdue amount > 0)
+$sql_clients_in_arrears = "SELECT COUNT(*) AS clients_in_arrears 
+                           FROM (
+                               SELECT borrowers.id,
+                                   GREATEST(
+                                       COALESCE(SUM(CASE 
+                                           WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
+                                           ELSE 0 
+                                       END), 0) 
+                                       - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
+                                       0
+                                   ) AS total_overdue
+                               FROM borrowers
+                               LEFT JOIN loan_applications ON borrowers.id = loan_applications.borrower
+                               LEFT JOIN repayments ON loan_applications.id = repayments.loan_id
+                               LEFT JOIN users ON borrowers.loan_officer = users.email
+                               WHERE 1=1
+                               $filter_sql
+                               GROUP BY borrowers.id
+                               HAVING total_overdue > 0
+                           ) AS arrears_summary";
+$stmt_clients_in_arrears = $conn->prepare($sql_clients_in_arrears);
+bindDynamicParams($stmt_clients_in_arrears, $filter_params);
+$stmt_clients_in_arrears->execute();
+$clients_in_arrears = $stmt_clients_in_arrears->get_result()->fetch_assoc()['clients_in_arrears'] ?? 0;
+
+// Fetch names of clients in arrears and their arrears amounts (consistent with clients_in_arrears count)
 $sql_clients_in_arrears_details = "SELECT 
     borrowers.full_name AS client_name,
-    SUM(repayments.amount - repayments.paid) AS arrears_amount
+    GREATEST(
+        COALESCE(SUM(CASE 
+            WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
+            ELSE 0 
+        END), 0) 
+        - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
+        0
+    ) AS arrears_amount
 FROM 
     borrowers
-INNER JOIN 
+LEFT JOIN 
     loan_applications ON borrowers.id = loan_applications.borrower
-INNER JOIN 
+LEFT JOIN 
     repayments ON loan_applications.id = repayments.loan_id
+LEFT JOIN 
+    users ON borrowers.loan_officer = users.email
 WHERE 
-    repayments.repayment_date < CURDATE()
-    AND (repayments.amount - repayments.paid) > 0
+    1=1
+    $filter_sql
 GROUP BY 
-    borrowers.full_name";
+    borrowers.id, borrowers.full_name
+HAVING 
+    arrears_amount > 0
+ORDER BY 
+    arrears_amount DESC";
 $stmt_clients_in_arrears_details = $conn->prepare($sql_clients_in_arrears_details);
+bindDynamicParams($stmt_clients_in_arrears_details, $filter_params);
 $stmt_clients_in_arrears_details->execute();
 $result_clients_in_arrears_details = $stmt_clients_in_arrears_details->get_result();
 
@@ -117,12 +255,16 @@ INNER JOIN
     loan_applications ON borrowers.id = loan_applications.borrower
 INNER JOIN 
     repayments ON loan_applications.id = repayments.loan_id
+INNER JOIN 
+    users ON borrowers.loan_officer = users.email
 WHERE 
     repayments.repayment_date = CURDATE()
     AND (repayments.amount - repayments.paid) > 0
+    $filter_sql
 GROUP BY 
     borrowers.full_name";
 $stmt_clients_due_today = $conn->prepare($sql_clients_due_today);
+bindDynamicParams($stmt_clients_due_today, $filter_params);
 $stmt_clients_due_today->execute();
 $result_clients_due_today = $stmt_clients_due_today->get_result();
 
@@ -137,11 +279,17 @@ INNER JOIN
     loan_applications ON payment_date_records.loan_id = loan_applications.id
 INNER JOIN 
     borrowers ON loan_applications.borrower = borrowers.id
+INNER JOIN 
+    users ON borrowers.loan_officer = users.email
+WHERE 
+    1=1
+    $filter_sql
 ORDER BY 
     payment_date_records.PaymentDate DESC
 LIMIT 10";
 
 $stmt_recent_repayments = $conn->prepare($sql_recent_repayments);
+bindDynamicParams($stmt_recent_repayments, $filter_params);
 $stmt_recent_repayments->execute();
 $result_recent_repayments = $stmt_recent_repayments->get_result();
 $recent_repayments = [];
@@ -327,15 +475,31 @@ while ($row = $result_recent_repayments->fetch_assoc()) {
         <i class="fa fa-arrow-left"></i> Back
     </a>
 
-    <!-- Loan Officer Tabs -->
-    <ul class="nav nav-tabs">
+    <!-- Area Tabs -->
+    <ul class="nav nav-tabs mt-3">
         <li class="nav-item">
-            <a class="nav-link <?= ($selected_officer == 'all') ? 'active' : '' ?>" href="?officer_id=all">All Officers</a>
+            <a class="nav-link <?= ($selected_area == 'all') ? 'active' : '' ?>" href="?area_id=all&officer_id=all">All Areas</a>
+        </li>
+        <?php foreach ($areas as $area) { ?>
+            <li class="nav-item">
+                <a class="nav-link <?= ($selected_area == $area['area_id']) ? 'active' : '' ?>"
+                   href="?area_id=<?= urlencode($area['area_id']) ?>&officer_id=all">
+                    <?= htmlspecialchars($area['area_name']); ?>
+                </a>
+            </li>
+        <?php } ?>
+    </ul>
+
+    <!-- Loan Officer Tabs -->
+    <ul class="nav nav-tabs mt-3">
+        <li class="nav-item">
+            <a class="nav-link <?= ($selected_officer == 'all') ? 'active' : '' ?>"
+               href="?area_id=<?= urlencode($selected_area) ?>&officer_id=all">All Officers</a>
         </li>
         <?php while ($officer = $result_officers->fetch_assoc()) { ?>
             <li class="nav-item">
                 <a class="nav-link <?= ($selected_officer == $officer['id']) ? 'active' : '' ?>" 
-                   href="?officer_id=<?= $officer['id'] ?>">
+                   href="?area_id=<?= urlencode($selected_area) ?>&officer_id=<?= $officer['id'] ?>">
                     <?= htmlspecialchars($officer['full_name']); ?>
                 </a>
             </li>
@@ -363,6 +527,22 @@ while ($row = $result_recent_repayments->fetch_assoc()) {
         <div class="metric">
             <h2><?= number_format($par, 2); ?>%</h2>
             <p>Portfolio At Risk</p>
+        </div>
+        <div class="metric">
+            <h2>KSH <?php echo number_format(ceil($total_interest_amount)); ?></h2>
+            <p>Total Interest</p>
+        </div>
+        <div class="metric">
+            <h2>KSH <?php echo number_format(ceil($total_fee_amount)); ?></h2>
+            <p>Processing + Registration Fees</p>
+        </div>
+        <div class="metric">
+            <h2><?php echo $total_clients; ?></h2>
+            <p>Total Clients</p>
+        </div>
+        <div class="metric">
+            <h2><?php echo $clients_in_arrears; ?></h2>
+            <p>Clients in Arrears</p>
         </div>
         <div class="metric">
             <h2>KSH <?php echo number_format(ceil($total_due_loans)); ?></h2>

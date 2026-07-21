@@ -80,7 +80,7 @@ if ($stmt->execute()) {
     echo "New loan application submitted successfully";
 
     // Generate repayment schedule
-    generateRepaymentSchedule($conn, $loan_id, $principal, $total_interest, $repayment_cycle, $number_of_repayments, $loan_release_date);
+    generateRepaymentSchedule($conn, $loan_id, $principal, $total_interest, $repayment_cycle, $number_of_repayments, $loan_release_date, $loan_duration, $loan_duration_unit);
 } else {
     echo "Error: " . $stmt->errorInfo()[2];
 }
@@ -102,24 +102,35 @@ function getDurationInWeeks($loan_duration, $loan_duration_unit) {
 }
 
 // Function to generate repayment schedule
-function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest_amount, $repayment_cycle, $number_of_repayments, $loan_release_date) {
+function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest_amount, $repayment_cycle, $number_of_repayments, $loan_release_date, $loan_duration, $loan_duration_unit) {
     $start_date = new DateTime($loan_release_date);
 
-    // Calculate each repayment date based on the repayment cycle
-    for ($i = 1; $i <= $number_of_repayments; $i++) {
-        $schedule_date = clone $start_date;
-        $schedule_date->modify('+' . getCycleInterval($repayment_cycle));
-
-        $repayment_amount = calculateRepaymentAmount($principal_amount, $interest_amount, $number_of_repayments);
-
+    if ($repayment_cycle === 'once') {
+        $maturity_date = getMaturityDate($loan_release_date, $loan_duration, $loan_duration_unit);
+        $repayment_amount = calculateRepaymentAmount($principal_amount, $interest_amount, 1);
         $sql = "INSERT INTO repayments (loan_id, repayment_date, amount) VALUES (:loan_id, :repayment_date, :amount)";
         $stmt = $conn->prepare($sql);
         $stmt->bindValue(':loan_id', $loan_id, PDO::PARAM_INT);
-        $stmt->bindValue(':repayment_date', $schedule_date->format('Y-m-d'), PDO::PARAM_STR);
+        $stmt->bindValue(':repayment_date', $maturity_date->format('Y-m-d'), PDO::PARAM_STR);
         $stmt->bindValue(':amount', $repayment_amount, PDO::PARAM_STR);
         $stmt->execute();
+    } else {
+        // Calculate each repayment date based on the repayment cycle
+        for ($i = 1; $i <= $number_of_repayments; $i++) {
+            $schedule_date = clone $start_date;
+            $schedule_date->modify('+' . getCycleInterval($repayment_cycle));
 
-        $start_date = $schedule_date;
+            $repayment_amount = calculateRepaymentAmount($principal_amount, $interest_amount, $number_of_repayments);
+
+            $sql = "INSERT INTO repayments (loan_id, repayment_date, amount) VALUES (:loan_id, :repayment_date, :amount)";
+            $stmt = $conn->prepare($sql);
+            $stmt->bindValue(':loan_id', $loan_id, PDO::PARAM_INT);
+            $stmt->bindValue(':repayment_date', $schedule_date->format('Y-m-d'), PDO::PARAM_STR);
+            $stmt->bindValue(':amount', $repayment_amount, PDO::PARAM_STR);
+            $stmt->execute();
+
+            $start_date = $schedule_date;
+        }
     }
     ?>
  <?php
@@ -172,6 +183,29 @@ function calculateRepaymentAmount($principal_amount, $interest_amount, $number_o
     return $total_amount / $number_of_repayments; // Repayments are evenly split
 }
 
+function getMaturityDate($loan_release_date, $loan_duration, $loan_duration_unit) {
+    $maturity_date = new DateTime($loan_release_date);
+
+    switch ($loan_duration_unit) {
+        case 'days':
+            $maturity_date->modify('+' . (int) $loan_duration . ' days');
+            break;
+        case 'weeks':
+            $maturity_date->modify('+' . (int) $loan_duration . ' weeks');
+            break;
+        case 'months':
+            $maturity_date->modify('+' . (int) $loan_duration . ' months');
+            break;
+        case 'years':
+            $maturity_date->modify('+' . (int) $loan_duration . ' years');
+            break;
+        default:
+            break;
+    }
+
+    return $maturity_date;
+}
+
 // Function to get cycle interval for repayments
 function getCycleInterval($cycle) {
     switch ($cycle) {
@@ -183,6 +217,8 @@ function getCycleInterval($cycle) {
             return '1 month';
         case 'yearly':
             return '1 year';
+        case 'once':
+            return '0 days';
         default:
             return '1 month'; // Default to monthly if unspecified
     }

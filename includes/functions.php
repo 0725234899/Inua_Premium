@@ -1,10 +1,12 @@
 <?php
- use AfricasTalking\SDK\AfricasTalking;
- require 'vendor/autoload.php';
-//session_start();
+use AfricasTalking\SDK\AfricasTalking;
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+require_once __DIR__ . '/vendor/autoload.php';
 
-// Database connection
-function db_connect() {
+if (!function_exists('db_connect')) {
+    // Database connection
+    function db_connect() {
     $host = 'localhost';
     $db = 'microfinance';
     $user = 'root';
@@ -18,6 +20,7 @@ function db_connect() {
         die('Connection failed: ' . $e->getMessage());
     }
 }
+}
 function getBranches() {
     $conn = db_connect();
     $stmt = $conn->query("SELECT * FROM branches");
@@ -27,8 +30,22 @@ function getBranches() {
 // User management functions
 function add_user($name, $email, $password, $role, $area = null, $phone = null) {
     $conn = db_connect();
+    $email = strtolower(trim((string) $email));
+
+    $checkStmt = $conn->prepare("SELECT id FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1");
+    $checkStmt->execute([$email]);
+    if ($checkStmt->fetch()) {
+        error_log('Duplicate staff email attempted: ' . $email);
+        return false;
+    }
+
     $stmt = $conn->prepare("INSERT INTO users (name, email, password, role_id, area, phone) VALUES (?, ?, ?, ?, ?, ?)");
-    return $stmt->execute([$name, $email, password_hash($password, PASSWORD_DEFAULT), $role, $area, $phone]);
+    try {
+        return $stmt->execute([$name, $email, password_hash($password, PASSWORD_DEFAULT), $role, $area, $phone]);
+    } catch (PDOException $e) {
+        error_log('Failed to add staff user: ' . $e->getMessage());
+        return false;
+    }
 }
 
 function login($email, $password, $role) {
@@ -281,6 +298,99 @@ function getSettings() {
     $stmt = $conn->query("SELECT * FROM settings");
     return $stmt->fetch();
 }
+
+function normalizeEmailAppPassword($password) {
+    return preg_replace('/\s+/', '', trim((string) $password));
+}
+
+function ensureEmailAccountTable() {
+    $conn = db_connect();
+    $conn->exec("CREATE TABLE IF NOT EXISTS email_accounts (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        sender_email VARCHAR(255) NOT NULL,
+        app_password VARCHAR(255) NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function getEmailAccount() {
+    $conn = db_connect();
+    ensureEmailAccountTable();
+    $stmt = $conn->query("SELECT * FROM email_accounts ORDER BY id ASC LIMIT 1");
+    $account = $stmt->fetch();
+    if ($account && isset($account['app_password'])) {
+        $account['app_password'] = normalizeEmailAppPassword($account['app_password']);
+    }
+    return $account;
+}
+
+function getConfiguredSenderEmail() {
+    $account = getEmailAccount();
+    return !empty($account['sender_email']) ? trim($account['sender_email']) : '';
+}
+
+function saveEmailAccount($senderEmail, $appPassword) {
+    $conn = db_connect();
+    ensureEmailAccountTable();
+    $normalizedPassword = normalizeEmailAppPassword($appPassword);
+    $existing = getEmailAccount();
+    if ($existing) {
+        $stmt = $conn->prepare("UPDATE email_accounts SET sender_email = ?, app_password = ?, updated_at = NOW() WHERE id = ?");
+        return $stmt->execute([$senderEmail, $normalizedPassword, $existing['id']]);
+    }
+    $stmt = $conn->prepare("INSERT INTO email_accounts (sender_email, app_password) VALUES (?, ?)");
+    return $stmt->execute([$senderEmail, $normalizedPassword]);
+}
+
+function sendWelcomeEmailToStaff($name, $email, $roleId) {
+    $account = getEmailAccount();
+    if (empty($account['sender_email']) || empty($account['app_password'])) {
+        return false;
+    }
+
+    $role = getRole($roleId);
+    $roleName = isset($role['name']) ? strtolower($role['name']) : '';
+    $isLoanOfficer = strpos($roleName, 'loan') !== false || (int) $roleId === 2;
+    $attachmentPath = $isLoanOfficer
+        ? dirname(__DIR__) . '/admin/assets/performance_contract.pdf'
+        : dirname(__DIR__) . '/admin/assets/company_profile.txt';
+    $attachmentName = $isLoanOfficer ? 'performance_contract.pdf' : 'company_profile.txt';
+
+    $mail = new PHPMailer(true);
+    try {
+        $mail->SMTPOptions = [
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false,
+                'allow_self_signed' => true,
+            ],
+        ];
+        $mail->SMTPDebug = 0;
+        $mail->isSMTP();
+        $mail->Host = 'smtp.gmail.com';
+        $mail->SMTPAuth = true;
+        $mail->Username = $account['sender_email'];
+        $mail->Password = $account['app_password'];
+        $mail->SMTPSecure = 'tls';
+        $mail->Port = 587;
+        $mail->setFrom($account['sender_email'], 'Inua Premium Services');
+        $mail->addAddress($email, $name);
+        $mail->isHTML(true);
+        $mail->Subject = 'Welcome to Inua Premium Services';
+        $mail->Body = "<p>Dear {$name},</p><p>Your account has been created successfully at Inua Premium Services.</p><p>Please use the credentials provided by the administrator to sign in.</p><p>We have attached an onboarding document for you.</p><p>Regards,<br/>Inua Premium Services</p>";
+        $mail->AltBody = 'Welcome to Inua Premium Services. Your account has been created successfully.';
+
+        if (file_exists($attachmentPath)) {
+            $mail->addAttachment($attachmentPath, $attachmentName);
+        }
+
+        return $mail->send();
+    } catch (Exception $e) {
+        error_log('Staff welcome email failed: ' . $mail->ErrorInfo);
+        return false;
+    }
+}
+
 function sendMessage($recipient, $message) {
     $text=$message;
     $phone=$recipient;

@@ -1,24 +1,20 @@
 <?php
 include '../includes/functions.php';
-if(isset($_POST['addStaff']))
-{
-    $name=$_POST['officerName'];
-    $email=$_POST['officerEmail'];
-    $phone=$_POST['officerPhone'];
-    $password=$_POST['officerPassword'];
-    $area=$_POST['areaId'];
-    $role=$_POST['roleId'];
-   //echo $name,$email,$phone,$password,$area,$role;
-    if(add_user($name, $email, $password, $role, $area,$phone))
-    {
-        header("Location: mail.php?email=$email");
+
+if (isset($_POST['addStaff'])) {
+    $name = trim($_POST['officerName'] ?? '');
+    $email = trim($_POST['officerEmail'] ?? '');
+    $phone = trim($_POST['officerPhone'] ?? '');
+    $password = $_POST['officerPassword'] ?? '';
+    $area = $_POST['areaId'] ?? null;
+    $role = (int) ($_POST['roleId'] ?? 0);
+
+    if ($name !== '' && $email !== '' && $password !== '' && $role > 0 && add_user($name, $email, $password, $role, $area, $phone)) {
+        sendWelcomeEmailToStaff($name, $email, $role);
+        header('Location: staff.php');
+        exit;
     }
-    else{
-        ?>
-        <script>
-alert("Staff not added.")
-            </script>
-        <?php
-    }
+
+    echo '<script>alert("Staff not added.")</script>';
 }
 ?>

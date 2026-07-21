@@ -168,18 +168,19 @@ $result_loans = $stmt_loans->get_result();
 </head>
 <body>
     <?php include("includes/header.php"); ?>
-    <div class="modal fade" id="imageModal" tabindex="-1" aria-labelledby="imageModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="imageModalLabel">Passport Photo</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body text-center">
-                <img id="modalImage" src="" class="img-fluid" alt="Passport Photo">
-            </div>
-        </div>
-    </div>
+    <!-- Modal for viewing passport photo -->
+<div class="modal fade" id="imageModal" tabindex="-1" aria-labelledby="imageModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+          <div class="modal-header">
+              <h5 class="modal-title" id="imageModalLabel">Passport Photo</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body text-center">
+              <img id="modalImage" src="" class="img-fluid" alt="Passport Photo">
+          </div>
+      </div>
+  </div>
 </div>
 
     <div class="container mt-4">
@@ -187,15 +188,20 @@ $result_loans = $stmt_loans->get_result();
         <div class="row">
             <div class="col-md-4">
                 <div class="card p-3">
-                    
                     <div class="text-left">
-                    <h3></h3>
-                      
+                        <h3></h3>
                     </div>
                     <?php
-    $image = "../loanOfficer/" . $client['passport_photo'];
-    echo "<img src='$image' alt='Passport Photo' class='profile-img mb-2' onclick='openModal(\"$image\")'>";
-?>
+                        // Reference passport photo from database field
+                        $passport_photo = isset($client['passport_photo']) ? $client['passport_photo'] : '';
+                        if ($passport_photo && file_exists("../loanOfficer/" . $passport_photo)) {
+                            $image = "../loanOfficer/" . $passport_photo;
+                            echo "<img src='$image' alt='Passport Photo' class='profile-img mb-2' style='cursor:pointer;' onclick='openModal(\"$image\")'>";
+                            echo "<div class='small text-muted'>Click to enlarge</div>";
+                        } else {
+                            echo "<div class='mb-2 text-danger'>No passport photo uploaded.</div>";
+                        }
+                    ?>
                     <p><strong>Name:</strong> <?php echo htmlspecialchars($client['full_name']); ?></p>
                     <p><strong>Id Number:</strong> <?php echo htmlspecialchars($client['unique_number']); ?></p>
                     <p><strong>Phone:</strong> <?php echo htmlspecialchars($client['mobile']); ?></p>
@@ -254,9 +260,9 @@ $result_loans = $stmt_loans->get_result();
     </div>
     <script>
     function openModal(imageSrc) {
-        document.getElementById("modalImage").src = imageSrc; // Set modal image source
-        var myModal = new bootstrap.Modal(document.getElementById("imageModal")); // Initialize Bootstrap modal
-        myModal.show(); // Show modal
+        document.getElementById("modalImage").src = imageSrc;
+        var myModal = new bootstrap.Modal(document.getElementById("imageModal"));
+        myModal.show();
     }
 </script>
 </body>

@@ -112,22 +112,45 @@
         
 
         if (isset($_POST['add_permission'])) {
-            $new_role_id = $_POST['new_role_id'];
-            $new_nav_item_id = $_POST['new_nav_item_id'];
+            $new_role_id = (int) $_POST['new_role_id'];
+            $new_nav_item_id = (int) $_POST['new_nav_item_id'];
+
+            $check_sql = "SELECT id FROM navigation_item_roles WHERE navigation_item_id = ? AND role_id = ?";
+            $check_stmt = $conn->prepare($check_sql);
+            $check_stmt->bind_param('ii', $new_nav_item_id, $new_role_id);
+            $check_stmt->execute();
+            $check_result = $check_stmt->get_result();
+
+            if ($check_result->num_rows > 0) {
+                ?>
+                <script>
+                    alert("This permission already exists for the selected role.");
+                    window.location.href = "staff_role_permission.php";
+                </script>
+                <?php
+                exit;
+            }
 
             $sql = "INSERT INTO navigation_item_roles (navigation_item_id, role_id) VALUES (?, ?)";
             $stmt = $conn->prepare($sql);
             $stmt->bind_param('ii', $new_nav_item_id, $new_role_id);
 
             if ($stmt->execute()) {
-                echo "Permission added successfully.";
                 ?>
                 <script>
-                location.replace("staff_role_permission.php");
+                    alert("Permission added successfully.");
+                    window.location.href = "staff_role_permission.php";
                 </script>
                 <?php
+                exit;
             } else {
-                echo "Error adding permission: " . $conn->error;
+                ?>
+                <script>
+                    alert("Error adding permission: <?= addslashes($conn->error); ?>");
+                    window.location.href = "staff_role_permission.php";
+                </script>
+                <?php
+                exit;
             }
             $stmt->close();
         }

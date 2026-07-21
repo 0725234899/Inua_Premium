@@ -230,6 +230,7 @@
                             <option value="weekly">Weekly</option>
                             <option value="monthly">Monthly</option>
                             <option value="yearly">Yearly</option>
+                            <option value="once">Once</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -238,11 +239,11 @@
                     </div>
                     <div class="form-group">
                         <label for="processingFee">Processing Fee</label>
-                        <input type="number" class="form-control" id="processingFee" name="processing_fee" step="0.01" required>
+                        <input type="number" class="form-control" id="processingFee" name="processing_fee" step="0.01" min="0" required>
                     </div>
                     <div class="form-group">
                         <label for="registrationFee">Registration Fee</label>
-                        <input type="number" class="form-control" id="registrationFee" name="registration_fee" step="0.01" required>
+                        <input type="number" class="form-control" id="registrationFee" name="registration_fee" step="0.01" min="0" required>
                     </div>
                     
                     <div class="form-group">
@@ -311,6 +312,9 @@
                     break;
                 case 'yearly':
                     numberOfRepayments = durationInWeeks / 52;
+                    break;
+                case 'once':
+                    numberOfRepayments = 1;
                     break;
             }
 

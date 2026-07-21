@@ -151,8 +151,17 @@
    
     include 'db.php';
     
-    $sql = "SELECT * FROM borrowers";
+    $sql = "SELECT b.id, b.full_name, b.mobile, COALESCE(u.name, 'Unassigned') AS loan_officer_name
+            FROM borrowers b
+            LEFT JOIN users u ON b.loan_officer = u.email
+            ORDER BY b.full_name";
     $result = $conn->query($sql);
+    $borrowers = [];
+    if ($result && $result->num_rows > 0) {
+        while ($row = $result->fetch_assoc()) {
+            $borrowers[] = $row;
+        }
+    }
                 
     $loanProducts = getLoanProducts();
     ?>
@@ -162,19 +171,23 @@
                 <form action="submit_loan_application.php" method="POST" id="loanForm" enctype="multipart/form-data">
                     <!-- Loan Product -->
                     <div class="form-group">
-                        <label for="borrower">Borrower</label>
-                    <select class="form-control" name="borrower" id="borrower">
-                    <?php
-        if ($result->num_rows > 0) {
-            while($row = $result->fetch_assoc()) {
-                echo " <option value=".$row["id"].">".$row["full_name"]."</option>";
-            }
-        } else {
-            echo "<option>No borrowers found</option>";
-        }
-        ?>
-        </select>
-    </div>
+                        <label for="borrowerSearch">Borrower Search</label>
+                        <input type="text" class="form-control" id="borrowerSearch" placeholder="Search by name or mobile">
+                        <select class="form-control mt-2" name="borrower" id="borrower" required>
+                        <?php
+                        if (!empty($borrowers)) {
+                            foreach ($borrowers as $row) {
+                                $searchText = strtolower($row['full_name'] . ' ' . $row['mobile']);
+                                $loanOfficerLabel = !empty($row['loan_officer_name']) && $row['loan_officer_name'] !== 'Unassigned' ? ' | Officer: ' . htmlspecialchars($row['loan_officer_name']) : ' | Officer: Unassigned';
+                                echo '<option value="' . (int)$row['id'] . '" data-search="' . htmlspecialchars($searchText, ENT_QUOTES) . '">' . htmlspecialchars($row['full_name']) . ' (' . htmlspecialchars($row['mobile'] ?? '') . ')' . $loanOfficerLabel . '</option>';
+                            }
+                        } else {
+                            echo '<option>No borrowers found</option>';
+                        }
+                        ?>
+                        </select>
+                        <small class="text-muted">Search by borrower name or mobile number.</small>
+                    </div>
                     <div class="form-group">
                         <label for="loanProduct">Loan Product</label>
                         <select class="form-control" id="loanProduct" name="loan_product" required>
@@ -230,6 +243,7 @@
                             <option value="weekly">Weekly</option>
                             <option value="monthly">Monthly</option>
                             <option value="yearly">Yearly</option>
+                            <option value="once">Once</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -238,11 +252,11 @@
                     </div>
                     <div class="form-group">
                         <label for="processingFee">Processing Fee</label>
-                        <input type="number" class="form-control" id="processingFee" name="processing_fee" step="0.01" required>
+                        <input type="number" class="form-control" id="processingFee" name="processing_fee" step="0.01" min="0" required>
                     </div>
                     <div class="form-group">
                         <label for="registrationFee">Registration Fee</label>
-                        <input type="number" class="form-control" id="registrationFee" name="registration_fee" step="0.01" required>
+                        <input type="number" class="form-control" id="registrationFee" name="registration_fee" step="0.01" min="0" required>
                     </div>
                     
                     <div class="form-group">
@@ -268,6 +282,26 @@
     
     <script>
         document.getElementById('loanForm').addEventListener('input', calculateLoanDetails);
+
+        function filterBorrowers() {
+            var searchValue = document.getElementById('borrowerSearch').value.toLowerCase();
+            var borrowerSelect = document.getElementById('borrower');
+            Array.from(borrowerSelect.options).forEach(function(option) {
+                var searchText = (option.getAttribute('data-search') || '').toLowerCase();
+                option.style.display = searchText.includes(searchValue) ? '' : 'none';
+            });
+
+            if (borrowerSelect.options.length > 0) {
+                var visibleOption = Array.from(borrowerSelect.options).find(function(option) {
+                    return option.style.display !== 'none';
+                });
+                if (visibleOption) {
+                    borrowerSelect.value = visibleOption.value;
+                }
+            }
+        }
+
+        document.getElementById('borrowerSearch').addEventListener('input', filterBorrowers);
 
         function calculateLoanDetails() {
             var principal = parseFloat(document.getElementById('principal').value) || 0;
@@ -311,6 +345,9 @@
                     break;
                 case 'yearly':
                     numberOfRepayments = durationInWeeks / 52;
+                    break;
+                case 'once':
+                    numberOfRepayments = 1;
                     break;
             }
 

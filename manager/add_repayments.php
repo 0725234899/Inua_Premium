@@ -6,9 +6,14 @@ error_reporting(E_ALL);
 include 'db.php';
 include '../includes/functions.php';
 
-$message = ""; // To store success or error messages
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
 
-// Search functionality
+require_once __DIR__ . '/PHPMailer/src/PHPMailer.php';
+require_once __DIR__ . '/PHPMailer/src/Exception.php';
+require_once __DIR__ . '/PHPMailer/src/SMTP.php';
+
+$message = ""; // To store success or error messages
 if (isset($_POST['search'])) {
     $search_key = trim($_POST['search_key']);
     if (strlen($search_key) < 4 && !preg_match('/^\d{10}$/', $search_key)) {
@@ -20,19 +25,19 @@ if (isset($_POST['search'])) {
             document.getElementById('search_form').style.display = 'none';
         });
         </script>";
-        // Query to get loan details
+        // Query to get loan details (include assigned loan officer name)
         $sql = "SELECT 
                 borrowers.id AS borrower_id, 
                 borrowers.full_name, 
                 borrowers.mobile, 
-                loan_products.name AS loan_product_name,
+                COALESCE(users.name, '') AS loan_officer_name,
                 loan_applications.id AS loan_id, 
                 loan_applications.loan_product, 
                 COALESCE(SUM(repayments.amount), 0) AS total_due,
                 COALESCE(SUM(repayments.paid), 0) AS total_paid
             FROM borrowers
             INNER JOIN loan_applications ON borrowers.id = loan_applications.borrower
-            INNER JOIN loan_products ON loan_applications.loan_product = loan_products.id
+            LEFT JOIN users ON borrowers.loan_officer = users.email
             INNER JOIN repayments ON loan_applications.id = repayments.loan_id
             WHERE 
                 borrowers.mobile LIKE ? 
@@ -40,7 +45,7 @@ if (isset($_POST['search'])) {
                 OR borrowers.unique_number LIKE ?
             GROUP BY 
                 borrowers.id, borrowers.full_name, borrowers.mobile, 
-                loan_applications.id, loan_applications.loan_product
+                loan_applications.id, loan_applications.loan_product, users.name
             ORDER BY total_due DESC";
 
         $search_term = "%$search_key%";
@@ -59,22 +64,90 @@ if (isset($_POST['search'])) {
 if (isset($_POST['repay'])) {
     $loan_id = $_POST['loan_id'];
     $amount_paid = $_POST['amount_paid'];
-    
+    $payment_date = !empty($_POST['payment_date']) ? $_POST['payment_date'] : date('Y-m-d');
+    $payment_date = date('Y-m-d', strtotime($payment_date));
+
+    if (!$payment_date || $payment_date === '1970-01-01') {
+        $payment_date = date('Y-m-d');
+    }
+
     if ($amount_paid > 0) {
-        $message = distributeRepayment($loan_id, $amount_paid, $conn);
-        
-        $insertPayment = "INSERT INTO payment_date_records (loan_id, PaymentDate, Amount) VALUES (?, CURDATE(), ?)";
+        $message = distributeRepayment($loan_id, $amount_paid, $conn, $payment_date);
+
+        $insertPayment = "INSERT INTO payment_date_records (loan_id, PaymentDate, Amount) VALUES (?, ?, ?)";
         $insert_stmt = $conn->prepare($insertPayment);
-        $insert_stmt->bind_param("id", $loan_id, $amount_paid);
+        $insert_stmt->bind_param("isd", $loan_id, $payment_date, $amount_paid);
         $insert_stmt->execute();
+
+        $message .= sendPaymentNotificationEmail($loan_id, $amount_paid, $conn);
     } else {
         $message = "<div class='alert alert-warning text-center'>Please enter a valid amount.</div>";
     }
 }
 
+// Bulk repayment functionality
+if (isset($_POST['bulk_repay'])) {
+    $mobiles = $_POST['bulk_mobile'] ?? [];
+    $amounts = $_POST['bulk_amount'] ?? [];
+    $dates = $_POST['bulk_date'] ?? [];
+    $bulk_messages = [];
+
+    for ($i = 0; $i < count($mobiles); $i++) {
+        $mobile = trim($mobiles[$i]);
+        $amount = floatval($amounts[$i] ?? 0);
+        $payment_date = !empty($dates[$i]) ? date('Y-m-d', strtotime($dates[$i])) : date('Y-m-d');
+
+        if ($mobile === '' || $amount <= 0) {
+            $bulk_messages[] = "<div class='alert alert-warning'>Skipped empty or invalid row.</div>";
+            continue;
+        }
+
+        // Find borrower by mobile or unique number
+        $stmtB = $conn->prepare("SELECT id FROM borrowers WHERE mobile = ? OR unique_number = ? LIMIT 1");
+        $stmtB->bind_param("ss", $mobile, $mobile);
+        $stmtB->execute();
+        $resB = $stmtB->get_result()->fetch_assoc();
+
+        if (!$resB) {
+            $bulk_messages[] = "<div class='alert alert-warning'>No borrower found for: " . htmlspecialchars($mobile) . "</div>";
+            continue;
+        }
+
+        $borrower_id = $resB['id'];
+
+        // Find an approved loan for borrower with outstanding balance
+        $stmtL = $conn->prepare(
+            "SELECT la.id FROM loan_applications la INNER JOIN repayments r ON la.id = r.loan_id WHERE la.borrower = ? AND la.loan_status = 'approved' GROUP BY la.id HAVING SUM(r.amount - r.paid) > 0 ORDER BY MIN(r.repayment_date) ASC LIMIT 1"
+        );
+        $stmtL->bind_param("i", $borrower_id);
+        $stmtL->execute();
+        $resL = $stmtL->get_result()->fetch_assoc();
+
+        if (!$resL) {
+            $bulk_messages[] = "<div class='alert alert-warning'>No outstanding approved loan for borrower: " . htmlspecialchars($mobile) . "</div>";
+            continue;
+        }
+
+        $loan_id = $resL['id'];
+
+        // Apply the repayment distribution
+        $msg = distributeRepayment($loan_id, $amount, $conn, $payment_date);
+        $bulk_messages[] = $msg;
+
+        // Record payment date entry
+        $ins = $conn->prepare("INSERT INTO payment_date_records (loan_id, PaymentDate, Amount) VALUES (?, ?, ?)");
+        $ins->bind_param("isd", $loan_id, $payment_date, $amount);
+        $ins->execute();
+
+        $bulk_messages[] = sendPaymentNotificationEmail($loan_id, $amount, $conn);
+    }
+
+    $message = implode('', $bulk_messages);
+}
+
 // Function to distribute repayment
-function distributeRepayment($loan_id, $amount_paid, $conn) {
-    $sql = "SELECT * FROM repayments WHERE loan_id = ? AND COALESCE(paid, 0) < amount ORDER BY DATE_FORMAT(repayment_date, '%d/%m/%Y') ASC";
+function distributeRepayment($loan_id, $amount_paid, $conn, $payment_date) {
+    $sql = "SELECT * FROM repayments WHERE loan_id = ? AND COALESCE(paid, 0) < amount ORDER BY repayment_date ASC";
     
     $stmt = $conn->prepare($sql);
     $stmt->bind_param("i", $loan_id);
@@ -92,23 +165,25 @@ function distributeRepayment($loan_id, $amount_paid, $conn) {
 
         if ($amount_paid >= $remaining_due) {
             $new_amount_paid = $row['amount']; // Full payment
+            $applied_amount = $remaining_due;
             $amount_paid -= $remaining_due;
         } else {
             $new_amount_paid = $row['paid'] + $amount_paid;
+            $applied_amount = $amount_paid;
             $amount_paid = 0;
         }
 
         // Update the installment with the new paid amount
-        $update_sql = "UPDATE repayments SET paid = ?, repaid_date = CURDATE() WHERE id = ?";
+        $update_sql = "UPDATE repayments SET paid = ?, repaid_date = ? WHERE id = ?";
         $update_stmt = $conn->prepare($update_sql);
-        $update_stmt->bind_param("di", $new_amount_paid, $installment_id);
+        $update_stmt->bind_param("dsi", $new_amount_paid, $payment_date, $installment_id);
         $update_stmt->execute();
         
-        $total_distributed += $new_amount_paid;
+        $total_distributed += $applied_amount;
     }
 
     // Fetch the updated outstanding loan balance
-    $outstanding_sql = "SELECT SUM(amount - paid) AS outstanding_balance FROM repayments WHERE loan_id = ?";
+    $outstanding_sql = "SELECT SUM(amount - COALESCE(paid, 0)) AS outstanding_balance FROM repayments WHERE loan_id = ?";
     $outstanding_stmt = $conn->prepare($outstanding_sql);
     $outstanding_stmt->bind_param("i", $loan_id);
     $outstanding_stmt->execute();
@@ -122,6 +197,101 @@ function distributeRepayment($loan_id, $amount_paid, $conn) {
     } else {
         return "<div class='alert alert-warning text-center'>No repayments were necessary for this loan.</div>";
     }
+}
+
+function getLoanNotificationDetails($loan_id, $conn) {
+    $sql = "SELECT b.full_name AS borrower_name, b.loan_officer AS officer_email, COALESCE(u.name, '') AS loan_officer_name, la.id AS loan_id
+            FROM loan_applications la
+            JOIN borrowers b ON la.borrower = b.id
+            LEFT JOIN users u ON b.loan_officer = u.email
+            WHERE la.id = ? LIMIT 1";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("i", $loan_id);
+    $stmt->execute();
+    return $stmt->get_result()->fetch_assoc();
+}
+
+function getLoanBalanceSummary($loan_id, $conn) {
+    $sql = "SELECT 
+                COALESCE(SUM(amount - COALESCE(paid, 0)), 0) AS outstanding_balance,
+                COALESCE(SUM(CASE WHEN repayment_date < CURDATE() THEN GREATEST(amount - COALESCE(paid, 0), 0) ELSE 0 END), 0) AS overdue_balance
+            FROM repayments
+            WHERE loan_id = ?";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("i", $loan_id);
+    $stmt->execute();
+    return $stmt->get_result()->fetch_assoc();
+}
+
+function sendPaymentNotificationEmail($loan_id, $amount_paid, $conn) {
+    $details = getLoanNotificationDetails($loan_id, $conn);
+    if (!$details) {
+        return "<div class='alert alert-warning text-center'>Payment saved but loan details were not found for notification.</div>";
+    }
+
+    $officerEmail = trim($details['officer_email'] ?? '');
+    $senderEmail = getConfiguredSenderEmail();
+    if (empty($officerEmail) || !filter_var($officerEmail, FILTER_VALIDATE_EMAIL)) {
+        $officerEmail = $senderEmail;
+    }
+
+    if (empty($officerEmail) || !filter_var($officerEmail, FILTER_VALIDATE_EMAIL)) {
+        return "<div class='alert alert-warning text-center'>Payment saved but no valid loan officer email exists for notification.</div>";
+    }
+
+    $recipient_email = $officerEmail;
+
+    $loanSummary = getLoanBalanceSummary($loan_id, $conn);
+    $outstandingBalance = $loanSummary['outstanding_balance'] ?? 0;
+    $overdueBalance = $loanSummary['overdue_balance'] ?? 0;
+    $loanStatus = $outstandingBalance <= 0 ? 'Loan fully cleared.' : 'Loan still has an outstanding balance.';
+    $arrearsStatus = $overdueBalance <= 0 ? 'No overdue balance remains.' : 'Overdue balance remaining: KSH ' . number_format($overdueBalance, 2) . '.';
+    $officerDisplay = !empty($details['loan_officer_name']) ? $details['loan_officer_name'] : $officerEmail;
+
+        $subject = 'Payment Received for ' . $details['borrower_name'];
+        $recipient_email = $officerEmail;
+        $greetName = !empty($officerDisplay) ? $officerDisplay : 'Team';
+        $body = '<p>Dear ' . htmlspecialchars($greetName) . ',</p>'
+              . '<p>The client <strong>' . htmlspecialchars($details['borrower_name']) . '</strong> has paid <strong>KSH ' . number_format($amount_paid, 2) . '</strong>.</p>'
+              . '<p><strong>Outstanding balance:</strong> KSH ' . number_format($outstandingBalance, 2) . '</p>'
+              . '<p><strong>Arrears status:</strong> ' . $arrearsStatus . '</p>'
+              . '<p>Thank you,<br>Inua Premium Services</p>';
+
+        $emailCredentials = getEmailAccount();
+        if (!$emailCredentials || empty($emailCredentials['sender_email']) || empty($emailCredentials['app_password'])) {
+            return "<div class='alert alert-warning text-center'>Payment saved but notification email was not sent because email settings are not configured. Please configure sender email and app password in the email settings page.</div>";
+        }
+
+        try {
+            $mail = new PHPMailer(true);
+            $mail->SMTPOptions = [
+                'ssl' => [
+                    'verify_peer' => false,
+                    'verify_peer_name' => false,
+                    'allow_self_signed' => true,
+                ],
+            ];
+            $mail->SMTPDebug = 0;
+            $mail->isSMTP();
+            $mail->Host = 'smtp.gmail.com';
+            $mail->Port = 587;
+            $mail->SMTPSecure = 'tls';
+            $mail->SMTPAuth = true;
+            $mail->Username = $emailCredentials['sender_email'];
+            $mail->Password = $emailCredentials['app_password'];
+            $mail->CharSet = 'UTF-8';
+            $mail->setFrom($emailCredentials['sender_email'], 'Inua Premium Services');
+            $mail->addAddress($recipient_email);
+            $mail->isHTML(true);
+            $mail->Subject = $subject;
+            $mail->Body = $body;
+            $mail->AltBody = strip_tags($body);
+            $mail->send();
+
+            return "<div class='alert alert-success text-center'>Payment notification sent to " . htmlspecialchars($recipient_email) . ".</div>";
+        } catch (Exception $e) {
+            return "<div class='alert alert-warning text-center'>Payment saved but notification email failed: " . htmlspecialchars($mail->ErrorInfo) . "</div>";
+        }
 }
 ?>
 
@@ -238,98 +408,174 @@ function distributeRepayment($loan_id, $amount_paid, $conn) {
         <h2>Make a Loan Payments here 👇</h2>
         <?= $message; ?>
 
-        <form method="POST" class="mb-4" id="search_form">
-            <label for="search_key" class="form-label">Enter Search Key:</label>
-            <input type="text" name="search_key" id="search_key" class="form-control" required placeholder="Search by Name, Phone, or Unique ID">
-            <button type="submit" name="search" id="search_btn" class="btn btn-primary mt-2">Search</button>
-        </form>
+        <!-- Bulk-only page: single repayment/search removed -->
+
+        <!-- Bulk Repayments Section -->
+        <div class="container mb-4">
+            <h3>Bulk Repayments</h3>
+            <p class="text-muted">Add multiple repayments at once. You can also search borrowers and add them to the bulk list.</p>
+            <div id="bulk_section">
+                <div class="mb-3 d-flex">
+                    <input type="text" id="bulk_search_key" class="form-control" placeholder="Search by name, phone, or unique ID">
+                    <button type="button" id="bulk_search_btn" class="btn btn-primary ms-2">Search Borrowers</button>
+                </div>
+                <div id="bulk_search_results" style="max-height:250px; overflow:auto; display:none;" class="mb-3"></div>
+                <form method="POST" id="bulk_form">
+                    <table class="table table-bordered" id="bulk_table">
+                        <thead>
+                            <tr>
+                                <th>Borrower Mobile / ID</th>
+                                <th>Amount (KES)</th>
+                                <th>Payment Date</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><input type="text" name="bulk_mobile[]" class="form-control bulk_mobile_input" placeholder="Mobile or Unique ID" required autocomplete="off"></td>
+                                <td><input type="number" step="0.01" name="bulk_amount[]" class="form-control" required></td>
+                                <td><input type="date" name="bulk_date[]" class="form-control" value="<?= date('Y-m-d'); ?>" required></td>
+                                <td><button type="button" class="btn btn-danger btn-sm" onclick="removeRow(this)">Remove</button></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="addRow()">Add Row</button>
+                    <button type="submit" name="bulk_repay" class="btn btn-success btn-sm">Submit Bulk Repayments</button>
+                </form>
+            </div>
+        </div>
 
         <script>
-            document.addEventListener('DOMContentLoaded', function () {
-                const searchInput = document.getElementById('search_key');
-                const suggestionsBox = document.createElement('div');
-                suggestionsBox.className = 'suggestions-box';
-                suggestionsBox.style.position = 'absolute';
-                suggestionsBox.style.zIndex = '1000';
-                suggestionsBox.style.backgroundColor = '#fff';
-                suggestionsBox.style.border = '1px solid #ddd';
-                suggestionsBox.style.width = searchInput.offsetWidth + 'px';
-                suggestionsBox.style.display = 'none';
-                document.body.appendChild(suggestionsBox);
-
-                searchInput.addEventListener('input', function () {
-                    const query = this.value.trim();
-                    if (query.length > 1) {
-                        fetch(`search_borrowers.php?query=${encodeURIComponent(query)}`)
-                            .then(response => response.json())
-                            .then(data => {
-                                suggestionsBox.innerHTML = '';
-                                if (data.length > 0) {
-                                    data.forEach(borrower => {
-                                        const suggestion = document.createElement('div');
-                                        suggestion.textContent = `${borrower.full_name} (${borrower.mobile})`;
-                                        suggestion.style.padding = '10px';
-                                        suggestion.style.cursor = 'pointer';
-                                        suggestion.addEventListener('click', function () {
-                                            searchInput.value = borrower.mobile;
-                                            suggestionsBox.style.display = 'none';
-                                        });
-                                        suggestionsBox.appendChild(suggestion);
-                                    });
-                                    suggestionsBox.style.display = 'block';
-                                    const rect = searchInput.getBoundingClientRect();
-                                    suggestionsBox.style.top = rect.bottom + window.scrollY + 'px';
-                                    suggestionsBox.style.left = rect.left + window.scrollX + 'px';
-                                } else {
-                                    suggestionsBox.style.display = 'none';
-                                }
+            document.getElementById('bulk_search_btn').addEventListener('click', function() {
+                const key = document.getElementById('bulk_search_key').value.trim();
+                const results = document.getElementById('bulk_search_results');
+                results.innerHTML = '';
+                if (key.length < 2) {
+                    results.style.display = 'none';
+                    return;
+                }
+                fetch(`search_borrowers.php?query=${encodeURIComponent(key)}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (!data || data.length === 0) {
+                            results.style.display = 'none';
+                            return;
+                        }
+                        data.forEach(b => {
+                            const div = document.createElement('div');
+                            div.className = 'd-flex justify-content-between align-items-center p-2 border-bottom';
+                            const officer = b.loan_officer_name && b.loan_officer_name.trim() !== '' ? b.loan_officer_name : 'Unassigned';
+                            div.innerHTML = `<div>${b.full_name} (${b.mobile}) - ${officer}</div><div><button type="button" class="btn btn-sm btn-success">Add to Bulk</button></div>`;
+                            div.querySelector('button').addEventListener('click', function() {
+                                addRowFromData(b.mobile);
                             });
-                    } else {
-                        suggestionsBox.style.display = 'none';
-                    }
-                });
-
-                document.addEventListener('click', function (e) {
-                    if (!searchInput.contains(e.target) && !suggestionsBox.contains(e.target)) {
-                        suggestionsBox.style.display = 'none';
-                    }
-                });
+                            results.appendChild(div);
+                        });
+                        results.style.display = 'block';
+                    })
+                    .catch(() => { results.style.display = 'none'; });
             });
+
+            function addRowFromData(mobile) {
+                const tbody = document.querySelector('#bulk_table tbody');
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><input type="text" name="bulk_mobile[]" class="form-control bulk_mobile_input" value="${mobile}" required autocomplete="off"></td>
+                    <td><input type="number" step="0.01" name="bulk_amount[]" class="form-control" required></td>
+                    <td><input type="date" name="bulk_date[]" class="form-control" value="<?= date('Y-m-d'); ?>" required></td>
+                    <td><button type="button" class="btn btn-danger btn-sm" onclick="removeRow(this)">Remove</button></td>
+                `;
+                tbody.appendChild(tr);
+                document.getElementById('bulk_search_results').style.display = 'none';
+            }
         </script>
 
-        <?php if (isset($result) && $result->num_rows > 0): ?>
-            <h3 class="text-center mb-4">Repayment Details</h3>
-            <div class="table-container">
-                <table class="table table-bordered table-hover shadow-sm">
-                    <thead class="table-dark">
-                        <tr>
-                            <th>Borrower</th>
-                            <th>Phone</th>
-                            <th>Loan Product</th>
-                            <th>Amount Due</th>
-                            <th>Repay</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php while ($row = $result->fetch_assoc()): ?>
-                            <tr>
-                                <td><?= htmlspecialchars($row['full_name']); ?></td>
-                                <td><?= htmlspecialchars($row['mobile']); ?></td>
-                                <td><?= htmlspecialchars($row['loan_product_name']); ?></td>
-                                <td><strong><?php echo number_format(ceil($row['total_due'] - $row['total_paid'])); ?> KES</strong></td>
-                                <td>
-                                    <form method="POST" class="d-flex flex-column align-items-center">
-                                        <input type="hidden" name="loan_id" value="<?= $row['loan_id']; ?>">
-                                        <input type="number" name="amount_paid" class="form-control mb-2" required placeholder="Enter amount" style="width: 150px;">
-                                        <button type="submit" name="repay" class="btn btn-success btn-sm">Repay</button>
-                                    </form>
-                                </td>
-                            </tr>
-                        <?php endwhile; ?>
-                    </tbody>
-                </table>
-            </div>
-        <?php endif; ?>
+        <script>
+                function addRow() {
+                const tbody = document.querySelector('#bulk_table tbody');
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><input type="text" name="bulk_mobile[]" class="form-control bulk_mobile_input" placeholder="Mobile or Unique ID" required autocomplete="off"></td>
+                    <td><input type="number" step="0.01" name="bulk_amount[]" class="form-control" required></td>
+                    <td><input type="date" name="bulk_date[]" class="form-control" value="<?= date('Y-m-d'); ?>" required></td>
+                    <td><button type="button" class="btn btn-danger btn-sm" onclick="removeRow(this)">Remove</button></td>
+                `;
+                tbody.appendChild(tr);
+            }
+
+            function removeRow(btn) {
+                const tr = btn.closest('tr');
+                if (tr) tr.remove();
+            }
+        </script>
+
+        <script>
+            (function() {
+                let bulkSuggestionsBox = document.createElement('div');
+                bulkSuggestionsBox.className = 'bulk-suggestions-box';
+                bulkSuggestionsBox.style.position = 'absolute';
+                bulkSuggestionsBox.style.zIndex = '1100';
+                bulkSuggestionsBox.style.backgroundColor = '#fff';
+                bulkSuggestionsBox.style.border = '1px solid #ddd';
+                bulkSuggestionsBox.style.display = 'none';
+                bulkSuggestionsBox.style.maxHeight = '250px';
+                bulkSuggestionsBox.style.overflowY = 'auto';
+                document.body.appendChild(bulkSuggestionsBox);
+
+                let activeInput = null;
+
+                document.addEventListener('input', function(e) {
+                    if (!e.target.classList.contains('bulk_mobile_input')) return;
+                    const input = e.target;
+                    activeInput = input;
+                    const query = input.value.trim();
+                    if (query.length < 2) {
+                        bulkSuggestionsBox.style.display = 'none';
+                        return;
+                    }
+
+                    fetch(`search_borrowers.php?query=${encodeURIComponent(query)}`)
+                        .then(res => res.json())
+                        .then(data => {
+                            bulkSuggestionsBox.innerHTML = '';
+                            if (!data || data.length === 0) {
+                                bulkSuggestionsBox.style.display = 'none';
+                                return;
+                            }
+                            data.forEach(b => {
+                                const div = document.createElement('div');
+                                div.style.padding = '8px';
+                                div.style.cursor = 'pointer';
+                                const officer = b.loan_officer_name && b.loan_officer_name.trim() !== '' ? b.loan_officer_name : 'Unassigned';
+                                div.textContent = `${b.full_name} (${b.mobile}) - ${officer}`;
+                                div.addEventListener('click', function() {
+                                    if (activeInput) {
+                                        activeInput.value = b.mobile;
+                                        bulkSuggestionsBox.style.display = 'none';
+                                    }
+                                });
+                                bulkSuggestionsBox.appendChild(div);
+                            });
+                            const rect = input.getBoundingClientRect();
+                            bulkSuggestionsBox.style.top = rect.bottom + window.scrollY + 'px';
+                            bulkSuggestionsBox.style.left = rect.left + window.scrollX + 'px';
+                            bulkSuggestionsBox.style.minWidth = rect.width + 'px';
+                            bulkSuggestionsBox.style.display = 'block';
+                        })
+                        .catch(() => {
+                            bulkSuggestionsBox.style.display = 'none';
+                        });
+                });
+
+                document.addEventListener('click', function(e) {
+                    if (e.target.classList && e.target.classList.contains('bulk_mobile_input')) return;
+                    if (bulkSuggestionsBox.contains(e.target)) return;
+                    bulkSuggestionsBox.style.display = 'none';
+                });
+            })();
+        </script>
+
+        <!-- Single repayment results removed; bulk repayments only -->
     </div>
 </body>
 </html>

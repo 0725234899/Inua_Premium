@@ -76,6 +76,15 @@ function renderNavItems($items, $parentId = NULL) {
 <body>
     <aside class="sidebar">
         <ul class="sidebar-nav" id="sidebar-nav">
+            <?php
+            $navItems[] = [
+                'id' => 9999,
+                'title' => 'Savings',
+                'url' => 'savings_template.php',
+                'icon' => 'bi bi-piggy-bank',
+                'parent_id' => null,
+            ];
+            ?>
             <?= renderNavItems($navItems) ?>
         </ul>
     </aside><!-- End Sidebar -->

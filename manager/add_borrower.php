@@ -1,5 +1,12 @@
 <?php
 session_start();
+require_once 'db.php';
+
+$selectedLoanOfficerEmail = isset($_SESSION['email']) ? $_SESSION['email'] : '';
+$officerStmt = $conn->prepare("SELECT email, name AS full_name FROM users WHERE role_id = '2' ORDER BY name");
+$officerStmt->execute();
+$officerResult = $officerStmt->get_result();
+$loanOfficers = $officerResult->fetch_all(MYSQLI_ASSOC);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -154,31 +161,27 @@ include("includes/header.php");
 
     <h2>Add Borrower</h2>
     <form action="insert_borrower.php" method="post" enctype="multipart/form-data">
-        Loan Officer: <input type="text" name="loanOfficer" value="<?php echo $_SESSION['email']; ?>" class="form-control" required readonly><br>
+        Loan Officer:
+        <select name="loanOfficer" class="form-control" required>
+            <option value="">Select loan officer</option>
+            <?php foreach ($loanOfficers as $officer): ?>
+                <option value="<?php echo htmlspecialchars($officer['email'], ENT_QUOTES); ?>"
+                    <?php echo ($selectedLoanOfficerEmail === $officer['email']) ? 'selected' : ''; ?>>
+                    <?php echo htmlspecialchars($officer['full_name'] . ' (' . $officer['email'] . ')'); ?>
+                </option>
+            <?php endforeach; ?>
+        </select><br>
         
         Full Name: <input type="text" name="full_name" class="form-control" required><br>
-         <!-- Passport Photo -->
-         Passport Photo:
-        <input type="file" name="passport_photo" class="form-control" accept=".jpg, .jpeg, .png" required><br>
-
-        
-      
-        
-        ID Number: <input type="text" name="id_number" class="form-control" required><br>
-         <!-- ID Upload -->
-         Upload ID Document (PDF or Image): 
-        <input type="file" name="id_upload" class="form-control" accept=".pdf, .jpg, .jpeg, .png" required><br>
-        Business Name: <input type="text" name="business_name" class="form-control"><br>
-        
         Mobile: <input type="text" name="mobile" class="form-control"><br>
-        
-        Email: <input type="email" name="email" class="form-control"><br>
+        ID Number: <input type="text" name="id_number" class="form-control" required><br>
+        Guarantor Name: <input type="text" name="guarantor_name" class="form-control"><br>
+        Guarantor Phone Number: <input type="text" name="guarantor_phone" class="form-control"><br>
+        Business Name: <input type="text" name="business_name" class="form-control"><br>
         
         <!-- Hidden Fields for Loan Data -->
         <input type="number" step="0.01" value="0.00" class="form-control" name="total_paid" hidden><br>
         <input type="number" value="0.00" step="0.01" class="form-control" name="open_loans_balance" hidden><br>
-        
-        Working Status: <input type="text" name="status" class="form-control"><br>
 
        
         <input type="submit" value="Add Borrower" class="btn btn-primary">

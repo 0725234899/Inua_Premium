@@ -30,6 +30,12 @@ if ($data['Body']['stkCallback']['ResultCode'] == 0) {
         $insert_stmt->bind_param("sdsi", $phone, $amount, $mpesa_code, $loan_id);
         $insert_stmt->execute();
 
+        // Record the payment in payment_date_records for display in repayment details
+        $insert_record_sql = "INSERT INTO payment_date_records (loan_id, PaymentDate, Amount) VALUES (?, CURDATE(), ?)";
+        $insert_record_stmt = $conn->prepare($insert_record_sql);
+        $insert_record_stmt->bind_param("id", $loan_id, $amount);
+        $insert_record_stmt->execute();
+
         // Call distribute repayment function
         distributeRepayment($loan_id, $amount, $conn);
 

@@ -157,6 +157,7 @@ include("includes/header.php");
         Loan Officer: <input type="text" name="loanOfficer" value="<?php echo $_SESSION['email']; ?>" class="form-control" required readonly><br>
         
         Full Name: <input type="text" name="full_name" class="form-control" required><br>
+        Mobile: <input type="text" name="mobile" class="form-control"><br>
          <!-- Passport Photo -->
          Passport Photo:
         <input type="file" name="passport_photo" class="form-control" accept=".jpg, .jpeg, .png" required><br>
@@ -168,6 +169,8 @@ include("includes/header.php");
          <!-- ID Upload -->
          Upload ID Document (PDF or Image): 
         <input type="file" name="id_upload" class="form-control" accept=".pdf, .jpg, .jpeg, .png" required><br>
+        Guarantor Name: <input type="text" name="guarantor_name" class="form-control"><br>
+        Guarantor Phone Number: <input type="text" name="guarantor_phone" class="form-control"><br>
         Business Name: <input type="text" name="business_name" class="form-control"><br>
         
         Mobile: <input type="text" name="mobile" class="form-control"><br>
