@@ -34,7 +34,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $messages[] = ['type' => 'success', 'text' => 'Email settings saved successfully.'];
             $emailSettings = getEmailAccount();
             $senderEmail = $emailSettings['sender_email'] ?? '';
-            $appPassword = $emailSettings['app_password'] ?? '';
+            $appPassword = $emailSettings['app_password'] ?? $emailSettings['sender_app_password'] ?? '';
         } else {
             $messages[] = ['type' => 'danger', 'text' => 'Unable to save email settings. Please try again.'];
         }

@@ -89,6 +89,7 @@ include("includes/header.php");
                     l.id,
                     DATE_FORMAT(l.loan_release_date, '%d/%m/%Y') AS loan_release_date, 
                     l.principal,
+                    l.loan_status,
                     b.full_name AS borrower_name, 
                     p.name AS loan_product_name, 
                     SUM(r.paid) AS total_paid_amount, 
@@ -98,10 +99,10 @@ include("includes/header.php");
                 INNER JOIN borrowers b ON l.borrower = b.id 
                 INNER JOIN loan_products p ON l.loan_product = p.id 
                 LEFT JOIN repayments r ON l.id = r.loan_id 
-                WHERE l.loan_status='approved' 
+                WHERE l.loan_status IN ('approved', 'rolled_over') 
                 $officer_filter
                 $day_filter
-                GROUP BY l.id, b.full_name, p.name";
+                GROUP BY l.id, b.full_name, p.name, l.loan_status";
 
         $stmt = $conn->prepare($sql);
         if ($selected_officer !== 'all' && $selected_day !== 'all') {
@@ -203,6 +204,11 @@ include("includes/header.php");
                             foreach ($loans as $loan) {
                                 $balance = $loan['total_amount'] - $loan['total_paid_amount'];
                                 $loanId = $loan['id'];
+                                $loanStatusValue = strtolower(trim((string) ($loan['loan_status'] ?? '')));
+                                $isRolledOver = stripos($loanStatusValue, 'rolled') !== false;
+                                $balanceDisplay = $isRolledOver
+                                    ? '<span style="background-color:#ffc107;color:#000;padding:2px 8px;border-radius:4px;font-weight:700;display:inline-block;">Rolled Over</span>'
+                                    : number_format(ceil($balance));
                                 echo "<tr>
                                     <td><a href='repayment_details.php?loanId=" . htmlspecialchars($loanId) . "'>" . htmlspecialchars($loan['id']) . "</a></td>
                                     <td><a href='repayment_details.php?loanId=" . htmlspecialchars($loanId) . "'>" . htmlspecialchars($loan['borrower_name']) . "</a></td>
@@ -211,7 +217,7 @@ include("includes/header.php");
                                     <td>" . htmlspecialchars($loan['loan_product_name']) . "</td>
                                     <td>" . number_format(ceil($loan['total_amount'])) . "</td>
                                     <td><a href='repayment_details.php?loanId=" . htmlspecialchars($loanId) . "'>" . number_format(ceil($loan['total_paid_amount'])) . "</a></td>
-                                    <td>" . number_format(ceil($balance)) . "</td>
+                                    <td>" . $balanceDisplay . "</td>
                                 </tr>";
                             }
                         } else {

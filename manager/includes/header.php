@@ -7,7 +7,7 @@ if (!isset($_SESSION['email']) || empty($_SESSION['email'])) {
     header("Location: ../index.html");
     exit();
 }
-// Include functions and database connection
+require_once __DIR__ . '/../../includes/functions.php';
 ?>
 <!-- ======= Header ======= -->
 <header id="header" class="header" style="background: linear-gradient(90deg, #00c6ff, #0072ff); 
@@ -21,8 +21,11 @@ if (!isset($_SESSION['email']) || empty($_SESSION['email'])) {
         </h1>
 
         <!-- Navigation Menu -->
-        <nav id="navmenu" class="navmenu">
-            <ul class="d-flex align-items-center" style="gap: 20px; list-style: none; margin: 0; padding: 0;">
+        <nav id="navmenu" class="navmenu d-flex align-items-center justify-content-end">
+            <button id="sidebarToggle" class="mobile-nav-toggle btn btn-link text-white p-0 me-3" type="button" aria-label="Toggle sidebar" style="font-size: 24px;">
+                <i class="fas fa-bars"></i>
+            </button>
+            <ul class="d-flex align-items-center mb-0" style="gap: 20px; list-style: none; margin: 0; padding: 0;">
                 <?php 
                 $role = getRole($_SESSION['role']);
                 if ($role['name'] == 'Admin') { ?>
@@ -39,7 +42,6 @@ if (!isset($_SESSION['email']) || empty($_SESSION['email'])) {
                     </a>
                 </li>
             </ul>
-            <i class="mobile-nav-toggle d-xl-none fas fa-bars text-white" style="font-size: 24px; cursor: pointer;"></i>
         </nav>
     </div>
 </header>
@@ -49,10 +51,53 @@ if (!isset($_SESSION['email']) || empty($_SESSION['email'])) {
     body {
         padding-top: 70px; /* Adjust to match header height */
     }
+
+    .sidebar {
+        transition: transform 0.3s ease;
+    }
+
+    .sidebar.collapsed {
+        transform: translateX(-100%);
+    }
+
+    .main.sidebar-collapsed,
+    main.sidebar-collapsed,
+    #mainContent.sidebar-collapsed {
+        margin-left: 0 !important;
+    }
+
+    @media (max-width: 1199px) {
+        .sidebar {
+            position: fixed;
+            top: 70px;
+            left: 0;
+            z-index: 1050;
+            width: 250px;
+            height: calc(100vh - 70px);
+            background-color: #f8f9fa;
+        }
+    }
 </style>
 
 <!-- FontAwesome for Icons -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/js/all.min.js"></script>
-<!-- FontAwesome CDN -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/js/all.min.js"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        var toggleButton = document.getElementById('sidebarToggle');
+        var sidebar = document.querySelector('.sidebar');
+        var mainContent = document.querySelector('.main, main, #mainContent');
+
+        if (!toggleButton || !sidebar) {
+            return;
+        }
+
+        toggleButton.addEventListener('click', function () {
+            sidebar.classList.toggle('collapsed');
+            if (mainContent) {
+                mainContent.classList.toggle('sidebar-collapsed');
+            }
+        });
+    });
+</script>
 

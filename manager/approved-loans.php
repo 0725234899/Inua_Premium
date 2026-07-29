@@ -1,29 +1,39 @@
 <?php
 include 'db.php';
 
-// Fetch approved loans
+// Fetch approved loans (basic list)
 $sql_loans = "SELECT 
-                l.id, 
-                b.full_name AS borrower_name, 
-                p.name AS loan_product_name, 
-                l.principal, 
-                (l.total_amount - l.principal) AS interest, 
-                l.interest_method, 
-                l.loan_interest, 
-                l.loan_duration, 
-                l.repayment_cycle, 
-                l.number_of_repayments, 
-                l.processing_fee, 
-                l.registration_fee, 
-                l.total_amount, 
-                l.loan_release_date 
-              FROM loan_applications l 
-              INNER JOIN borrowers b ON l.borrower = b.id 
-              INNER JOIN loan_products p ON l.loan_product = p.id 
-              WHERE l.loan_status = 'approved'
-              ORDER BY l.loan_release_date DESC";
+                                l.id, 
+                                b.full_name AS borrower_name, 
+                                p.name AS loan_product_name, 
+                                l.principal, 
+                                (l.total_amount - l.principal) AS interest, 
+                                l.interest_method, 
+                                l.loan_interest, 
+                                l.loan_duration, 
+                                l.repayment_cycle, 
+                                l.number_of_repayments, 
+                                l.processing_fee, 
+                                l.registration_fee, 
+                                l.total_amount, 
+                                l.loan_release_date 
+                            FROM loan_applications l 
+                            INNER JOIN borrowers b ON l.borrower = b.id 
+                            INNER JOIN loan_products p ON l.loan_product = p.id 
+                            WHERE l.loan_status = 'approved'
+                            ORDER BY l.loan_release_date DESC";
 
 $result_loans = $conn->query($sql_loans);
+
+// Fetch total interest metric for the clickable metric
+$sql_total_interest = "SELECT CEIL(COALESCE(SUM(total_amount - principal),0)) AS total_interest FROM loan_applications WHERE loan_status = 'approved'";
+$res_total_interest = $conn->query($sql_total_interest);
+$total_interest_metric = 0;
+if ($res_total_interest) {
+        $total_interest_metric = $res_total_interest->fetch_assoc()['total_interest'] ?? 0;
+}
+
+// (Interest breakdown table moved to manager/index.php)
 ?>
 
 <!DOCTYPE html>
@@ -90,7 +100,12 @@ $result_loans = $conn->query($sql_loans);
         <h1>Approved Loans</h1>
     </div>
     <div class="container mt-5">
-        <h3 class="section-title">Loan Applications</h3>
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h3 class="section-title">Loan Applications</h3>
+            <a href="index.php#interestTable" class="btn btn-outline-primary">
+                <i class="bi bi-currency-exchange"></i> Total Interest: KSH <?php echo number_format($total_interest_metric); ?>
+            </a>
+        </div>
         <table id="approvedLoansTable" class="table table-bordered">
             <thead>
                 <tr>
@@ -134,6 +149,8 @@ $result_loans = $conn->query($sql_loans);
                 <?php endif; ?>
             </tbody>
         </table>
+        
+        <!-- Interest breakdown moved to Manager Dashboard (index.php) -->
     </div>
     <footer class="text-center mt-5">
         <p><em>Powered by AntonTech</em></p>

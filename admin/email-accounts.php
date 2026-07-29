@@ -11,24 +11,37 @@ $conn = db_connect();
 $conn->exec("CREATE TABLE IF NOT EXISTS email_accounts (
     id INT AUTO_INCREMENT PRIMARY KEY,
     sender_email VARCHAR(255) NOT NULL,
-    app_password VARCHAR(255) NOT NULL,
+    sender_app_password VARCHAR(255) NOT NULL,
+    admin_email VARCHAR(255) DEFAULT NULL,
+    admin_app_password VARCHAR(255) DEFAULT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+$columnCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'sender_app_password'");
+if ($columnCheck->rowCount() === 0) {
+    $conn->exec("ALTER TABLE email_accounts ADD COLUMN sender_app_password VARCHAR(255) NOT NULL AFTER sender_email");
+}
+$columnCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'admin_app_password'");
+if ($columnCheck->rowCount() === 0) {
+    $conn->exec("ALTER TABLE email_accounts ADD COLUMN admin_app_password VARCHAR(255) DEFAULT NULL AFTER admin_email");
+}
 
 $messages = [];
 $errors = [];
 $emailId = 0;
 $senderEmail = '';
-$appPassword = '';
-$storedPassword = '';
+$adminEmail = '';
+$senderAppPassword = '';
+$adminAppPassword = '';
+$storedSenderPassword = '';
+$storedAdminPassword = '';
 
 function fetchEmailAccounts($conn) {
-    $stmt = $conn->query("SELECT id, sender_email, app_password, updated_at FROM email_accounts ORDER BY id ASC");
+    $stmt = $conn->query("SELECT id, sender_email, sender_app_password, admin_email, admin_app_password, updated_at FROM email_accounts ORDER BY id ASC");
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
 function fetchEmailAccountById($conn, $id) {
-    $stmt = $conn->prepare("SELECT id, sender_email, app_password, updated_at FROM email_accounts WHERE id = ? LIMIT 1");
+    $stmt = $conn->prepare("SELECT id, sender_email, sender_app_password, admin_email, admin_app_password, updated_at FROM email_accounts WHERE id = ? LIMIT 1");
     $stmt->execute([$id]);
     return $stmt->fetch(PDO::FETCH_ASSOC);
 }
@@ -41,7 +54,9 @@ if (isset($_GET['edit'])) {
         $record = fetchEmailAccountById($conn, $emailId);
         if ($record) {
             $senderEmail = $record['sender_email'];
-            $storedPassword = $record['app_password'];
+            $adminEmail = $record['admin_email'] ?? '';
+            $storedSenderPassword = $record['sender_app_password'] ?? '';
+            $storedAdminPassword = $record['admin_app_password'] ?? '';
         }
     }
 }
@@ -60,18 +75,32 @@ if (isset($_GET['delete'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $emailId = (int)($_POST['email_id'] ?? 0);
     $senderEmail = trim($_POST['sender_email'] ?? '');
-    $appPassword = trim($_POST['app_password'] ?? '');
+    $adminEmail = trim($_POST['admin_email'] ?? '');
+    $senderAppPassword = trim($_POST['sender_app_password'] ?? '');
+    $adminAppPassword = trim($_POST['admin_app_password'] ?? '');
 
     if ($senderEmail === '' || !filter_var($senderEmail, FILTER_VALIDATE_EMAIL)) {
         $errors[] = 'Please enter a valid sender email address.';
     }
 
-    if ($emailId === 0 && $appPassword === '' && empty($accounts)) {
-        $errors[] = 'Please enter the app password for the new email account.';
+    if ($adminEmail !== '' && !filter_var($adminEmail, FILTER_VALIDATE_EMAIL)) {
+        $errors[] = 'Please enter a valid admin email address or leave it blank.';
     }
 
-    if ($appPassword !== '' && trim($appPassword) === '') {
-        $errors[] = 'The app password cannot be blank.';
+    if ($emailId === 0 && $senderAppPassword === '' && empty($accounts)) {
+        $errors[] = 'Please enter the app password for the new sender email account.';
+    }
+
+    if ($senderAppPassword !== '' && trim($senderAppPassword) === '') {
+        $errors[] = 'The sender app password cannot be blank.';
+    }
+
+    if ($adminEmail !== '' && $emailId === 0 && $adminAppPassword === '') {
+        $errors[] = 'Please enter the admin app password when adding an admin email.';
+    }
+
+    if ($adminAppPassword !== '' && trim($adminAppPassword) === '') {
+        $errors[] = 'The admin app password cannot be blank.';
     }
 
     if (empty($errors)) {
@@ -81,31 +110,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $errors[] = 'Email account not found.';
             }
         } else {
-            $stmt = $conn->prepare("SELECT id, app_password FROM email_accounts WHERE sender_email = ? LIMIT 1");
+            $stmt = $conn->prepare("SELECT id, sender_app_password, admin_email, admin_app_password FROM email_accounts WHERE sender_email = ? LIMIT 1");
             $stmt->execute([$senderEmail]);
             $existing = $stmt->fetch(PDO::FETCH_ASSOC);
             if ($existing) {
                 $emailId = (int)$existing['id'];
-                $storedPassword = $existing['app_password'];
+                $storedSenderPassword = $existing['sender_app_password'] ?? '';
+                $adminEmail = $existing['admin_email'] ?? $adminEmail;
+                $storedAdminPassword = $existing['admin_app_password'] ?? '';
             }
         }
     }
 
     if (empty($errors)) {
-        $passwordToSave = $appPassword !== '' ? $appPassword : $storedPassword;
+        $passwordToSave = $senderAppPassword !== '' ? $senderAppPassword : $storedSenderPassword;
+        $adminPasswordToSave = $adminAppPassword !== '' ? $adminAppPassword : $storedAdminPassword;
         if ($passwordToSave === '') {
-            $errors[] = 'App password is required to save this email account.';
+            $errors[] = 'Sender app password is required to save this email account.';
+        }
+        if ($adminEmail !== '' && $adminPasswordToSave === '') {
+            $errors[] = 'Admin app password is required when admin email is provided.';
         }
     }
 
     if (empty($errors)) {
         if ($emailId > 0) {
-            $stmt = $conn->prepare("UPDATE email_accounts SET sender_email = ?, app_password = ?, updated_at = NOW() WHERE id = ?");
-            $stmt->execute([$senderEmail, $passwordToSave, $emailId]);
+            $stmt = $conn->prepare("UPDATE email_accounts SET sender_email = ?, sender_app_password = ?, admin_email = ?, admin_app_password = ?, updated_at = NOW() WHERE id = ?");
+            $stmt->execute([$senderEmail, $passwordToSave, $adminEmail, $adminPasswordToSave, $emailId]);
             $messages[] = 'Email account updated successfully.';
         } else {
-            $stmt = $conn->prepare("INSERT INTO email_accounts (sender_email, app_password) VALUES (?, ?)");
-            $stmt->execute([$senderEmail, $passwordToSave]);
+            $stmt = $conn->prepare("INSERT INTO email_accounts (sender_email, sender_app_password, admin_email, admin_app_password) VALUES (?, ?, ?, ?)");
+            $stmt->execute([$senderEmail, $passwordToSave, $adminEmail, $adminPasswordToSave]);
             $messages[] = 'Email account added successfully.';
         }
 
@@ -114,7 +149,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $record = fetchEmailAccountById($conn, $emailId);
             if ($record) {
                 $senderEmail = $record['sender_email'];
-                $storedPassword = $record['app_password'];
+                $adminEmail = $record['admin_email'] ?? '';
+                $storedSenderPassword = $record['sender_app_password'] ?? '';
+                $storedAdminPassword = $record['admin_app_password'] ?? '';
             }
         }
     }
@@ -155,15 +192,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <form method="post" action="email-accounts.php" class="row g-3">
                     <input type="hidden" name="email_id" value="<?php echo (int)$emailId; ?>">
-                    <div class="col-md-6">
+                    <div class="col-md-3">
                         <label for="sender_email" class="form-label">Sender Email</label>
                         <input type="email" id="sender_email" name="sender_email" class="form-control" value="<?php echo htmlspecialchars($senderEmail, ENT_QUOTES); ?>" required>
                         <div class="form-text">Enter the sender email used for outgoing notifications.</div>
                     </div>
-                    <div class="col-md-6">
-                        <label for="app_password" class="form-label">App Password</label>
-                        <input type="password" id="app_password" name="app_password" class="form-control" placeholder="e.g. mdaj xpca xdok dxqq" autocomplete="new-password">
-                        <div class="form-text">Enter the app password. Example: <strong>mdaj xpca xdok dxqq</strong> or <strong>mdajxpcaxdokdxqq</strong>. Leave blank to keep the current stored password.</div>
+                    <div class="col-md-3">
+                        <label for="sender_app_password" class="form-label">Sender App Password</label>
+                        <input type="password" id="sender_app_password" name="sender_app_password" class="form-control" placeholder="e.g. mdaj xpca xdok dxqq" autocomplete="new-password">
+                        <div class="form-text">Enter the sender app password. Leave blank to keep the stored password.</div>
+                    </div>
+                    <div class="col-md-3">
+                        <label for="admin_email" class="form-label">Admin Email</label>
+                        <input type="email" id="admin_email" name="admin_email" class="form-control" value="<?php echo htmlspecialchars($adminEmail, ENT_QUOTES); ?>" placeholder="Optional admin email">
+                        <div class="form-text">Use this address for admin notifications and copies.</div>
+                    </div>
+                    <div class="col-md-3">
+                        <label for="admin_app_password" class="form-label">Admin App Password</label>
+                        <input type="password" id="admin_app_password" name="admin_app_password" class="form-control" placeholder="Optional admin app password" autocomplete="new-password">
+                        <div class="form-text">Enter the admin app password only if you want to save/change the admin email credentials.</div>
                     </div>
                     <div class="col-12">
                         <button type="submit" class="btn btn-primary"><?php echo $emailId > 0 ? 'Update Email Settings' : 'Save Email Settings'; ?></button>
@@ -187,8 +234,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <table class="table table-bordered align-middle">
                             <thead>
                                 <tr>
-                                    <th>Email</th>
-                                    <th>App Password</th>
+                                    <th>Sender Email</th>
+                                    <th>Admin Email</th>
+                                    <th>Sender Password</th>
+                                    <th>Admin Password</th>
                                     <th>Last Updated</th>
                                     <th class="text-end">Actions</th>
                                 </tr>
@@ -197,7 +246,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <?php foreach ($accounts as $account): ?>
                                     <tr>
                                         <td><?php echo htmlspecialchars($account['sender_email'], ENT_QUOTES); ?></td>
+                                        <td><?php echo htmlspecialchars($account['admin_email'] ?? '', ENT_QUOTES); ?></td>
                                         <td>••••••••••••••••</td>
+                                        <td><?php echo !empty($account['admin_app_password']) ? '••••••••••••••••' : '' ; ?></td>
                                         <td><?php echo htmlspecialchars($account['updated_at'], ENT_QUOTES); ?></td>
                                         <td class="text-end">
                                             <a href="email-accounts.php?edit=<?php echo (int)$account['id']; ?>" class="btn btn-sm btn-secondary">Edit</a>

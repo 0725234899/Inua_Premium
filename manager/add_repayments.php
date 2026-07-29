@@ -258,7 +258,7 @@ function sendPaymentNotificationEmail($loan_id, $amount_paid, $conn) {
               . '<p>Thank you,<br>Inua Premium Services</p>';
 
         $emailCredentials = getEmailAccount();
-        if (!$emailCredentials || empty($emailCredentials['sender_email']) || empty($emailCredentials['app_password'])) {
+        if (!$emailCredentials || empty($emailCredentials['sender_email']) || empty($emailCredentials['sender_app_password'])) {
             return "<div class='alert alert-warning text-center'>Payment saved but notification email was not sent because email settings are not configured. Please configure sender email and app password in the email settings page.</div>";
         }
 
@@ -278,7 +278,7 @@ function sendPaymentNotificationEmail($loan_id, $amount_paid, $conn) {
             $mail->SMTPSecure = 'tls';
             $mail->SMTPAuth = true;
             $mail->Username = $emailCredentials['sender_email'];
-            $mail->Password = $emailCredentials['app_password'];
+            $mail->Password = $emailCredentials['sender_app_password'];
             $mail->CharSet = 'UTF-8';
             $mail->setFrom($emailCredentials['sender_email'], 'Inua Premium Services');
             $mail->addAddress($recipient_email);

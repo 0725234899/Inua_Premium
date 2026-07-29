@@ -142,7 +142,7 @@ function generate_due_loans_pdf($rows, $officer_display_name, $day_label) {
 
 function send_pdf_email($recipient_email, $subject, $body, $pdf_content, $filename) {
     $emailCredentials = getEmailAccount();
-    if (empty($emailCredentials['sender_email']) || empty($emailCredentials['app_password'])) {
+    if (empty($emailCredentials['sender_email']) || empty($emailCredentials['sender_app_password'])) {
         throw new Exception('Email settings are not configured.');
     }
 
@@ -161,7 +161,7 @@ function send_pdf_email($recipient_email, $subject, $body, $pdf_content, $filena
     $mail->SMTPSecure = 'tls';
     $mail->SMTPAuth = true;
     $mail->Username = $emailCredentials['sender_email'];
-    $mail->Password = $emailCredentials['app_password'];
+    $mail->Password = $emailCredentials['sender_app_password'];
     $mail->CharSet = 'UTF-8';
     $mail->setFrom($emailCredentials['sender_email'], 'Inua Premium Services');
     $mail->addAddress($recipient_email);

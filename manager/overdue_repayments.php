@@ -14,9 +14,76 @@ require_once __DIR__ . '/PHPMailer/src/Exception.php';
 require_once __DIR__ . '/PHPMailer/src/SMTP.php';
 require_once dirname(__DIR__) . '/admin/TCPDF/tcpdf.php';
 
+function get_projected_maturity_date_for_loan($loan) {
+    if (empty($loan['loan_release_date'])) {
+        return null;
+    }
+
+    $date = new DateTime($loan['loan_release_date']);
+    $count = (int) ($loan['number_of_repayments'] ?? 0);
+
+    if ($count <= 0) {
+        return $date;
+    }
+
+    $intervalSpec = 'P1M';
+    switch (($loan['repayment_cycle'] ?? 'monthly')) {
+        case 'daily':
+            $intervalSpec = 'P1D';
+            break;
+        case 'weekly':
+            $intervalSpec = 'P1W';
+            break;
+        case 'monthly':
+            $intervalSpec = 'P1M';
+            break;
+        case 'yearly':
+            $intervalSpec = 'P1Y';
+            break;
+    }
+
+    $interval = new DateInterval($intervalSpec);
+    for ($i = 0; $i < $count; $i++) {
+        $date->add($interval);
+    }
+
+    return $date;
+}
+
+function get_eligible_loan_ids_for_arrears($conn) {
+    $eligible_ids = [];
+    $stmt = $conn->prepare("SELECT id, loan_status, loan_release_date, repayment_cycle, number_of_repayments FROM loan_applications WHERE loan_status IN ('approved', 'rolled_over')");
+    if (!$stmt) {
+        return $eligible_ids;
+    }
+
+    $stmt->execute();
+    $result = $stmt->get_result();
+
+    $today = new DateTime('today');
+    while ($loan = $result->fetch_assoc()) {
+        if (($loan['loan_status'] ?? '') !== 'rolled_over') {
+            $eligible_ids[] = (int) $loan['id'];
+            continue;
+        }
+
+        $projected_maturity_date = get_projected_maturity_date_for_loan($loan);
+        if ($projected_maturity_date !== null && $projected_maturity_date <= $today) {
+            $eligible_ids[] = (int) $loan['id'];
+        }
+    }
+
+    return $eligible_ids;
+}
+
 function fetch_arrears_report_data($conn, $selected_officer = 'all', $selected_day = 'all') {
     $day_filter = ($selected_day !== 'all') ? "AND DAYNAME(repayments.repayment_date) = ?" : "";
     $officer_filter = ($selected_officer !== 'all') ? "AND borrowers.loan_officer = ?" : "";
+
+    $eligible_loan_ids = get_eligible_loan_ids_for_arrears($conn);
+    $eligible_loan_filter = !empty($eligible_loan_ids)
+        ? "AND loan_applications.id IN (" . implode(',', $eligible_loan_ids) . ")"
+        : "AND 1=0";
 
     $sql = "SELECT 
                 borrowers.full_name AS borrower_name, 
@@ -43,7 +110,7 @@ function fetch_arrears_report_data($conn, $selected_officer = 'all', $selected_d
             LEFT JOIN loan_applications ON borrowers.id = loan_applications.borrower
             LEFT JOIN repayments ON loan_applications.id = repayments.loan_id
             WHERE 1=1
-            AND loan_applications.loan_status = 'approved'
+            $eligible_loan_filter
             $officer_filter
             $day_filter
             GROUP BY borrowers.full_name, borrowers.mobile
@@ -143,7 +210,7 @@ function generate_arrears_pdf($rows, $total_overdue, $total_overdue_count, $loan
 
 function send_arrears_pdf_email($recipient_email, $subject, $body, $pdf_content, $filename) {
     $emailCredentials = getEmailAccount();
-    if (empty($emailCredentials['sender_email']) || empty($emailCredentials['app_password'])) {
+    if (empty($emailCredentials['sender_email']) || empty($emailCredentials['sender_app_password'])) {
         throw new Exception('Email settings are not configured.');
     }
 
@@ -162,7 +229,7 @@ function send_arrears_pdf_email($recipient_email, $subject, $body, $pdf_content,
     $mail->SMTPSecure = 'tls';
     $mail->SMTPAuth = true;
     $mail->Username = $emailCredentials['sender_email'];
-    $mail->Password = $emailCredentials['app_password'];
+    $mail->Password = $emailCredentials['sender_app_password'];
     $mail->CharSet = 'UTF-8';
     $mail->setFrom($emailCredentials['sender_email'], 'Inua Premium Services');
     $mail->addAddress($recipient_email);
@@ -196,6 +263,11 @@ $result_officers->data_seek(0);
 $selected_officer = isset($_GET['officer_email']) ? $_GET['officer_email'] : 'all';
 $officer_filter = ($selected_officer !== 'all') ? "AND borrowers.loan_officer = ?" : "";
 
+$eligible_loan_ids = get_eligible_loan_ids_for_arrears($conn);
+$eligible_loan_filter = !empty($eligible_loan_ids)
+    ? "AND loan_applications.id IN (" . implode(',', $eligible_loan_ids) . ")"
+    : "AND 1=0";
+
 // Query to get all clients with overdue repayments, using scheduled elapsed installments minus total repaid
 $sql_overdue = "SELECT 
                     borrowers.full_name AS borrower_name, 
@@ -226,7 +298,7 @@ $sql_overdue = "SELECT
                     repayments ON loan_applications.id = repayments.loan_id
                 WHERE 
                     1=1
-                    AND loan_applications.loan_status = 'approved'
+                    $eligible_loan_filter
                     $officer_filter
                     $day_filter
                 GROUP BY 

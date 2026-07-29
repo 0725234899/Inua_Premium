@@ -225,7 +225,8 @@
 
             $sql = "INSERT INTO repayments (loan_id, repayment_date, amount) VALUES (?, ?, ?)";
             $stmt = $conn->prepare($sql);
-            $stmt->bind_param("iss", $loan_id, $schedule_date->format('Y-m-d'), $repayment_amount);
+            $repayment_date = $schedule_date->format('Y-m-d');
+            $stmt->bind_param("iss", $loan_id, $repayment_date, $repayment_amount);
             $stmt->execute();
 
             $start_date = $schedule_date;
@@ -235,6 +236,67 @@
     function calculateRepaymentAmount($principal_amount, $interest_amount, $number_of_repayments) {
         $total_amount = $principal_amount + $interest_amount;
         return $number_of_repayments > 0 ? $total_amount / $number_of_repayments : 0;
+    }
+
+    function syncLoanRepaymentSchedule($conn, $loan_id) {
+        $loanStmt = $conn->prepare("SELECT principal, total_amount, loan_interest, repayment_cycle, loan_release_date, loan_duration, loan_duration_unit, number_of_repayments FROM loan_applications WHERE id = ?");
+        if (!$loanStmt) {
+            return false;
+        }
+
+        $loanStmt->bind_param("i", $loan_id);
+        $loanStmt->execute();
+        $loanRow = $loanStmt->get_result()->fetch_assoc();
+        $loanStmt->close();
+
+        if (!$loanRow) {
+            return false;
+        }
+
+        $principalAmount = (float) ($loanRow['principal'] ?? 0);
+        $interestAmount = max(0, ((float) ($loanRow['total_amount'] ?? 0)) - $principalAmount);
+        $repaymentCycle = $loanRow['repayment_cycle'] ?? 'monthly';
+        $numberOfRepayments = (int) ($loanRow['number_of_repayments'] ?? 0);
+        $loanReleaseDate = $loanRow['loan_release_date'];
+        $loanDuration = (int) ($loanRow['loan_duration'] ?? 0);
+            // Default unit
+            $loanDurationUnit = 'months';
+
+            // Safely detect if the column exists and read it if present
+            try {
+                $colCheck = $conn->prepare("SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'loan_applications' AND COLUMN_NAME = 'loan_duration_unit'");
+                if ($colCheck) {
+                    $colCheck->execute();
+                    $colRes = $colCheck->get_result()->fetch_assoc();
+                    if ($colRes && (int)$colRes['c'] > 0) {
+                        $unitStmt = $conn->prepare("SELECT loan_duration_unit FROM loan_applications WHERE id = ?");
+                        if ($unitStmt) {
+                            $unitStmt->bind_param("i", $loan_id);
+                            $unitStmt->execute();
+                            $unitRow = $unitStmt->get_result()->fetch_assoc();
+                            if ($unitRow && !empty($unitRow['loan_duration_unit'])) {
+                                $loanDurationUnit = $unitRow['loan_duration_unit'];
+                            }
+                            $unitStmt->close();
+                        }
+                    }
+                    $colCheck->close();
+                }
+            } catch (Exception $e) {
+                // ignore and proceed with default unit
+            }
+
+        return rebuildRepaymentSchedule(
+            $conn,
+            $loan_id,
+            $principalAmount,
+            $interestAmount,
+            $repaymentCycle,
+            $numberOfRepayments,
+            $loanReleaseDate,
+            $loanDuration,
+            $loanDurationUnit
+        );
     }
 
     function getCycleInterval($cycle) {
@@ -309,6 +371,61 @@
                 }
             }
 
+            $paymentRecordsStmt = $conn->prepare("SELECT PaymentDate, Amount FROM payment_date_records WHERE loan_id = ? ORDER BY PaymentDate ASC, id ASC");
+            $paymentRecordsStmt->bind_param("i", $loan_id);
+            $paymentRecordsStmt->execute();
+            $paymentRecordsResult = $paymentRecordsStmt->get_result();
+
+            $paymentRecords = [];
+            while ($paymentRecord = $paymentRecordsResult->fetch_assoc()) {
+                $paymentRecords[] = $paymentRecord;
+            }
+            $paymentRecordsStmt->close();
+
+            $repaymentRowsStmt = $conn->prepare("SELECT id, amount, paid FROM repayments WHERE loan_id = ? ORDER BY repayment_date ASC");
+            $repaymentRowsStmt->bind_param("i", $loan_id);
+            $repaymentRowsStmt->execute();
+            $repaymentRowsResult = $repaymentRowsStmt->get_result();
+
+            $repaymentRows = [];
+            while ($repaymentRow = $repaymentRowsResult->fetch_assoc()) {
+                $repaymentRows[] = $repaymentRow;
+            }
+            $repaymentRowsStmt->close();
+
+            foreach ($paymentRecords as $paymentRecord) {
+                $paymentAmount = (float) ($paymentRecord['Amount'] ?? 0);
+                $paymentDate = !empty($paymentRecord['PaymentDate']) ? date('Y-m-d', strtotime($paymentRecord['PaymentDate'])) : null;
+
+                if ($paymentAmount <= 0 || $paymentDate === null) {
+                    continue;
+                }
+
+                foreach ($repaymentRows as &$repaymentRow) {
+                    if ($paymentAmount <= 0) {
+                        break;
+                    }
+
+                    $dueAmount = (float) ($repaymentRow['amount'] ?? 0);
+                    $alreadyPaid = (float) ($repaymentRow['paid'] ?? 0);
+                    $remainingDue = max(0, $dueAmount - $alreadyPaid);
+
+                    if ($remainingDue <= 0) {
+                        continue;
+                    }
+
+                    $appliedAmount = min($paymentAmount, $remainingDue);
+                    $paymentAmount -= $appliedAmount;
+                    $repaymentRow['paid'] = $alreadyPaid + $appliedAmount;
+
+                    $updateStmt = $conn->prepare("UPDATE repayments SET paid = ?, repaid_date = ? WHERE id = ?");
+                    $updateStmt->bind_param("dsi", $repaymentRow['paid'], $paymentDate, $repaymentRow['id']);
+                    $updateStmt->execute();
+                    $updateStmt->close();
+                }
+                unset($repaymentRow);
+            }
+
             $conn->commit();
             return true;
         } catch (Exception $e) {
@@ -346,7 +463,13 @@
 
         if ($action === 'approve' || $action === 'deny') {
             $status = ($action === 'approve') ? 'approved' : 'declined';
-            if (updateLoanStatus($loan_id, $status)) {
+            $scheduleSynced = true;
+
+            if ($action === 'approve') {
+                $scheduleSynced = syncLoanRepaymentSchedule($conn, $loan_id);
+            }
+
+            if ($scheduleSynced && updateLoanStatus($loan_id, $status)) {
                 echo "<div class='alert alert-success'>Loan $action successfully.</div>";
             } else {
                 echo "<div class='alert alert-danger'>Failed to $action the loan.</div>";
@@ -401,10 +524,57 @@
                 $conn->rollback();
                 echo "<div class='alert alert-danger'>Failed to update the loan application.</div>";
             }
+        } elseif ($action === 'rollover') {
+            $rollover_date = $_POST['rollover_date'] ?? null;
+            $rollover_duration = (int)($_POST['rollover_duration'] ?? 0);
+            $rollover_duration_unit = $_POST['rollover_duration_unit'] ?? 'months';
+
+            $loanRow = $conn->query("SELECT * FROM loan_applications WHERE id = $loan_id");
+            $loanRow = $loanRow ? $loanRow->fetch_assoc() : null;
+            $paidRow = $conn->query("SELECT COALESCE(SUM(paid), 0) AS total_paid FROM repayments WHERE loan_id = $loan_id")->fetch_assoc();
+            $total_paid = (float)($paidRow['total_paid'] ?? 0);
+
+            if ($loanRow) {
+                $interest_amount = (float)($loanRow['total_amount'] - $loanRow['principal']);
+                $remaining_balance = max(0, $loanRow['total_amount'] - $total_paid);
+
+                if ($total_paid >= $interest_amount && $remaining_balance > 0 && $rollover_date !== null && $rollover_duration > 0) {
+                    $newLoanDetails = calculateLoanDetails($remaining_balance, $loanRow['loan_interest'], $rollover_duration, $rollover_duration_unit, $loanRow['interest_method'], $loanRow['interest_calculation'] ?? 'monthly', $loanRow['repayment_cycle'], 0, 0);
+                    $newPrincipal = $remaining_balance;
+                    $borrowerId = $loanRow['borrower'];
+                    $loanProductName = $loanRow['loan_product'];
+                    $newTotalAmount = $newLoanDetails['total_amount'];
+                    $newTotalAmountInclusive = $newLoanDetails['total_amount_inclusive'];
+                    $newRepayments = (int)round($newLoanDetails['number_of_repayments']);
+                    $rolloverInterest = (float)$loanRow['loan_interest'];
+                    $rolloverInterestMethod = $loanRow['interest_method'];
+                    $processingFee = 0.0;
+                    $registrationFee = 0.0;
+                    $rolloverRepaymentCycle = $loanRow['repayment_cycle'];
+
+                    $stmt = $conn->prepare("INSERT INTO loan_applications (borrower, loan_product, principal, loan_release_date, interest, interest_method, loan_interest, loan_duration, repayment_cycle, number_of_repayments, processing_fee, registration_fee, loan_status, total_amount, total_amount_inclusive) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)");
+                    if ($stmt) {
+                        $stmt->bind_param("isdsdsisdidddd", $borrowerId, $loanProductName, $newPrincipal, $rollover_date, $rolloverInterest, $rolloverInterestMethod, $rolloverInterest, $rollover_duration, $rolloverRepaymentCycle, $newRepayments, $processingFee, $registrationFee, $newTotalAmount, $newTotalAmountInclusive);
+                    }
+
+                    if ($stmt->execute()) {
+                        $newLoanId = $stmt->insert_id;
+                        generateRepaymentSchedule($conn, $newLoanId, $newPrincipal, $newTotalAmount - $newPrincipal, $loanRow['repayment_cycle'], $newRepayments, $rollover_date);
+                        $conn->query("UPDATE loan_applications SET loan_status = 'rolled_over' WHERE id = $loan_id");
+                        echo "<div class='alert alert-success'>Rollover created successfully and new loan schedule generated.</div>";
+                    } else {
+                        echo "<div class='alert alert-danger'>Failed to create rollover loan.</div>";
+                    }
+                } else {
+                    echo "<div class='alert alert-danger'>Rollover conditions were not met or invalid rollover details provided.</div>";
+                }
+            } else {
+                echo "<div class='alert alert-danger'>Loan not found for rollover.</div>";
+            }
         }
     }
 
-    function getLoans() {
+    function getLoans($search = '') {
         global $conn;
         $loans = array();
 
@@ -412,6 +582,7 @@
                     l.id AS loan_id, 
                     l.borrower,
                     b.full_name AS borrower_name, 
+                    b.mobile AS borrower_mobile,
                     l.principal, 
                     l.loan_duration AS duration, 
                     l.number_of_repayments AS repayments_count, 
@@ -424,11 +595,31 @@
                     l.processing_fee,
                     l.registration_fee,
                     l.total_amount_inclusive,
-                    l.loan_status AS status
+                    l.loan_status AS status,
+                    COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0) AS total_paid,
+                    (l.total_amount - l.principal) AS interest_amount
                 FROM loan_applications l 
                 INNER JOIN borrowers b ON l.borrower = b.id";
 
-        $result = $conn->query($sql);
+        if ($search !== '') {
+            $sql .= " WHERE b.full_name LIKE ? OR b.mobile LIKE ?";
+        }
+
+        $sql .= " ORDER BY CASE WHEN l.loan_status = 'pending' OR l.loan_status = '0' THEN 0 ELSE 1 END, l.id DESC";
+
+        $stmt = $conn->prepare($sql);
+        if ($stmt === false) {
+            echo "Error preparing query: " . $conn->error;
+            return $loans;
+        }
+
+        if ($search !== '') {
+            $param = "%" . $search . "%";
+            $stmt->bind_param("ss", $param, $param);
+        }
+
+        $stmt->execute();
+        $result = $stmt->get_result();
 
         if ($result === FALSE) {
             echo "Error: " . $conn->error;
@@ -436,23 +627,27 @@
         }
 
         if ($result->num_rows > 0) {
-            while($row = $result->fetch_assoc()) {
+            while ($row = $result->fetch_assoc()) {
                 $loans[] = $row;
             }
-        } else {
-            echo "No records found.";
         }
 
         return $loans;
     }
     
-    $loans = getLoans();
+    $searchQuery = trim($_GET['search'] ?? '');
+    $loans = getLoans($searchQuery);
     ?>
     <main class="main">
         <section class="section">
             <div class="container">
-                <h1>Loan Applications</h1>
-                <a href="generate_pdf.php" class="btn btn-primary">Export Report as PDF</a>
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h1>Loan Applications</h1>
+                    <form method="get" class="d-flex" style="max-width: 420px; width: 100%;">
+                        <input type="search" name="search" class="form-control me-2" placeholder="Search by phone number or name" value="<?= htmlspecialchars($searchQuery); ?>">
+                        <button type="submit" class="btn btn-primary">Search</button>
+                    </form>
+                </div>
                 <table class="table table-striped">
                     <thead>
                         <tr>
@@ -490,7 +685,70 @@
                                         <input type="hidden" name="action" value="clear">
                                         <button type="submit" class="btn btn-secondary btn-sm">Clear</button>
                                     </form>
+                                    <button type="button" class="btn btn-info btn-sm" data-bs-toggle="modal" data-bs-target="#rolloverLoanModal<?= $loan['loan_id']; ?>">Rollover</button>
                                     <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#editLoanModal<?= $loan['loan_id']; ?>">Edit</button>
+
+                                    <div class="modal fade" id="rolloverLoanModal<?= $loan['loan_id']; ?>" tabindex="-1" aria-hidden="true">
+                                        <div class="modal-dialog modal-lg">
+                                            <div class="modal-content">
+                                                <form method="POST" class="rollover-loan-form">
+                                                    <div class="modal-header">
+                                                        <h5 class="modal-title">Rollover Loan</h5>
+                                                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                                    </div>
+                                                    <div class="modal-body">
+                                                        <input type="hidden" name="loan_id" value="<?= $loan['loan_id']; ?>">
+                                                        <input type="hidden" name="action" value="rollover">
+                                                        <input type="hidden" name="loan_product" value="<?= htmlspecialchars($loan['loan_product']); ?>">
+                                                        <div class="row g-3">
+                                                            <div class="col-md-6">
+                                                                <label class="form-label">Borrower</label>
+                                                                <input type="text" class="form-control" value="<?= htmlspecialchars($loan['borrower_name']); ?>" readonly>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                <label class="form-label">Loan Product</label>
+                                                                <input type="text" class="form-control" value="<?= htmlspecialchars($loan['loan_product']); ?>" readonly>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                <label class="form-label">Principal to Rollover</label>
+                                                                <input type="number" step="0.01" class="form-control" name="principal" value="<?= number_format(max(0, $loan['total_amount'] - $loan['total_paid']), 2, '.', ''); ?>" readonly>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                <label class="form-label">Interest Rate %</label>
+                                                                <input type="number" step="0.01" class="form-control" value="<?= htmlspecialchars($loan['loan_interest']); ?>" readonly>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                <label class="form-label">Rollover Start Date</label>
+                                                                <input type="date" class="form-control" name="rollover_date" required>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                <label class="form-label">Rollover Duration</label>
+                                                                <input type="number" min="1" class="form-control" name="rollover_duration" required>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                <label class="form-label">Duration Unit</label>
+                                                                <select class="form-select" name="rollover_duration_unit" required>
+                                                                    <option value="months" selected>Months</option>
+                                                                    <option value="weeks">Weeks</option>
+                                                                    <option value="years">Years</option>
+                                                                    <option value="days">Days</option>
+                                                                </select>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                <label class="form-label">Repayment Cycle</label>
+                                                                <input type="text" class="form-control" value="<?= htmlspecialchars($loan['repayment_cycle']); ?>" readonly>
+                                                            </div>
+                                                        </div>
+                                                        <p class="small mt-3 text-muted">This rollover uses the remaining balance as the new principal amount. A new loan will be created and the current loan will be marked as rolled over.</p>
+                                                    </div>
+                                                    <div class="modal-footer">
+                                                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                                        <button type="submit" class="btn btn-primary">Confirm Rollover</button>
+                                                    </div>
+                                                </form>
+                                            </div>
+                                        </div>
+                                    </div>
 
                                     <div class="modal fade" id="editLoanModal<?= $loan['loan_id']; ?>" tabindex="-1" aria-hidden="true">
                                         <div class="modal-dialog modal-lg">

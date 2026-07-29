@@ -65,13 +65,35 @@ $stmt_total_fees = $conn->prepare($sql_total_fees);
 $stmt_total_fees->execute();
 $total_fee_amount = $stmt_total_fees->get_result()->fetch_assoc()['total_fees'] ?? 0;
 
-// Fetch total disbursed loans (including interest)
+$sql_total_principal = "SELECT CEIL(SUM(loan_applications.principal)) AS total_principal 
+                        FROM loan_applications 
+                        WHERE loan_status = 'approved'";
+$stmt_total_principal = $conn->prepare($sql_total_principal);
+$stmt_total_principal->execute();
+$total_disbursed_principal = $stmt_total_principal->get_result()->fetch_assoc()['total_principal'] ?? 0;
+
 $sql_total_loans = "SELECT CEIL(SUM(loan_applications.total_amount)) AS total_loans 
                     FROM loan_applications 
                     WHERE loan_status = 'approved'";
 $stmt_total_loans = $conn->prepare($sql_total_loans);
 $stmt_total_loans->execute();
 $total_loan_amount = $stmt_total_loans->get_result()->fetch_assoc()['total_loans'] ?? 0;
+
+// Fetch detailed loan breakdown for interest view (principal, total, interest, total_paid, balance, status)
+$sql_interest_details = "SELECT 
+    l.id,
+    b.full_name AS borrower_name,
+    l.principal,
+    l.total_amount,
+    (l.total_amount - l.principal) AS interest,
+    COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0) AS total_paid,
+    (l.total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)) AS loan_balance,
+    l.loan_status
+FROM loan_applications l
+INNER JOIN borrowers b ON l.borrower = b.id
+WHERE l.loan_status = 'approved'
+ORDER BY l.loan_release_date DESC";
+$result_interest_details = $conn->query($sql_interest_details);
 
 // Calculate Performing Book
 $performing_book = max(0, $total_loan_amount - $total_arrears - $total_paid_amount);
@@ -302,7 +324,7 @@ $result_overdue = $stmt_overdue->get_result();
 <main class="main" id="mainContent">
     <div class="header d-flex justify-content-between align-items-center">
         <div class="d-flex align-items-center">
-            <button type="button" class="sidebar-toggle-btn" id="sidebarToggle" aria-label="Toggle navigation">
+            <button type="button" class="sidebar-toggle-btn" id="sidebarToggleMain" aria-label="Toggle navigation">
                 <i class="bi bi-list"></i>
             </button>
             <h1 class="mb-0">Manager Dashboard</h1>
@@ -317,7 +339,7 @@ $result_overdue = $stmt_overdue->get_result();
                 <p>Total Overdue Amount</p>
             </div></a>
             <a href="approved-loans.php"><div class="metric">
-                <h2>KSH <?php echo number_format(ceil($total_loan_amount)); ?></h2>
+                <h2>KSH <?php echo number_format(ceil($total_disbursed_principal)); ?></h2>
                 <p>Total Disbursed Loans</p>
             </div></a>
             <a href="performingBook.php"><div class="metric">
@@ -332,10 +354,10 @@ $result_overdue = $stmt_overdue->get_result();
                 <h2><?php echo number_format($par, 2); ?>%</h2>
                 <p>Portfolio At Risk</p>
             </div>
-            <div class="metric">
+            <a href="#interestTable"><div class="metric">
                 <h2>KSH <?php echo number_format(ceil($total_interest_amount)); ?></h2>
                 <p>Total Interest</p>
-            </div>
+            </div></a>
             <div class="metric">
                 <h2>KSH <?php echo number_format(ceil($total_fee_amount)); ?></h2>
                 <p>Processing + Registration Fees</p>
@@ -364,12 +386,51 @@ $result_overdue = $stmt_overdue->get_result();
                 <canvas id="loanChart" style="width: 100%; height: 300px;"></canvas>
             </div>
         </div>
+    
+    <div class="container mt-4">
+        <h3 id="interestTable" class="section-title">Interest Breakdown (Clients)</h3>
+        <div class="table-container mt-2">
+            <input type="text" id="interestSearch" placeholder="Search by borrower or loan id..." class="form-control mb-3" style="max-width:400px;">
+            <table id="interestBreakdownTable" class="table table-bordered">
+                <thead>
+                    <tr>
+                        <th>Borrower</th>
+                        <th>Loan ID</th>
+                        <th>Principal (KSH)</th>
+                        <th>Total Amount (KSH)</th>
+                        <th>Interest (KSH)</th>
+                        <th>Total Paid (KSH)</th>
+                        <th>Loan Balance (KSH)</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if ($result_interest_details && $result_interest_details->num_rows > 0): ?>
+                        <?php while ($row = $result_interest_details->fetch_assoc()): ?>
+                            <tr>
+                                <td><?php echo htmlspecialchars($row['borrower_name']); ?></td>
+                                <td><a href="repayment_details.php?loanId=<?php echo $row['id']; ?>"><?php echo htmlspecialchars($row['id']); ?></a></td>
+                                <td><?php echo number_format($row['principal'], 2); ?></td>
+                                <td><?php echo number_format($row['total_amount'], 2); ?></td>
+                                <td><?php echo number_format($row['interest'], 2); ?></td>
+                                <td><?php echo number_format($row['total_paid'], 2); ?></td>
+                                <td><?php echo number_format($row['loan_balance'], 2); ?></td>
+                                <td><?php echo (floatval($row['loan_balance']) <= 0) ? 'Cleared' : 'Not Cleared'; ?></td>
+                            </tr>
+                        <?php endwhile; ?>
+                    <?php else: ?>
+                        <tr><td colspan="8" class="text-center">No loans found.</td></tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
     </div>
 </main>
 
 <script>
     document.addEventListener('DOMContentLoaded', function () {
-        const toggleButton = document.getElementById('sidebarToggle');
+        const toggleButton = document.getElementById('sidebarToggleMain');
         const sidebarWrapper = document.getElementById('sidebarWrapper');
         const mainContent = document.getElementById('mainContent');
 
@@ -422,6 +483,23 @@ $result_overdue = $stmt_overdue->get_result();
                 y: { title: { display: true, text: 'Amount (KSH)' } },
                 x: { title: { display: true, text: 'Metrics' } }
             }
+        }
+    });
+</script>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const interestSearch = document.getElementById('interestSearch');
+        if (interestSearch) {
+            interestSearch.addEventListener('input', function () {
+                const filter = this.value.toLowerCase();
+                const rows = document.querySelectorAll('#interestBreakdownTable tbody tr');
+
+                rows.forEach(row => {
+                    const borrower = row.cells[0]?.textContent.toLowerCase() || '';
+                    const loanId = row.cells[1]?.textContent.toLowerCase() || '';
+                    row.style.display = (borrower.includes(filter) || loanId.includes(filter)) ? '' : 'none';
+                });
+            });
         }
     });
 </script>

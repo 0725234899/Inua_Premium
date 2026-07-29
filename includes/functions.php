@@ -308,9 +308,34 @@ function ensureEmailAccountTable() {
     $conn->exec("CREATE TABLE IF NOT EXISTS email_accounts (
         id INT AUTO_INCREMENT PRIMARY KEY,
         sender_email VARCHAR(255) NOT NULL,
-        app_password VARCHAR(255) NOT NULL,
+        sender_app_password VARCHAR(255) DEFAULT NULL,
+        admin_email VARCHAR(255) DEFAULT NULL,
+        admin_app_password VARCHAR(255) DEFAULT NULL,
+        app_password VARCHAR(255) DEFAULT NULL,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    $columnCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'sender_app_password'");
+    if ($columnCheck->rowCount() === 0) {
+        $conn->exec("ALTER TABLE email_accounts ADD COLUMN sender_app_password VARCHAR(255) DEFAULT NULL AFTER sender_email");
+        $conn->exec("UPDATE email_accounts SET sender_app_password = app_password WHERE sender_app_password IS NULL");
+    }
+
+    $columnCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'admin_email'");
+    if ($columnCheck->rowCount() === 0) {
+        $conn->exec("ALTER TABLE email_accounts ADD COLUMN admin_email VARCHAR(255) DEFAULT NULL AFTER sender_app_password");
+    }
+
+    $columnCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'admin_app_password'");
+    if ($columnCheck->rowCount() === 0) {
+        $conn->exec("ALTER TABLE email_accounts ADD COLUMN admin_app_password VARCHAR(255) DEFAULT NULL AFTER admin_email");
+    }
+
+    $columnCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'app_password'");
+    if ($columnCheck->rowCount() === 0) {
+        $conn->exec("ALTER TABLE email_accounts ADD COLUMN app_password VARCHAR(255) DEFAULT NULL AFTER admin_app_password");
+        $conn->exec("UPDATE email_accounts SET app_password = sender_app_password WHERE app_password IS NULL");
+    }
 }
 
 function getEmailAccount() {
@@ -318,10 +343,32 @@ function getEmailAccount() {
     ensureEmailAccountTable();
     $stmt = $conn->query("SELECT * FROM email_accounts ORDER BY id ASC LIMIT 1");
     $account = $stmt->fetch();
-    if ($account && isset($account['app_password'])) {
-        $account['app_password'] = normalizeEmailAppPassword($account['app_password']);
+    if ($account) {
+        if (isset($account['sender_app_password']) && $account['sender_app_password'] !== null && $account['sender_app_password'] !== '') {
+            $account['sender_app_password'] = normalizeEmailAppPassword($account['sender_app_password']);
+            if (!isset($account['app_password']) || $account['app_password'] === null || $account['app_password'] === '') {
+                $account['app_password'] = $account['sender_app_password'];
+            }
+        }
+        if (isset($account['app_password']) && $account['app_password'] !== null && $account['app_password'] !== '') {
+            $account['app_password'] = normalizeEmailAppPassword($account['app_password']);
+            if (!isset($account['sender_app_password']) || $account['sender_app_password'] === null || $account['sender_app_password'] === '') {
+                $account['sender_app_password'] = $account['app_password'];
+            }
+        }
+        if (isset($account['admin_app_password']) && $account['admin_app_password'] !== null && $account['admin_app_password'] !== '') {
+            $account['admin_app_password'] = normalizeEmailAppPassword($account['admin_app_password']);
+        }
     }
     return $account;
+}
+
+function ensureAdminPHPMailerLoaded() {
+    if (!class_exists('\PHPMailer\PHPMailer\PHPMailer')) {
+        require_once __DIR__ . '/../admin/PHPMailer/src/Exception.php';
+        require_once __DIR__ . '/../admin/PHPMailer/src/PHPMailer.php';
+        require_once __DIR__ . '/../admin/PHPMailer/src/SMTP.php';
+    }
 }
 
 function getConfiguredSenderEmail() {
@@ -329,24 +376,31 @@ function getConfiguredSenderEmail() {
     return !empty($account['sender_email']) ? trim($account['sender_email']) : '';
 }
 
-function saveEmailAccount($senderEmail, $appPassword) {
+function saveEmailAccount($senderEmail, $senderAppPassword, $adminEmail = null, $adminAppPassword = null) {
     $conn = db_connect();
     ensureEmailAccountTable();
-    $normalizedPassword = normalizeEmailAppPassword($appPassword);
+    $normalizedSenderPassword = normalizeEmailAppPassword($senderAppPassword);
+    $normalizedAdminPassword = $adminAppPassword !== null ? normalizeEmailAppPassword($adminAppPassword) : null;
     $existing = getEmailAccount();
     if ($existing) {
-        $stmt = $conn->prepare("UPDATE email_accounts SET sender_email = ?, app_password = ?, updated_at = NOW() WHERE id = ?");
-        return $stmt->execute([$senderEmail, $normalizedPassword, $existing['id']]);
+        $stmt = $conn->prepare("UPDATE email_accounts SET sender_email = ?, sender_app_password = ?, admin_email = ?, admin_app_password = ?, app_password = ?, updated_at = NOW() WHERE id = ?");
+        return $stmt->execute([$senderEmail, $normalizedSenderPassword, $adminEmail, $normalizedAdminPassword, $normalizedSenderPassword, $existing['id']]);
     }
-    $stmt = $conn->prepare("INSERT INTO email_accounts (sender_email, app_password) VALUES (?, ?)");
-    return $stmt->execute([$senderEmail, $normalizedPassword]);
+    $stmt = $conn->prepare("INSERT INTO email_accounts (sender_email, sender_app_password, admin_email, admin_app_password, app_password) VALUES (?, ?, ?, ?, ?)");
+    return $stmt->execute([$senderEmail, $normalizedSenderPassword, $adminEmail, $normalizedAdminPassword, $normalizedSenderPassword]);
 }
 
 function sendWelcomeEmailToStaff($name, $email, $roleId) {
     $account = getEmailAccount();
-    if (empty($account['sender_email']) || empty($account['app_password'])) {
+    $hasAdminCredentials = !empty($account['admin_email']) && !empty($account['admin_app_password']);
+    $fromEmail = $hasAdminCredentials ? $account['admin_email'] : (!empty($account['sender_email']) ? $account['sender_email'] : '');
+    $fromPassword = $hasAdminCredentials ? $account['admin_app_password'] : (!empty($account['sender_app_password']) ? $account['sender_app_password'] : ($account['app_password'] ?? ''));
+    if ($fromEmail === '' || $fromPassword === '') {
+        error_log('Staff welcome email not sent: missing from email or password.');
         return false;
     }
+
+    ensureAdminPHPMailerLoaded();
 
     $role = getRole($roleId);
     $roleName = isset($role['name']) ? strtolower($role['name']) : '';
@@ -369,16 +423,31 @@ function sendWelcomeEmailToStaff($name, $email, $roleId) {
         $mail->isSMTP();
         $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
-        $mail->Username = $account['sender_email'];
-        $mail->Password = $account['app_password'];
+        $mail->Username = $fromEmail;
+        $mail->Password = $fromPassword;
         $mail->SMTPSecure = 'tls';
         $mail->Port = 587;
-        $mail->setFrom($account['sender_email'], 'Inua Premium Services');
+        $mail->setFrom($fromEmail, 'Inua Premium Services');
         $mail->addAddress($email, $name);
         $mail->isHTML(true);
         $mail->Subject = 'Welcome to Inua Premium Services';
-        $mail->Body = "<p>Dear {$name},</p><p>Your account has been created successfully at Inua Premium Services.</p><p>Please use the credentials provided by the administrator to sign in.</p><p>We have attached an onboarding document for you.</p><p>Regards,<br/>Inua Premium Services</p>";
-        $mail->AltBody = 'Welcome to Inua Premium Services. Your account has been created successfully.';
+        $mail->Body = "<p>Dear {$name},</p>
+            <p>Welcome to Inua Premium Services. We are a trusted financial partner focused on delivering responsible lending, transparent client service, and strong operational standards.</p>
+            <p>As a member of our team, you are expected to support our clients professionally, maintain the confidentiality of borrower information, and follow the policies that govern loan processing, repayment collection, and client communication.</p>
+            <p>Our standards require that you:
+                <ul>
+                    <li>treat every client with respect and fairness,</li>
+                    <li>never share sensitive data outside approved channels,</li>
+                    <li>follow approval workflows for disbursements and repayments,</li>
+                    <li>report issues immediately to your supervisor,</li>
+                    <li>and monitor your portfolio closely for any exceptions.</li>
+                </ul>
+            </p>
+            <p>Always check your email regularly to track client repayments, review due amounts, and respond to any arrears notifications. Use the automated 7-day-to-due-date schedule and arrears list to stay ahead of overdue accounts and support timely collections.</p>
+            <p>Please review the attached document carefully. It contains your performance contract, our key policies, and the standards expected of every staff member.</p>
+            <p>If you have any questions, contact your manager or the operations team before taking any action.</p>
+            <p>Regards,<br/>Inua Premium Services</p>";
+        $mail->AltBody = 'Welcome to Inua Premium Services. Please review the attached performance contract for your role, policies, and expected standards, and check your email regularly for repayment and arrears updates.';
 
         if (file_exists($attachmentPath)) {
             $mail->addAttachment($attachmentPath, $attachmentName);
