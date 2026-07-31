@@ -53,6 +53,14 @@ include("includes/header.php");
             margin-left: 270px;
             padding: 20px;
         }
+        .rolled-over-balance {
+            background-color: #fff3cd;
+            color: #856404;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: 700;
+            display: inline-block;
+        }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
 </head>
@@ -92,17 +100,22 @@ include("includes/header.php");
                     l.loan_status,
                     b.full_name AS borrower_name, 
                     p.name AS loan_product_name, 
-                    SUM(r.paid) AS total_paid_amount, 
-                    SUM(r.amount) AS total_amount, 
-                    (SUM(r.amount) - SUM(r.paid)) AS loan_balance 
+                    COALESCE(SUM(r.paid), 0) AS total_paid_amount, 
+                    COALESCE(SUM(r.amount), 0) AS total_amount, 
+                    CASE 
+                        WHEN LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%' THEN 0 
+                        ELSE COALESCE(SUM(r.amount), 0) - COALESCE(SUM(r.paid), 0) 
+                    END AS loan_balance 
                 FROM loan_applications l 
                 INNER JOIN borrowers b ON l.borrower = b.id 
                 INNER JOIN loan_products p ON l.loan_product = p.id 
                 LEFT JOIN repayments r ON l.id = r.loan_id 
-                WHERE l.loan_status IN ('approved', 'rolled_over') 
+                WHERE l.loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%' 
                 $officer_filter
                 $day_filter
                 GROUP BY l.id, b.full_name, p.name, l.loan_status";
+
+        $sql .= " ORDER BY CASE WHEN LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%' THEN 0 ELSE 1 END, l.id DESC";
 
         $stmt = $conn->prepare($sql);
         if ($selected_officer !== 'all' && $selected_day !== 'all') {
@@ -202,14 +215,15 @@ include("includes/header.php");
                         <?php
                         if (count($loans) > 0) {
                             foreach ($loans as $loan) {
-                                $balance = $loan['total_amount'] - $loan['total_paid_amount'];
+                                $balance = (float) ($loan['loan_balance'] ?? 0);
                                 $loanId = $loan['id'];
                                 $loanStatusValue = strtolower(trim((string) ($loan['loan_status'] ?? '')));
-                                $isRolledOver = stripos($loanStatusValue, 'rolled') !== false;
+                                $isRolledOver = stripos($loanStatusValue, 'roll') !== false;
                                 $balanceDisplay = $isRolledOver
-                                    ? '<span style="background-color:#ffc107;color:#000;padding:2px 8px;border-radius:4px;font-weight:700;display:inline-block;">Rolled Over</span>'
+                                    ? '<span class="rolled-over-balance">0</span>'
                                     : number_format(ceil($balance));
-                                echo "<tr>
+                                $rowClass = $isRolledOver ? "class='table-warning'" : '';
+                                echo "<tr $rowClass>
                                     <td><a href='repayment_details.php?loanId=" . htmlspecialchars($loanId) . "'>" . htmlspecialchars($loan['id']) . "</a></td>
                                     <td><a href='repayment_details.php?loanId=" . htmlspecialchars($loanId) . "'>" . htmlspecialchars($loan['borrower_name']) . "</a></td>
                                     <td>" . htmlspecialchars($loan['loan_release_date']) . "</td>

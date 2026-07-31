@@ -158,11 +158,16 @@ $officerStmt->execute();
 $officerResult = $officerStmt->get_result();
 
 $officerData = array();
+$officerOptions = [];
+
+while ($officer = $officerResult->fetch_assoc()) {
+    $officerOptions[] = $officer;
+}
 
 $processingFeeColumn = findFeeColumn($conn, ['processing_fee', 'processingfee', 'processing_fee_kes']);
 $registrationFeeColumn = findFeeColumn($conn, ['registration_fee', 'registration_fees', 'reg_fee', 'regfee']);
 
-while ($officer = $officerResult->fetch_assoc()) {
+foreach ($officerOptions as $officer) {
     $officerEmail = $officer['email'];
     $borrowerStmt = $conn->prepare("SELECT id FROM borrowers WHERE loan_officer = ?");
     $borrowerStmt->bind_param("s", $officerEmail);
@@ -351,14 +356,16 @@ while ($officer = $officerResult->fetch_assoc()) {
                 <h1 class="text-3xl md:text-4xl font-bold text-gray-900">Inua Premium Loan Officer Portfolio Analysis</h1>
                 <p class="mt-2 text-lg text-gray-600">Interactive Performance & Risk Assessment Dashboard</p>
             </div>
-            
+            <a href="index.php" class="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white font-semibold px-4 py-2 rounded-lg shadow-sm">
+                ← Back to Dashboard
+            </a>
         </header>
 
         <div class="bg-white p-4 rounded-xl shadow-sm mb-4">
             <div class="flex flex-wrap gap-2">
-                <a class="px-3 py-2 rounded text-sm font-semibold <?= $selected_area === 'all' ? 'bg-red-600 text-white' : 'bg-gray-100 text-gray-700' ?>" href="?report_scope=<?= urlencode($reportScope) ?>&report_year=<?= urlencode($selectedYear) ?>&report_month=<?= urlencode($selectedMonth) ?>&report_week=<?= urlencode($selectedWeek) ?>&area_id=all&officer_id=all">All Areas</a>
+                <a class="px-3 py-2 rounded text-sm font-semibold <?= $selected_area === 'all' ? 'bg-red-600 text-white' : 'bg-gray-100 text-gray-700' ?>" href="?report_scope=<?= urlencode($reportScope) ?>&report_year=<?= urlencode($selectedYear) ?>&report_month=<?= urlencode($selectedMonth) ?>&report_week=<?= urlencode($selectedWeek) ?>&area_id=all&officer_id=<?= urlencode((string) $selected_officer) ?>">All Areas</a>
                 <?php foreach ($areas as $area): ?>
-                    <a class="px-3 py-2 rounded text-sm font-semibold <?= (string) $selected_area === (string) $area['area_id'] ? 'bg-red-600 text-white' : 'bg-gray-100 text-gray-700' ?>" href="?report_scope=<?= urlencode($reportScope) ?>&report_year=<?= urlencode($selectedYear) ?>&report_month=<?= urlencode($selectedMonth) ?>&report_week=<?= urlencode($selectedWeek) ?>&area_id=<?= urlencode($area['area_id']) ?>&officer_id=all">
+                    <a class="px-3 py-2 rounded text-sm font-semibold <?= (string) $selected_area === (string) $area['area_id'] ? 'bg-red-600 text-white' : 'bg-gray-100 text-gray-700' ?>" href="?report_scope=<?= urlencode($reportScope) ?>&report_year=<?= urlencode($selectedYear) ?>&report_month=<?= urlencode($selectedMonth) ?>&report_week=<?= urlencode($selectedWeek) ?>&area_id=<?= urlencode($area['area_id']) ?>&officer_id=<?= urlencode((string) $selected_officer) ?>">
                         <?= htmlspecialchars($area['area_name']) ?>
                     </a>
                 <?php endforeach; ?>
@@ -371,6 +378,15 @@ while ($officer = $officerResult->fetch_assoc()) {
                 <select id="report_scope" name="report_scope" class="border border-gray-300 rounded px-3 py-2">
                     <option value="all" <?php echo $reportScope === 'all' ? 'selected' : ''; ?>>General report</option>
                     <option value="custom" <?php echo $reportScope === 'custom' ? 'selected' : ''; ?>>Specific period</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-semibold text-gray-700 mb-1" for="area_id">Area</label>
+                <select id="area_id" name="area_id" class="border border-gray-300 rounded px-3 py-2">
+                    <option value="all" <?php echo $selected_area === 'all' ? 'selected' : ''; ?>>All areas</option>
+                    <?php foreach ($areas as $area): ?>
+                        <option value="<?= (int) $area['area_id'] ?>" <?php echo (string) $selected_area === (string) $area['area_id'] ? 'selected' : ''; ?>><?= htmlspecialchars($area['area_name']) ?></option>
+                    <?php endforeach; ?>
                 </select>
             </div>
             <div>
@@ -397,6 +413,15 @@ while ($officer = $officerResult->fetch_assoc()) {
                     <option value="0" <?php echo $selectedWeek == 0 ? 'selected' : ''; ?>>All weeks</option>
                     <?php foreach (range(1, 4) as $week) : ?>
                         <option value="<?php echo $week; ?>" <?php echo $selectedWeek == $week ? 'selected' : ''; ?>>Week <?php echo $week; ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-semibold text-gray-700 mb-1" for="officer_id">Officer</label>
+                <select id="officer_id" name="officer_id" class="border border-gray-300 rounded px-3 py-2">
+                    <option value="all" <?php echo $selected_officer === 'all' ? 'selected' : ''; ?>>All officers</option>
+                    <?php foreach ($officerOptions as $officerOption): ?>
+                        <option value="<?= (int) $officerOption['id'] ?>" <?php echo (string) $selected_officer === (string) $officerOption['id'] ? 'selected' : ''; ?>><?= htmlspecialchars($officerOption['full_name']) ?></option>
                     <?php endforeach; ?>
                 </select>
             </div>

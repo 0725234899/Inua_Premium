@@ -17,6 +17,7 @@ $loan_release_date = $_POST['loan_release_date'];
 $interest = $_POST['loan_interest_percentage'];
 $interest_method = $_POST['interest_method'];
 $loan_interest_percentage = $_POST['loan_interest_percentage'];
+$interest_calculation = $_POST['interest_calculation'] ?? 'monthly';
 $loan_duration = $_POST['loan_duration'];
 $loan_duration_unit = $_POST['loan_duration_unit'];
 $repayment_cycle = $_POST['repayment_cycle'];
@@ -56,8 +57,8 @@ $total_amount_inclusive = $principal + $total_interest + $processing_fee + $regi
 $total_amount=$principal + $total_interest;
 // Prepare SQL to insert loan application
 $sql = "INSERT INTO loan_applications 
-    (borrower, loan_product, principal, loan_release_date, interest, interest_method, loan_interest, loan_duration, loan_duration_unit, repayment_cycle, number_of_repayments, processing_fee, registration_fee, loan_status, total_amount,total_amount_inclusive) 
-    VALUES (:borrower, :loan_product, :principal, :loan_release_date, :interest, :interest_method, :loan_interest, :loan_duration, :loan_duration_unit, :repayment_cycle, :number_of_repayments, :processing_fee, :registration_fee, :loan_status, :total_amount,:total_amount_inclusive)";
+    (borrower, loan_product, principal, loan_release_date, interest, interest_method, interest_calculation, loan_interest, loan_duration, loan_duration_unit, repayment_cycle, number_of_repayments, processing_fee, registration_fee, loan_status, total_amount,total_amount_inclusive) 
+    VALUES (:borrower, :loan_product, :principal, :loan_release_date, :interest, :interest_method, :interest_calculation, :loan_interest, :loan_duration, :loan_duration_unit, :repayment_cycle, :number_of_repayments, :processing_fee, :registration_fee, :loan_status, :total_amount,:total_amount_inclusive)";
 
 $stmt = $conn->prepare($sql);
 $stmt->bindValue(':borrower', $borrower, PDO::PARAM_STR);
@@ -66,6 +67,7 @@ $stmt->bindValue(':principal', $principal, PDO::PARAM_STR);
 $stmt->bindValue(':loan_release_date', $loan_release_date, PDO::PARAM_STR);
 $stmt->bindValue(':interest', $interest, PDO::PARAM_STR);
 $stmt->bindValue(':interest_method', $interest_method, PDO::PARAM_STR);
+$stmt->bindValue(':interest_calculation', $interest_calculation, PDO::PARAM_STR);
 $stmt->bindValue(':loan_interest', $loan_interest_percentage, PDO::PARAM_STR);
 $stmt->bindValue(':loan_duration', $loan_duration, PDO::PARAM_INT);
 $stmt->bindValue(':repayment_cycle', $repayment_cycle, PDO::PARAM_STR);

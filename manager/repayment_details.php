@@ -50,8 +50,8 @@ function rebuildLoanRepaymentScheduleFromCurrentTerms($conn, $loanId) {
     $loanReleaseDate = $loanRow['loan_release_date'];
     $loanDuration = (int) ($loanRow['loan_duration'] ?? 0);
     $loanDurationUnit = $loanRow['loan_duration_unit'] ?? 'months';
-    $repaymentCycle = $loanRow['repayment_cycle'] ?? 'monthly';
-    $numberOfRepayments = (int) ($loanRow['number_of_repayments'] ?? 0);
+    $repaymentCycle = $loanRow['repayment_cycle'] ?? 'once';
+    $numberOfRepayments = max(1, (int) ($loanRow['number_of_repayments'] ?? 0));
 
     $conn->begin_transaction();
 
@@ -235,6 +235,8 @@ function generate_repayment_details_pdf($loan, $guarantors, $adjusted_history, $
         'Total Paid: KSH ' . number_format(($loan['total_amount_paid'] ?? 0), 2),
         'Balance: KSH ' . number_format((($loan['total_amount_due'] ?? 0) - ($loan['total_amount_paid'] ?? 0)), 2),
         'Release Date: ' . (!empty($loan['loan_release_date']) ? date('d/m/Y', strtotime($loan['loan_release_date'])) : 'N/A'),
+        'Loan Duration: ' . ((int)($loan['loan_duration'] ?? 0)) . ' ' . strtoupper($loan['loan_duration_unit'] ?? 'months'),
+        'Interest Calculation: ' . (!empty($loan['interest_calculation']) ? ucfirst($loan['interest_calculation']) : 'Monthly'),
         'Loan Officer: ' . (!empty($loan['loan_officer_name']) ? $loan['loan_officer_name'] : 'Unassigned')
     ];
 
@@ -553,6 +555,7 @@ $sql_loan = "SELECT
                 loan_applications.loan_release_date,
                 loan_applications.loan_duration,
                 loan_applications.loan_duration_unit,
+                loan_applications.interest_calculation,
                 loan_applications.repayment_cycle,
                 loan_applications.number_of_repayments,
                 loan_applications.total_amount,
@@ -576,7 +579,8 @@ $sql_loan = "SELECT
             GROUP BY 
                 repayments.loan_id, borrowers.full_name, borrowers.mobile, borrowers.unique_number, borrowers.guarantor_name, borrowers.guarantor_phone,
                 loan_applications.loan_product, loan_applications.principal, loan_applications.loan_release_date,
-                loan_applications.loan_duration, loan_applications.repayment_cycle, loan_applications.number_of_repayments,
+                loan_applications.loan_duration, loan_applications.loan_duration_unit, loan_applications.interest_calculation,
+                loan_applications.repayment_cycle, loan_applications.number_of_repayments,
                 loan_applications.total_amount, users.name";
 
 $stmt_loan = $conn->prepare($sql_loan);
@@ -632,11 +636,28 @@ while ($overdueRow = $overdueResult->fetch_assoc()) {
 }
 $overdueStmt->close();
 
+// Use the actual repayment schedule if available, otherwise fall back to loan duration.
+$projectedMaturityDate = null;
+$projectedStmt = $conn->prepare("SELECT MAX(repayment_date) AS projected_maturity_date FROM repayments WHERE loan_id = ?");
+if ($projectedStmt) {
+    $projectedStmt->bind_param("i", $loanId);
+    $projectedStmt->execute();
+    $projectedResult = $projectedStmt->get_result();
+    $projectedRow = $projectedResult->fetch_assoc();
+    $projectedStmt->close();
+
+    if (!empty($projectedRow['projected_maturity_date'])) {
+        $projectedMaturityDate = new DateTime($projectedRow['projected_maturity_date']);
+    }
+}
+
+if ($projectedMaturityDate === null) {
     $projectedMaturityDate = getProjectedMaturityDate(
         $loan['loan_release_date'],
         (int) ($loan['loan_duration'] ?? 0),
         $loan['loan_duration_unit'] ?? 'months'
     );
+}
 $daysAfterProjectedMaturity = 0;
 
 // Fetch repayment history with adjusted logic

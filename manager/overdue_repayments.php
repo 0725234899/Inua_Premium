@@ -21,13 +21,37 @@ function get_projected_maturity_date_for_loan($loan) {
 
     $date = new DateTime($loan['loan_release_date']);
     $count = (int) ($loan['number_of_repayments'] ?? 0);
+    $cycle = ($loan['repayment_cycle'] ?? 'monthly');
 
     if ($count <= 0) {
         return $date;
     }
 
+    if ($cycle === 'once') {
+        $loan_duration = (int) ($loan['loan_duration'] ?? 0);
+        $loan_duration_unit = $loan['loan_duration_unit'] ?? 'months';
+        switch ($loan_duration_unit) {
+            case 'days':
+                $date->modify('+' . max(1, $loan_duration) . ' days');
+                break;
+            case 'weeks':
+                $date->modify('+' . max(1, $loan_duration) . ' weeks');
+                break;
+            case 'months':
+                $date->modify('+' . max(1, $loan_duration) . ' months');
+                break;
+            case 'years':
+                $date->modify('+' . max(1, $loan_duration) . ' years');
+                break;
+            default:
+                $date->modify('+' . max(1, $loan_duration) . ' months');
+                break;
+        }
+        return $date;
+    }
+
     $intervalSpec = 'P1M';
-    switch (($loan['repayment_cycle'] ?? 'monthly')) {
+    switch ($cycle) {
         case 'daily':
             $intervalSpec = 'P1D';
             break;
@@ -52,7 +76,7 @@ function get_projected_maturity_date_for_loan($loan) {
 
 function get_eligible_loan_ids_for_arrears($conn) {
     $eligible_ids = [];
-    $stmt = $conn->prepare("SELECT id, loan_status, loan_release_date, repayment_cycle, number_of_repayments FROM loan_applications WHERE loan_status IN ('approved', 'rolled_over')");
+    $stmt = $conn->prepare("SELECT id, loan_status, loan_release_date, repayment_cycle, number_of_repayments, loan_duration, loan_duration_unit FROM loan_applications WHERE loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(loan_status, ''))) LIKE '%roll%'");
     if (!$stmt) {
         return $eligible_ids;
     }
@@ -62,7 +86,10 @@ function get_eligible_loan_ids_for_arrears($conn) {
 
     $today = new DateTime('today');
     while ($loan = $result->fetch_assoc()) {
-        if (($loan['loan_status'] ?? '') !== 'rolled_over') {
+        $loanStatus = strtolower(trim((string) ($loan['loan_status'] ?? '')));
+        $isRolledOver = strpos($loanStatus, 'roll') !== false;
+
+        if (!$isRolledOver) {
             $eligible_ids[] = (int) $loan['id'];
             continue;
         }
@@ -88,19 +115,20 @@ function fetch_arrears_report_data($conn, $selected_officer = 'all', $selected_d
     $sql = "SELECT 
                 borrowers.full_name AS borrower_name, 
                 borrowers.mobile AS phone_number, 
-                GREATEST(
-                    COALESCE(SUM(CASE 
-                        WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
-                        ELSE 0 
-                    END), 0) 
-                    - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
-                    0
-                ) AS total_overdue,
-                DATEDIFF(CURDATE(), MIN(CASE 
+                SUM(CASE 
                     WHEN repayments.repayment_date < CURDATE() 
-                    THEN repayments.repayment_date 
-                    ELSE NULL 
-                END)) + 1 AS days_in_arrears,
+                    THEN GREATEST(COALESCE(repayments.amount, 0) - COALESCE(repayments.paid, 0), 0) 
+                    ELSE 0 
+                END) AS total_overdue,
+                COALESCE(
+                    DATEDIFF(CURDATE(), MIN(CASE 
+                        WHEN repayments.repayment_date < CURDATE() 
+                            AND COALESCE(repayments.amount, 0) > COALESCE(repayments.paid, 0)
+                        THEN repayments.repayment_date 
+                        ELSE NULL 
+                    END)),
+                    0
+                ) AS days_in_arrears,
                 GREATEST(
                     COALESCE((SELECT SUM(la.total_amount) FROM loan_applications la WHERE la.borrower = borrowers.id), 0)
                     - COALESCE((SELECT SUM(rp.paid) FROM loan_applications la2 LEFT JOIN repayments rp ON la2.id = rp.loan_id WHERE la2.borrower = borrowers.id), 0),
@@ -286,8 +314,23 @@ $sql_overdue = "SELECT
                         ELSE NULL 
                     END)) + 1 AS days_in_arrears,
                     GREATEST(
-                        COALESCE((SELECT SUM(la.total_amount) FROM loan_applications la WHERE la.borrower = borrowers.id), 0)
-                        - COALESCE((SELECT SUM(rp.paid) FROM loan_applications la2 LEFT JOIN repayments rp ON la2.id = rp.loan_id WHERE la2.borrower = borrowers.id), 0),
+                        COALESCE((
+                            SELECT SUM(
+                                CASE 
+                                    WHEN LOWER(TRIM(COALESCE(la3.loan_status, ''))) LIKE '%roll%' THEN 0
+                                    ELSE la3.total_amount
+                                END
+                            )
+                            FROM loan_applications la3
+                            WHERE la3.borrower = borrowers.id
+                        ), 0)
+                        - COALESCE((
+                            SELECT SUM(rp.paid)
+                            FROM loan_applications la4
+                            LEFT JOIN repayments rp ON la4.id = rp.loan_id
+                            WHERE la4.borrower = borrowers.id
+                            AND LOWER(TRIM(COALESCE(la4.loan_status, ''))) NOT LIKE '%roll%'
+                        ), 0),
                         0
                     ) AS outstanding_loan_balance
                 FROM 

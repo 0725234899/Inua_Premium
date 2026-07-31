@@ -351,6 +351,10 @@
                     break;
             }
 
+            if (repaymentCycle === 'once') {
+                numberOfRepayments = 1;
+            }
+
             // Calculate interest based on method and cycle
             var totalInterest = 0;
             switch (interestMethod) {

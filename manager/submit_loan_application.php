@@ -15,11 +15,15 @@ $principal = $_POST['principal'];
 $loan_release_date = $_POST['loan_release_date'];
 $interest = $_POST['loan_interest_percentage'];
 $interest_method = $_POST['interest_method'];
+$interest_calculation = $_POST['interest_calculation'] ?? 'monthly';
 $loan_interest_percentage = $_POST['loan_interest_percentage'];
 $loan_duration = $_POST['loan_duration'];
 $loan_duration_unit = $_POST['loan_duration_unit'];
 $repayment_cycle = $_POST['repayment_cycle'];
-$number_of_repayments = $_POST['number_of_repayments'];
+$number_of_repayments = isset($_POST['number_of_repayments']) ? (int) $_POST['number_of_repayments'] : 0;
+if ($repayment_cycle === 'once') {
+    $number_of_repayments = 1;
+}
 $processing_fee = (float) ($_POST['processing_fee'] ?? 0);
 $registration_fee = (float) ($_POST['registration_fee'] ?? 0);
 $loan_status = "pending";
@@ -56,8 +60,8 @@ $total_amount_inclusive = $principal + $total_interest + $processing_fee + $regi
 $total_amount=$principal + $total_interest;
 // Prepare SQL to insert loan application
 $sql = "INSERT INTO loan_applications 
-    (borrower, loan_product, principal, loan_release_date, interest, interest_method, loan_interest, loan_duration, loan_duration_unit, repayment_cycle, number_of_repayments, processing_fee, registration_fee, loan_status, total_amount,total_amount_inclusive, id_photo_path) 
-    VALUES (:borrower, :loan_product, :principal, :loan_release_date, :interest, :interest_method, :loan_interest, :loan_duration, :loan_duration_unit, :repayment_cycle, :number_of_repayments, :processing_fee, :registration_fee, :loan_status, :total_amount,:total_amount_inclusive, :id_photo_path)";
+    (borrower, loan_product, principal, loan_release_date, interest, interest_method, interest_calculation, loan_interest, loan_duration, loan_duration_unit, repayment_cycle, number_of_repayments, processing_fee, registration_fee, loan_status, total_amount,total_amount_inclusive, id_photo_path) 
+    VALUES (:borrower, :loan_product, :principal, :loan_release_date, :interest, :interest_method, :interest_calculation, :loan_interest, :loan_duration, :loan_duration_unit, :repayment_cycle, :number_of_repayments, :processing_fee, :registration_fee, :loan_status, :total_amount,:total_amount_inclusive, :id_photo_path)";
 
 $stmt = $conn->prepare($sql);
 $stmt->bindValue(':borrower', $borrower, PDO::PARAM_STR);
@@ -66,6 +70,7 @@ $stmt->bindValue(':principal', $principal, PDO::PARAM_STR);
 $stmt->bindValue(':loan_release_date', $loan_release_date, PDO::PARAM_STR);
 $stmt->bindValue(':interest', $interest, PDO::PARAM_STR);
 $stmt->bindValue(':interest_method', $interest_method, PDO::PARAM_STR);
+$stmt->bindValue(':interest_calculation', $interest_calculation, PDO::PARAM_STR);
 $stmt->bindValue(':loan_interest', $loan_interest_percentage, PDO::PARAM_STR);
 $stmt->bindValue(':loan_duration', $loan_duration, PDO::PARAM_INT);
 $stmt->bindValue(':loan_duration_unit', $loan_duration_unit, PDO::PARAM_STR);
@@ -146,7 +151,7 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
 // Function to calculate repayment amount
 function calculateRepaymentAmount($principal_amount, $interest_amount, $number_of_repayments) {
     $total_amount = $principal_amount + $interest_amount; // Make sure both principal and interest are considered
-    return $total_amount / $number_of_repayments; // Repayments are evenly split
+    return $number_of_repayments > 0 ? $total_amount / $number_of_repayments : 0; // Repayments are evenly split
 }
 
 function getMaturityDate($loan_release_date, $loan_duration, $loan_duration_unit) {
