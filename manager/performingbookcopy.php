@@ -1,0 +1,331 @@
+<?php
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+include '../includes/functions.php';
+include("includes/header.php");
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Performing Book</title>
+    <link href="/assets/img/logo.png" rel="icon">
+    <link href="/assets/img/logo.png" rel="apple-touch-icon">
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans&family=Montserrat&family=Poppins&display=swap" rel="stylesheet">
+    <link href="assets/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+    <link href="assets/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
+    <link href="assets/css/style.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+            color: #212529;
+            font-family: 'Open Sans', sans-serif;
+            margin: 0;
+        }
+
+        .header {
+            background-color: #e84545;
+            color: #ffffff;
+            padding: 10px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header .logo h1 {
+            color: #ffffff;
+            margin: 0;
+            font-size: 24px;
+        }
+
+        .sidebar {
+            background-color: #ffffff;
+            color: #3a3939;
+            padding: 20px;
+            width: 250px;
+            position: fixed;
+            height: 100%;
+            overflow: auto;
+        }
+
+        .main {
+            margin-left: 270px;
+            padding: 20px;
+        }
+        .rolled-over-balance {
+            background-color: #fff3cd;
+            color: #856404;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: 700;
+            display: inline-block;
+        }
+        .nav-tabs .nav-link {
+            border-radius: 0.5rem 0.5rem 0 0;
+            margin-right: 0.25rem;
+            font-weight: 600;
+            color: #495057;
+        }
+        .nav-tabs .nav-link.active {
+            background-color: #dc3545;
+            color: #ffffff;
+            border-color: #dc3545 #dc3545 #fff;
+            box-shadow: 0 0.2rem 0.4rem rgba(220, 53, 69, 0.2);
+        }
+        .nav-tabs .nav-link:hover {
+            border-color: #dee2e6 #dee2e6 #dee2e6;
+            color: #dc3545;
+        }
+        .filter-summary {
+            font-size: 0.95rem;
+            color: #6c757d;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
+</head>
+<body>
+
+    <div class="sidebar">
+        <?php
+         
+        include '../includes/sidebar.php'; ?>
+    </div>
+    <?php
+    include 'db.php';
+
+    // Fetch all loan officers
+    $sql_officers = "SELECT id, name AS full_name, email FROM users WHERE role_id = '2'";
+    $stmt_officers = $conn->prepare($sql_officers);
+    $stmt_officers->execute();
+    $result_officers = $stmt_officers->get_result();
+
+    $officer_lookup = [];
+    while ($officer = $result_officers->fetch_assoc()) {
+        $officer_lookup[$officer['id']] = $officer;
+    }
+    $result_officers->data_seek(0);
+
+    // Get selected loan officer and day from the request
+    $selected_officer = isset($_GET['officer_id']) ? trim($_GET['officer_id']) : 'all';
+    $selected_day = isset($_GET['day']) ? trim($_GET['day']) : 'all';
+    $has_selected_officer = $selected_officer !== '' && $selected_officer !== 'all' && ctype_digit((string) $selected_officer);
+    $selected_officer_email = $has_selected_officer ? ($officer_lookup[$selected_officer]['email'] ?? '') : '';
+
+    // Build the loan list using the borrower’s assigned loan officer and the selected day.
+    function getLoans($conn, $selected_day, $selected_officer_email) {
+        $day_filter = ($selected_day !== 'all') ? "AND DAYNAME(l.loan_release_date) = ?" : "";
+        $officer_filter = ($selected_officer_email !== '') ? "AND b.loan_officer = ?" : "";
+
+        $loans = array();
+        $sql = "SELECT 
+                    l.id,
+                    DATE_FORMAT(l.loan_release_date, '%d/%m/%Y') AS loan_release_date, 
+                    l.principal,
+                    l.loan_status,
+                    b.full_name AS borrower_name, 
+                    p.name AS loan_product_name, 
+                    COALESCE(SUM(r.paid), 0) AS total_paid_amount, 
+                    COALESCE(SUM(r.amount), 0) AS total_amount, 
+                    CASE 
+                        WHEN LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%' THEN 0 
+                        ELSE COALESCE(SUM(r.amount), 0) - COALESCE(SUM(r.paid), 0) 
+                    END AS loan_balance 
+                FROM loan_applications l 
+                INNER JOIN borrowers b ON l.borrower = b.id 
+                INNER JOIN loan_products p ON l.loan_product = p.id 
+                LEFT JOIN repayments r ON l.id = r.loan_id 
+                WHERE l.loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%' 
+                $day_filter
+                $officer_filter
+                GROUP BY l.id, b.full_name, p.name, l.loan_status";
+
+        $sql .= " ORDER BY CASE WHEN LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%' THEN 0 ELSE 1 END, l.id DESC";
+
+        $stmt = $conn->prepare($sql);
+        if ($selected_day !== 'all' && $selected_officer_email !== '') {
+            $stmt->bind_param("ss", $selected_day, $selected_officer_email);
+        } elseif ($selected_day !== 'all') {
+            $stmt->bind_param("s", $selected_day);
+        } elseif ($selected_officer_email !== '') {
+            $stmt->bind_param("s", $selected_officer_email);
+        }
+        $stmt->execute();
+        $result = $stmt->get_result();
+
+        if ($result === FALSE) {
+            echo "Error: " . $conn->error;
+            return $loans;
+        }
+
+        if ($result->num_rows > 0) {
+            while ($row = $result->fetch_assoc()) {
+                $loans[] = $row;
+            }
+        }
+
+        return $loans;
+    }
+
+    $loans = getLoans($conn, $selected_day, $selected_officer_email);
+    ?>
+    <main class="main">
+        <section class="section">
+            <div class="container">
+                <h1>Performing Book</h1>
+                <div class="filter-summary">
+                    <span class="badge bg-danger-subtle text-danger-emphasis me-2">Officer:</span>
+                    <strong><?= $selected_officer === 'all' ? 'All Loan Officers' : htmlspecialchars($officer_lookup[$selected_officer]['full_name'] ?? $selected_officer) ?></strong>
+                    <span class="badge bg-danger-subtle text-danger-emphasis ms-3 me-2">Day:</span>
+                    <strong><?= htmlspecialchars($selected_day === 'all' ? 'All Days' : $selected_day) ?></strong>
+                </div>
+
+                <!-- Loan Officer Tabs -->
+                <ul class="nav nav-tabs justify-content-center">
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_officer === 'all') ? 'active' : '' ?>" href="?officer_id=all&day=<?= htmlspecialchars($selected_day); ?>">All Loan Officers</a>
+                    </li>
+                    <?php while ($officer = $result_officers->fetch_assoc()): ?>
+                        <li class="nav-item">
+                            <a class="nav-link <?= ($selected_officer == $officer['id']) ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($officer['id']); ?>&day=<?= htmlspecialchars($selected_day); ?>">
+                                <?= htmlspecialchars($officer['full_name']); ?>
+                            </a>
+                        </li>
+                    <?php endwhile; ?>
+                </ul>
+
+                <!-- Day Tabs -->
+                <ul class="nav nav-tabs justify-content-center mt-3">
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'all') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=all">All Days</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Monday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Monday">Monday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Tuesday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Tuesday">Tuesday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Wednesday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Wednesday">Wednesday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Thursday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Thursday">Thursday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Friday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Friday">Friday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Saturday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Saturday">Saturday</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= ($selected_day === 'Sunday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Sunday">Sunday</a>
+                    </li>
+                </ul>
+
+                <!-- Search Input and Download PDF Button -->
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <input type="text" id="searchInput" class="form-control" placeholder="Search by Borrower Name or Loan Product" style="max-width: 400px;">
+                    <button id="downloadPdf" class="btn btn-danger">Download PDF</button>
+                </div>
+
+                <table id="performingBookTable" class="table table-bordered">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Borrower</th>
+                            <th>Loan Release Date</th>
+                            <th>Principal</th>
+                            <th>Loan Product</th>
+                            <th>Total Amount</th>
+                            <th>Total Paid Amount</th>
+                            <th>Loan Balance</th>
+                            
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php
+                        if (count($loans) > 0) {
+                            foreach ($loans as $loan) {
+                                $balance = (float) ($loan['loan_balance'] ?? 0);
+                                $loanId = $loan['id'];
+                                $loanStatusValue = strtolower(trim((string) ($loan['loan_status'] ?? '')));
+                                $isRolledOver = stripos($loanStatusValue, 'roll') !== false;
+                                $balanceDisplay = $isRolledOver
+                                    ? '<span class="rolled-over-balance">0</span>'
+                                    : number_format(ceil($balance));
+                                $rowClass = $isRolledOver ? "class='table-warning'" : '';
+                                echo "<tr $rowClass>
+                                    <td><a href='repayment_details.php?loanId=" . htmlspecialchars($loanId) . "'>" . htmlspecialchars($loan['id']) . "</a></td>
+                                    <td><a href='repayment_details.php?loanId=" . htmlspecialchars($loanId) . "'>" . htmlspecialchars($loan['borrower_name']) . "</a></td>
+                                    <td>" . htmlspecialchars($loan['loan_release_date']) . "</td>
+                                    <td>" . number_format(ceil($loan['principal'])) . "</td>
+                                    <td>" . htmlspecialchars($loan['loan_product_name']) . "</td>
+                                    <td>" . number_format(ceil($loan['total_amount'])) . "</td>
+                                    <td><a href='repayment_details.php?loanId=" . htmlspecialchars($loanId) . "'>" . number_format(ceil($loan['total_paid_amount'])) . "</a></td>
+                                    <td>" . $balanceDisplay . "</td>
+                                </tr>";
+                            }
+                        } else {
+                            echo "<tr><td colspan='8'>No loans found</td></tr>";
+                        }
+                        ?>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        // Search functionality
+        document.getElementById('searchInput').addEventListener('input', function () {
+            const filter = this.value.toLowerCase();
+            const rows = document.querySelectorAll('#performingBookTable tbody tr');
+
+            rows.forEach(row => {
+                const borrowerName = row.cells[1]?.textContent.toLowerCase() || '';
+                const loanProduct = row.cells[4]?.textContent.toLowerCase() || '';
+                row.style.display = (borrowerName.includes(filter) || loanProduct.includes(filter)) ? '' : 'none';
+            });
+        });
+
+        // PDF Download functionality
+        document.getElementById('downloadPdf').addEventListener('click', function () {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+
+            // Add title
+            doc.setFontSize(18);
+            doc.text('Performing Book', 10, 10);
+
+            // Add table
+            const table = document.getElementById('performingBookTable');
+            const rows = table.querySelectorAll('tr');
+            let y = 20;
+
+            rows.forEach((row, index) => {
+                const cells = row.querySelectorAll('td, th');
+                let x = 10;
+
+                cells.forEach(cell => {
+                    doc.text(cell.innerText, x, y);
+                    x += 40; // Adjust column width
+                });
+
+                y += 10; // Adjust row height
+                if (y > 280) { // Create a new page if content exceeds page height
+                    doc.addPage();
+                    y = 10;
+                }
+            });
+
+            // Save the PDF
+            doc.save('Performing_Book.pdf');
+        });
+    </script>
+
+    <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+    <script src="assets/js/main.js"></script>
+</body>
+</html>

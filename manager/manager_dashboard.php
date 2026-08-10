@@ -17,6 +17,95 @@ function bindDynamicParams($stmt, $params) {
     $stmt->bind_param($types, ...$params);
 }
 
+function get_projected_maturity_date_for_loan($loan) {
+    if (empty($loan['loan_release_date'])) {
+        return null;
+    }
+
+    $date = new DateTime($loan['loan_release_date']);
+    $count = (int) ($loan['number_of_repayments'] ?? 0);
+    $cycle = ($loan['repayment_cycle'] ?? 'monthly');
+
+    if ($count <= 0) {
+        return $date;
+    }
+
+    if ($cycle === 'once') {
+        $loan_duration = (int) ($loan['loan_duration'] ?? 0);
+        $loan_duration_unit = $loan['loan_duration_unit'] ?? 'months';
+        switch ($loan_duration_unit) {
+            case 'days':
+                $date->modify('+' . max(1, $loan_duration) . ' days');
+                break;
+            case 'weeks':
+                $date->modify('+' . max(1, $loan_duration) . ' weeks');
+                break;
+            case 'months':
+                $date->modify('+' . max(1, $loan_duration) . ' months');
+                break;
+            case 'years':
+                $date->modify('+' . max(1, $loan_duration) . ' years');
+                break;
+            default:
+                $date->modify('+' . max(1, $loan_duration) . ' months');
+                break;
+        }
+        return $date;
+    }
+
+    $intervalSpec = 'P1M';
+    switch ($cycle) {
+        case 'daily':
+            $intervalSpec = 'P1D';
+            break;
+        case 'weekly':
+            $intervalSpec = 'P1W';
+            break;
+        case 'monthly':
+            $intervalSpec = 'P1M';
+            break;
+        case 'yearly':
+            $intervalSpec = 'P1Y';
+            break;
+    }
+
+    $interval = new DateInterval($intervalSpec);
+    for ($i = 0; $i < $count; $i++) {
+        $date->add($interval);
+    }
+
+    return $date;
+}
+
+function get_eligible_loan_ids_for_arrears($conn) {
+    $eligible_ids = [];
+    $stmt = $conn->prepare("SELECT id, loan_status, loan_release_date, repayment_cycle, number_of_repayments, loan_duration FROM loan_applications WHERE loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(loan_status, ''))) LIKE '%roll%'");
+    if (!$stmt) {
+        return $eligible_ids;
+    }
+
+    $stmt->execute();
+    $result = $stmt->get_result();
+
+    $today = new DateTime('today');
+    while ($loan = $result->fetch_assoc()) {
+        $loanStatus = strtolower(trim((string) ($loan['loan_status'] ?? '')));
+        $isRolledOver = strpos($loanStatus, 'roll') !== false;
+
+        if (!$isRolledOver) {
+            $eligible_ids[] = (int) $loan['id'];
+            continue;
+        }
+
+        $projected_maturity_date = get_projected_maturity_date_for_loan($loan);
+        if ($projected_maturity_date !== null && $projected_maturity_date <= $today) {
+            $eligible_ids[] = (int) $loan['id'];
+        }
+    }
+
+    return $eligible_ids;
+}
+
 // Fetch available areas for loan officers
 $sql_areas = "SELECT area_id, area_name FROM areas ORDER BY area_name";
 $result_areas = $conn->query($sql_areas);
@@ -42,6 +131,11 @@ if ($selected_area !== 'all') {
     $filter_params[] = (int) $selected_area;
 }
 
+$eligible_loan_ids = get_eligible_loan_ids_for_arrears($conn);
+$eligible_loan_filter = !empty($eligible_loan_ids)
+    ? "AND loan_applications.id IN (" . implode(',', $eligible_loan_ids) . ")"
+    : "AND 1=0";
+
 // Fetch loan officers for the selected area
 $sql_officers = "SELECT id, name AS full_name, area FROM users WHERE role_id = '2'";
 if ($selected_area !== 'all') {
@@ -54,47 +148,46 @@ if ($selected_area !== 'all') {
 $stmt_officers->execute();
 $result_officers = $stmt_officers->get_result();
 
-// Fetch total overdue amount using same calculation as index.php (sum per-borrower amounts)
-$sql_total_overdue = "SELECT 
-                    borrowers.full_name AS borrower_name, 
-                    borrowers.mobile AS phone_number, 
-                    GREATEST(
-                        COALESCE(SUM(CASE 
-                            WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
-                            ELSE 0 
-                        END), 0) 
-                        - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
-                        0
-                    ) AS total_overdue
-                FROM 
-                    borrowers
-                LEFT JOIN 
-                    loan_applications ON borrowers.id = loan_applications.borrower
-                LEFT JOIN 
-                    repayments ON loan_applications.id = repayments.loan_id
-                LEFT JOIN 
-                    users ON borrowers.loan_officer = users.email
-                WHERE 
-                    1=1
-                    $filter_sql
-                GROUP BY 
-                    borrowers.full_name, borrowers.mobile
-                HAVING 
-                    total_overdue > 0";
+// Fetch total overdue amount using the overdue_repayments logic
+$sql_total_overdue = "SELECT COALESCE(SUM(overdue_summary.total_overdue), 0) AS total_overdue
+                FROM (
+                    SELECT 
+                        borrowers.full_name AS borrower_name, 
+                        borrowers.mobile AS phone_number, 
+                        GREATEST(
+                            COALESCE(SUM(CASE 
+                                WHEN repayments.repayment_date < CURDATE() 
+                                THEN COALESCE(repayments.amount, 0) 
+                                ELSE 0 
+                            END), 0)
+                            - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
+                            0
+                        ) AS total_overdue
+                    FROM 
+                        borrowers
+                    LEFT JOIN 
+                        loan_applications ON borrowers.id = loan_applications.borrower
+                    LEFT JOIN 
+                        repayments ON loan_applications.id = repayments.loan_id
+                    LEFT JOIN 
+                        users ON borrowers.loan_officer = users.email
+                    WHERE 
+                        1=1
+                        $eligible_loan_filter
+                        $filter_sql
+                    GROUP BY 
+                        borrowers.full_name, borrowers.mobile
+                    HAVING 
+                        total_overdue > 0
+                ) AS overdue_summary";
 
 $stmt_total_overdue = $conn->prepare($sql_total_overdue);
 bindDynamicParams($stmt_total_overdue, $filter_params);
 $stmt_total_overdue->execute();
 $result_total_overdue = $stmt_total_overdue->get_result();
 
-// Calculate total overdue amount
-$total_overdue_amount = 0;
-while ($row = $result_total_overdue->fetch_assoc()) {
-    $total_overdue_amount += $row['total_overdue'];
-}
+$total_arrears = $result_total_overdue->fetch_assoc()['total_overdue'] ?? 0;
 
-// Calculate total arrears (overdue repayments)
-$total_arrears = $total_overdue_amount;
 
 // Fetch total paid amount for approved loans
 $sql_total_paid = "SELECT CEIL(SUM(paid)) AS total_paid 
@@ -151,7 +244,7 @@ $performing_book = max(0, $total_loan_amount - $total_arrears - $total_paid_amou
 $loan_book = $performing_book + $total_arrears;
 
 // Portfolio at Risk (PAR) Calculation
-$par = ($total_loan_amount > 0) ? ($total_arrears / $total_loan_amount) * 100 : 0;
+$par = ($loan_book > 0) ? ($total_arrears / $loan_book) * 100 : 0;
 
 // Fetch total due loans for today
 $sql_due_loans = "SELECT CEIL(SUM(amount - paid)) AS total_due_loans 
@@ -190,20 +283,18 @@ $total_clients = $stmt_total_clients->get_result()->fetch_assoc()['total_clients
 $sql_clients_in_arrears = "SELECT COUNT(*) AS clients_in_arrears 
                            FROM (
                                SELECT borrowers.id,
-                                   GREATEST(
-                                       COALESCE(SUM(CASE 
-                                           WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
-                                           ELSE 0 
-                                       END), 0) 
-                                       - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
-                                       0
-                                   ) AS total_overdue
+                                   SUM(CASE 
+                                       WHEN repayments.repayment_date < CURDATE() 
+                                       THEN GREATEST(COALESCE(repayments.amount, 0) - COALESCE(repayments.paid, 0), 0) 
+                                       ELSE 0 
+                                   END) AS total_overdue
                                FROM borrowers
                                LEFT JOIN loan_applications ON borrowers.id = loan_applications.borrower
                                LEFT JOIN repayments ON loan_applications.id = repayments.loan_id
                                LEFT JOIN users ON borrowers.loan_officer = users.email
                                WHERE 1=1
-                               $filter_sql
+                                   $eligible_loan_filter
+                                   $filter_sql
                                GROUP BY borrowers.id
                                HAVING total_overdue > 0
                            ) AS arrears_summary";
@@ -233,6 +324,7 @@ LEFT JOIN
     users ON borrowers.loan_officer = users.email
 WHERE 
     1=1
+    $eligible_loan_filter
     $filter_sql
 GROUP BY 
     borrowers.id, borrowers.full_name

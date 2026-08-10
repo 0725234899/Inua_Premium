@@ -206,6 +206,15 @@
                         <label for="loanReleaseDate">Loan Release Date</label>
                         <input type="date" class="form-control" id="loanReleaseDate" name="loan_release_date" required>
                     </div>
+                                    <div class="form-group">
+                                        <label for="autoCalculateMaturity">Projected Maturity Date (optional)</label>
+                                        <div class="form-check mb-2">
+                                            <input class="form-check-input" type="checkbox" value="1" id="autoCalculateMaturity" checked>
+                                            <label class="form-check-label" for="autoCalculateMaturity">Auto-calculate from release date and duration</label>
+                                        </div>
+                                        <input type="date" class="form-control" id="projectedMaturityDate" name="projected_maturity_date">
+                                        <small class="text-muted">Optional: set a projected date when the client is expected to offset the loan. Uncheck to enter manually.</small>
+                                    </div>
                     <div class="form-group">
                         <label for="interestMethod">Interest Method</label>
                         <select class="form-control" id="interestMethod" name="interest_method" required>
@@ -283,6 +292,12 @@
     <script>
         document.getElementById('loanForm').addEventListener('input', calculateLoanDetails);
 
+        // update maturity when checkbox toggled
+        document.getElementById('autoCalculateMaturity').addEventListener('change', function() {
+            calculateLoanDetails();
+            document.getElementById('projectedMaturityDate').readOnly = this.checked;
+        });
+
         function filterBorrowers() {
             var searchValue = document.getElementById('borrowerSearch').value.toLowerCase();
             var borrowerSelect = document.getElementById('borrower');
@@ -314,79 +329,129 @@
             var repaymentCycle = document.getElementById('repaymentCycle').value;
             var loanInterestPercentage = parseFloat(document.getElementById('loanInterestPercentage').value) || 0;
 
+            var durationInDays = 0;
             var durationInWeeks = 0;
+            var durationInMonths = 0;
+            var durationInYears = 0;
 
-            // Convert loan duration to weeks
             switch (loanDurationUnit) {
                 case 'days':
+                    durationInDays = loanDuration;
                     durationInWeeks = loanDuration / 7;
+                    durationInMonths = durationInWeeks / 4;
+                    durationInYears = durationInWeeks / 52;
                     break;
                 case 'weeks':
+                    durationInDays = loanDuration * 7;
                     durationInWeeks = loanDuration;
+                    durationInMonths = loanDuration / 4;
+                    durationInYears = loanDuration / 52;
                     break;
                 case 'months':
+                    durationInDays = loanDuration * 30;
                     durationInWeeks = loanDuration * 4;
+                    durationInMonths = loanDuration;
+                    durationInYears = loanDuration / 12;
                     break;
                 case 'years':
+                    durationInDays = loanDuration * 365;
                     durationInWeeks = loanDuration * 52;
+                    durationInMonths = loanDuration * 12;
+                    durationInYears = loanDuration;
                     break;
             }
 
             var numberOfRepayments = 0;
             switch (repaymentCycle) {
                 case 'daily':
-                    numberOfRepayments = durationInWeeks * 7;
+                    numberOfRepayments = durationInDays;
                     break;
                 case 'weekly':
                     numberOfRepayments = durationInWeeks;
                     break;
                 case 'monthly':
-                    numberOfRepayments = durationInWeeks / 4;
+                    numberOfRepayments = durationInMonths;
                     break;
                 case 'yearly':
-                    numberOfRepayments = durationInWeeks / 52;
+                    numberOfRepayments = durationInYears;
                     break;
                 case 'once':
                     numberOfRepayments = 1;
                     break;
             }
 
-            if (repaymentCycle === 'once') {
-                numberOfRepayments = 1;
+            if (repaymentCycle !== 'once') {
+                numberOfRepayments = Math.max(0, Math.round(numberOfRepayments));
             }
 
-            // Calculate interest based on method and cycle
             var totalInterest = 0;
+            var interestPeriods = 0;
+            switch (interestCalculation) {
+                case 'weekly':
+                    interestPeriods = durationInWeeks;
+                    break;
+                case 'monthly':
+                    interestPeriods = durationInMonths;
+                    break;
+                case 'yearly':
+                    interestPeriods = durationInYears;
+                    break;
+            }
+
             switch (interestMethod) {
                 case 'flat_rate':
-                    totalInterest = (principal * loanInterestPercentage * loanDuration) / 100;
+                    totalInterest = (principal * (loanInterestPercentage / 100)) * interestPeriods;
                     break;
                 case 'percentage':
-                    switch (interestCalculation) {
-                        case 'weekly':
-                            totalInterest = (principal * (loanInterestPercentage / 100)) * durationInWeeks;
-                            break;
-                        case 'monthly':
-                            totalInterest = (principal * (loanInterestPercentage / 100)) * (durationInWeeks / 4);
-                            break;
-                        case 'yearly':
-                            totalInterest = (principal * (loanInterestPercentage / 100)) * (durationInWeeks / 52);
-                            break;
-                    }
+                    totalInterest = (principal * (loanInterestPercentage / 100)) * interestPeriods;
                     break;
                 case 'fixed_amount':
                     totalInterest = loanInterestPercentage * numberOfRepayments;
                     break;
             }
-            var totalAmountInclusive=principal + totalInterest + processingFee + registrationFee;
-            var totalAmount = principal + totalInterest;
-            var repaymentAmount = totalAmount / numberOfRepayments;
 
-            // Set the calculated values in the form
-            document.getElementById('numberOfRepayments').value = numberOfRepayments.toFixed(2);
+            var totalAmountInclusive = principal + totalInterest + processingFee + registrationFee;
+            var totalAmount = principal + totalInterest;
+            var repaymentAmount = numberOfRepayments > 0 ? totalAmount / numberOfRepayments : 0;
+
+            document.getElementById('numberOfRepayments').value = numberOfRepayments.toFixed(0);
             document.getElementById('totalAmount').value = totalAmount.toFixed(2);
             document.getElementById('repaymentAmount').value = repaymentAmount.toFixed(2);
-            document.getElementById('totalAmount_inclusive').value=totalAmountInclusive.toFixed(2);
+            document.getElementById('totalAmount_inclusive').value = totalAmountInclusive.toFixed(2);
+            // Auto-calculate projected maturity date if requested
+            try {
+                var autoCalc = document.getElementById('autoCalculateMaturity').checked;
+                var releaseDateStr = document.getElementById('loanReleaseDate').value;
+                var projInput = document.getElementById('projectedMaturityDate');
+                if (autoCalc && releaseDateStr && loanDuration > 0) {
+                    var releaseDate = new Date(releaseDateStr + 'T00:00:00');
+                    var maturityDate = new Date(releaseDate.getTime());
+                    switch (loanDurationUnit) {
+                        case 'days':
+                            maturityDate.setDate(maturityDate.getDate() + loanDuration);
+                            break;
+                        case 'weeks':
+                            maturityDate.setDate(maturityDate.getDate() + (loanDuration * 7));
+                            break;
+                        case 'months':
+                            maturityDate.setMonth(maturityDate.getMonth() + loanDuration);
+                            break;
+                        case 'years':
+                            maturityDate.setFullYear(maturityDate.getFullYear() + loanDuration);
+                            break;
+                    }
+                    // format to yyyy-mm-dd
+                    var yyyy = maturityDate.getFullYear();
+                    var mm = String(maturityDate.getMonth() + 1).padStart(2, '0');
+                    var dd = String(maturityDate.getDate()).padStart(2, '0');
+                    projInput.value = yyyy + '-' + mm + '-' + dd;
+                    projInput.readOnly = true;
+                } else {
+                    projInput.readOnly = false;
+                }
+            } catch (e) {
+                console.error('Error calculating projected maturity date', e);
+            }
         }
     </script>
      <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>

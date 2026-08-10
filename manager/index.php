@@ -91,8 +91,15 @@ $sql_interest_details = "SELECT
     l.loan_status
 FROM loan_applications l
 INNER JOIN borrowers b ON l.borrower = b.id
-WHERE l.loan_status = 'approved'
-ORDER BY l.loan_release_date DESC";
+WHERE l.loan_status IN ('approved', 'rolled_over')
+   OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%'
+ORDER BY
+    CASE
+        WHEN LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%' THEN 0
+        WHEN (l.total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)) <= 0 THEN 1
+        ELSE 2
+    END,
+    l.loan_release_date DESC";
 $result_interest_details = $conn->query($sql_interest_details);
 
 // Calculate Performing Book
@@ -102,7 +109,7 @@ $performing_book = max(0, $total_loan_amount - $total_arrears - $total_paid_amou
 $loan_book = $performing_book + $total_arrears;
 
 // Calculate Portfolio at Risk (PAR)
-$par = ($total_loan_amount > 0) ? ($total_arrears / $total_loan_amount) * 100 : 0;
+$par = ($loan_book > 0) ? ($total_arrears / $loan_book) * 100 : 0;
 
 // Fetch total performing loans
 $sql_total_performing = "SELECT CEIL(SUM(amount - paid)) AS total_performing 
@@ -202,6 +209,11 @@ $sql_overdue = "SELECT borrowers.full_name,
 $stmt_overdue = $conn->prepare($sql_overdue);
 $stmt_overdue->execute();
 $result_overdue = $stmt_overdue->get_result();
+
+// Start session before any HTML output so includes/header.php can safely manage auth headers.
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -274,6 +286,44 @@ $result_overdue = $stmt_overdue->get_result();
             margin: 0;
             font-size: 24px; /* Reduced font size */
             color: #000; /* Removed theme color */
+        }
+        .container {
+            margin-top: 30px;
+        }
+        .table-container {
+            overflow-x: auto;
+        }
+        .table thead th {
+            background-color: #007bff;
+            color: #ffffff;
+        }
+        .table tbody tr:nth-child(odd) {
+            background-color: #f9f9f9;
+        }
+        .table tbody tr:hover {
+            background-color: #f1f1f1;
+        }
+        .table tbody tr.cleared-loan {
+            background-color: #e6f4ea;
+        }
+        .table tbody tr.rolled-over-loan {
+            background-color: #fff3cd;
+        }
+        .cleared-loan-badge {
+            background-color: #d4edda;
+            color: #155724;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        .rolled-over-badge {
+            background-color: #fff3cd;
+            color: #856404;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: 700;
+            display: inline-block;
         }
         .sidebar-toggle-btn {
             border: 1px solid #1976d2;
@@ -390,7 +440,7 @@ $result_overdue = $stmt_overdue->get_result();
     <div class="container mt-4">
         <h3 id="interestTable" class="section-title">Interest Breakdown (Clients)</h3>
         <div class="table-container mt-2">
-            <input type="text" id="interestSearch" placeholder="Search by borrower or loan id..." class="form-control mb-3" style="max-width:400px;">
+            <input type="text" id="interestSearch" placeholder="Search by borrower or phone..." class="form-control mb-3" style="max-width:400px;">
             <table id="interestBreakdownTable" class="table table-bordered">
                 <thead>
                     <tr>
@@ -407,7 +457,12 @@ $result_overdue = $stmt_overdue->get_result();
                 <tbody>
                     <?php if ($result_interest_details && $result_interest_details->num_rows > 0): ?>
                         <?php while ($row = $result_interest_details->fetch_assoc()): ?>
-                            <tr>
+                            <?php
+                                $isRolledOver = preg_match('/roll/i', trim($row['loan_status'] ?? ''));
+                                $isCleared = !$isRolledOver && floatval($row['loan_balance']) <= 0;
+                                $rowClass = $isRolledOver ? 'rolled-over-loan' : ($isCleared ? 'cleared-loan' : '');
+                            ?>
+                            <tr class="<?php echo $rowClass; ?>">
                                 <td><?php echo htmlspecialchars($row['borrower_name']); ?></td>
                                 <td><a href="repayment_details.php?loanId=<?php echo $row['id']; ?>"><?php echo htmlspecialchars($row['id']); ?></a></td>
                                 <td><?php echo number_format($row['principal'], 2); ?></td>
@@ -415,7 +470,15 @@ $result_overdue = $stmt_overdue->get_result();
                                 <td><?php echo number_format($row['interest'], 2); ?></td>
                                 <td><?php echo number_format($row['total_paid'], 2); ?></td>
                                 <td><?php echo number_format($row['loan_balance'], 2); ?></td>
-                                <td><?php echo (floatval($row['loan_balance']) <= 0) ? 'Cleared' : 'Not Cleared'; ?></td>
+                                <td>
+                                    <?php if ($isRolledOver): ?>
+                                        <span class="rolled-over-badge">Rolled Over</span>
+                                    <?php elseif ($isCleared): ?>
+                                        <span class="cleared-loan-badge">Cleared</span>
+                                    <?php else: ?>
+                                        Not Cleared
+                                    <?php endif; ?>
+                                </td>
                             </tr>
                         <?php endwhile; ?>
                     <?php else: ?>
@@ -490,14 +553,18 @@ $result_overdue = $stmt_overdue->get_result();
     document.addEventListener('DOMContentLoaded', function () {
         const interestSearch = document.getElementById('interestSearch');
         if (interestSearch) {
+            function normalizeSearchText(text) {
+                return text.toLowerCase().replace(/[^a-z0-9]/g, '');
+            }
+
             interestSearch.addEventListener('input', function () {
-                const filter = this.value.toLowerCase();
+                const filter = normalizeSearchText(this.value);
                 const rows = document.querySelectorAll('#interestBreakdownTable tbody tr');
 
                 rows.forEach(row => {
-                    const borrower = row.cells[0]?.textContent.toLowerCase() || '';
-                    const loanId = row.cells[1]?.textContent.toLowerCase() || '';
-                    row.style.display = (borrower.includes(filter) || loanId.includes(filter)) ? '' : 'none';
+                    const cells = Array.from(row.cells).map(cell => normalizeSearchText(cell.textContent));
+                    const match = cells.some(text => text.includes(filter));
+                    row.style.display = match ? '' : 'none';
                 });
             });
         }

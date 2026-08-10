@@ -25,6 +25,9 @@ $processing_fee = $_POST['processing_fee'];
 $registration_fee = $_POST['registration_fee'];
 $loan_status = "pending";
 
+// Normalize duration unit early so calculations use a consistent value
+$loan_duration_unit = normalizeDurationUnit($loan_duration_unit);
+
 // Calculate total interest
 $total_interest = 0;
 switch ($interest_method) {
@@ -89,7 +92,28 @@ if ($stmt->execute()) {
 }
 
 // Function to convert loan duration to weeks
+function normalizeDurationUnit($loan_duration_unit) {
+    $unit = strtolower(trim((string)$loan_duration_unit));
+    switch ($unit) {
+        case 'day':
+        case 'days':
+            return 'days';
+        case 'week':
+        case 'weeks':
+            return 'weeks';
+        case 'month':
+        case 'months':
+            return 'months';
+        case 'year':
+        case 'years':
+            return 'years';
+        default:
+            return 'months';
+    }
+}
+
 function getDurationInWeeks($loan_duration, $loan_duration_unit) {
+    $loan_duration_unit = normalizeDurationUnit($loan_duration_unit);
     switch ($loan_duration_unit) {
         case 'days':
             return $loan_duration / 7;
@@ -150,6 +174,7 @@ function calculateRepaymentAmount($principal_amount, $interest_amount, $number_o
 }
 
 function getMaturityDate($loan_release_date, $loan_duration, $loan_duration_unit) {
+    $loan_duration_unit = normalizeDurationUnit($loan_duration_unit);
     $maturity_date = new DateTime($loan_release_date);
 
     switch ($loan_duration_unit) {
@@ -166,6 +191,7 @@ function getMaturityDate($loan_release_date, $loan_duration, $loan_duration_unit
             $maturity_date->modify('+' . (int) $loan_duration . ' years');
             break;
         default:
+            $maturity_date->modify('+' . (int) $loan_duration . ' months');
             break;
     }
 

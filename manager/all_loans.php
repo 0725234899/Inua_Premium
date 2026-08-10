@@ -225,20 +225,12 @@
 
             $sql = "INSERT INTO repayments (loan_id, repayment_date, amount) VALUES (?, ?, ?)";
             $stmt = $conn->prepare($sql);
-            if (!$stmt) {
-                return false;
-            }
-
             $repayment_date = $schedule_date->format('Y-m-d');
             $stmt->bind_param("iss", $loan_id, $repayment_date, $repayment_amount);
-            if (!$stmt->execute()) {
-                return false;
-            }
+            $stmt->execute();
 
             $start_date = $schedule_date;
         }
-
-        return true;
     }
 
     function calculateRepaymentAmount($principal_amount, $interest_amount, $number_of_repayments) {
@@ -516,8 +508,8 @@
 
             $conn->begin_transaction();
             try {
-                $stmt = $conn->prepare("UPDATE loan_applications SET borrower = ?, loan_product = ?, principal = ?, loan_release_date = ?, interest = ?, interest_method = ?, loan_interest = ?, loan_duration = ?, loan_duration_unit = ?, interest_calculation = ?, repayment_cycle = ?, number_of_repayments = ?, processing_fee = ?, registration_fee = ?, loan_status = ?, total_amount = ?, total_amount_inclusive = ? WHERE id = ?");
-                $stmt->bind_param("iidsdsdisssiddsddi", $borrower, $loan_product, $principal, $loan_release_date, $loan_interest_percentage, $interest_method, $loan_interest_percentage, $loan_duration, $loan_duration_unit, $interest_calculation, $repayment_cycle, $number_of_repayments, $processing_fee, $registration_fee, $currentStatus, $total_amount, $total_amount_inclusive, $loan_id);
+                $stmt = $conn->prepare("UPDATE loan_applications SET borrower = ?, loan_product = ?, principal = ?, loan_release_date = ?, interest = ?, interest_method = ?, loan_interest = ?, loan_duration = ?, loan_duration_unit = ?, repayment_cycle = ?, number_of_repayments = ?, processing_fee = ?, registration_fee = ?, loan_status = ?, total_amount = ?, total_amount_inclusive = ? WHERE id = ?");
+                $stmt->bind_param("iidsdsdissiddsddi", $borrower, $loan_product, $principal, $loan_release_date, $loan_interest_percentage, $interest_method, $loan_interest_percentage, $loan_duration, $loan_duration_unit, $repayment_cycle, $number_of_repayments, $processing_fee, $registration_fee, $currentStatus, $total_amount, $total_amount_inclusive, $loan_id);
                 $stmt->execute();
 
                 $scheduleUpdated = rebuildRepaymentSchedule($conn, $loan_id, $principal, $total_interest, $repayment_cycle, $number_of_repayments, $loan_release_date, $loan_duration, $loan_duration_unit);
@@ -559,45 +551,19 @@
                     $processingFee = 0.0;
                     $registrationFee = 0.0;
                     $rolloverRepaymentCycle = $loanRow['repayment_cycle'];
-                    $rolloverInterestCalculation = $loanRow['interest_calculation'] ?? 'monthly';
 
-                    $conn->begin_transaction();
-                    $rolloverError = false;
-
-                    $stmt = $conn->prepare("INSERT INTO loan_applications (borrower, loan_product, principal, loan_release_date, interest, interest_method, loan_interest, loan_duration, loan_duration_unit, interest_calculation, repayment_cycle, number_of_repayments, processing_fee, registration_fee, loan_status, total_amount, total_amount_inclusive) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)");
-                    if (!$stmt) {
-                        $rolloverError = true;
-                    } else {
-                        $stmt->bind_param("iidsdsdisssidddd", $borrowerId, $loanProductName, $newPrincipal, $rollover_date, $rolloverInterest, $rolloverInterestMethod, $rolloverInterest, $rollover_duration, $rollover_duration_unit, $rolloverInterestCalculation, $rolloverRepaymentCycle, $newRepayments, $processingFee, $registrationFee, $newTotalAmount, $newTotalAmountInclusive);
-
-                        if ($stmt->execute()) {
-                            $newLoanId = $stmt->insert_id;
-                            $scheduleCreated = generateRepaymentSchedule($conn, $newLoanId, $newPrincipal, $newTotalAmount - $newPrincipal, $rolloverRepaymentCycle, $newRepayments, $rollover_date);
-                            if ($scheduleCreated === false) {
-                                $rolloverError = true;
-                            }
-
-                            $updateOldLoanStmt = $conn->prepare("UPDATE loan_applications SET loan_status = 'rolled_over' WHERE id = ?");
-                            if ($updateOldLoanStmt) {
-                                $updateOldLoanStmt->bind_param("i", $loan_id);
-                                if (!$updateOldLoanStmt->execute()) {
-                                    $rolloverError = true;
-                                }
-                                $updateOldLoanStmt->close();
-                            } else {
-                                $rolloverError = true;
-                            }
-                        } else {
-                            $rolloverError = true;
-                        }
+                    $stmt = $conn->prepare("INSERT INTO loan_applications (borrower, loan_product, principal, loan_release_date, interest, interest_method, loan_interest, loan_duration, repayment_cycle, number_of_repayments, processing_fee, registration_fee, loan_status, total_amount, total_amount_inclusive) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)");
+                    if ($stmt) {
+                        $stmt->bind_param("isdsdsisdidddd", $borrowerId, $loanProductName, $newPrincipal, $rollover_date, $rolloverInterest, $rolloverInterestMethod, $rolloverInterest, $rollover_duration, $rolloverRepaymentCycle, $newRepayments, $processingFee, $registrationFee, $newTotalAmount, $newTotalAmountInclusive);
                     }
 
-                    if ($rolloverError) {
-                        $conn->rollback();
-                        echo "<div class='alert alert-danger'>Failed to create rollover loan. Please try again and verify loan details.</div>";
-                    } else {
-                        $conn->commit();
+                    if ($stmt->execute()) {
+                        $newLoanId = $stmt->insert_id;
+                        generateRepaymentSchedule($conn, $newLoanId, $newPrincipal, $newTotalAmount - $newPrincipal, $loanRow['repayment_cycle'], $newRepayments, $rollover_date);
+                        $conn->query("UPDATE loan_applications SET loan_status = 'rolled_over' WHERE id = $loan_id");
                         echo "<div class='alert alert-success'>Rollover created successfully and new loan schedule generated.</div>";
+                    } else {
+                        echo "<div class='alert alert-danger'>Failed to create rollover loan.</div>";
                     }
                 } else {
                     echo "<div class='alert alert-danger'>Rollover conditions were not met or invalid rollover details provided.</div>";
@@ -619,8 +585,6 @@
                     b.mobile AS borrower_mobile,
                     l.principal, 
                     l.loan_duration AS duration, 
-                    l.loan_duration_unit,
-                    l.interest_calculation,
                     l.number_of_repayments AS repayments_count, 
                     l.total_amount,
                     l.loan_product,
@@ -638,7 +602,7 @@
                 INNER JOIN borrowers b ON l.borrower = b.id";
 
         if ($search !== '') {
-            $sql .= " WHERE (LOWER(COALESCE(b.full_name, '')) LIKE ? OR LOWER(COALESCE(b.mobile, '')) LIKE ?)";
+            $sql .= " WHERE b.full_name LIKE ? OR b.mobile LIKE ?";
         }
 
         $sql .= " ORDER BY CASE WHEN l.loan_status = 'pending' OR l.loan_status = '0' THEN 0 ELSE 1 END, l.id DESC";
@@ -650,8 +614,7 @@
         }
 
         if ($search !== '') {
-            $searchTerm = strtolower(trim($search));
-            $param = "%" . $searchTerm . "%";
+            $param = "%" . $search . "%";
             $stmt->bind_param("ss", $param, $param);
         }
 
@@ -680,9 +643,10 @@
             <div class="container">
                 <div class="d-flex justify-content-between align-items-center mb-3">
                     <h1>Loan Applications</h1>
-                    <div class="d-flex" style="max-width: 420px; width: 100%;">
-                        <input type="text" id="searchInput" class="form-control me-2" placeholder="Search by name or phone number" value="<?= htmlspecialchars($searchQuery); ?>">
-                    </div>
+                    <form method="get" class="d-flex" style="max-width: 420px; width: 100%;">
+                        <input type="search" name="search" class="form-control me-2" placeholder="Search by phone number or name" value="<?= htmlspecialchars($searchQuery); ?>">
+                        <button type="submit" class="btn btn-primary">Search</button>
+                    </form>
                 </div>
                 <table class="table table-striped">
                     <thead>
@@ -698,7 +662,7 @@
                     </thead>
                     <tbody>
                         <?php foreach ($loans as $loan): ?>
-                            <tr data-search="<?= htmlspecialchars(strtolower($loan['borrower_name'] . ' ' . ($loan['borrower_mobile'] ?? ''))); ?>">
+                            <tr>
                                 <td><?= htmlspecialchars($loan['borrower_name']); ?></td>
                                 <td><?= number_format($loan['principal'], 2); ?> KES</td>
                                 <!-- Duration column hidden -->
@@ -721,70 +685,7 @@
                                         <input type="hidden" name="action" value="clear">
                                         <button type="submit" class="btn btn-secondary btn-sm">Clear</button>
                                     </form>
-                                    <button type="button" class="btn btn-info btn-sm" data-bs-toggle="modal" data-bs-target="#rolloverLoanModal<?= $loan['loan_id']; ?>">Rollover</button>
                                     <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#editLoanModal<?= $loan['loan_id']; ?>">Edit</button>
-
-                                    <div class="modal fade" id="rolloverLoanModal<?= $loan['loan_id']; ?>" tabindex="-1" aria-hidden="true">
-                                        <div class="modal-dialog modal-lg">
-                                            <div class="modal-content">
-                                                <form method="POST" class="rollover-loan-form">
-                                                    <div class="modal-header">
-                                                        <h5 class="modal-title">Rollover Loan</h5>
-                                                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                                                    </div>
-                                                    <div class="modal-body">
-                                                        <input type="hidden" name="loan_id" value="<?= $loan['loan_id']; ?>">
-                                                        <input type="hidden" name="action" value="rollover">
-                                                        <input type="hidden" name="loan_product" value="<?= htmlspecialchars($loan['loan_product']); ?>">
-                                                        <div class="row g-3">
-                                                            <div class="col-md-6">
-                                                                <label class="form-label">Borrower</label>
-                                                                <input type="text" class="form-control" value="<?= htmlspecialchars($loan['borrower_name']); ?>" readonly>
-                                                            </div>
-                                                            <div class="col-md-6">
-                                                                <label class="form-label">Loan Product</label>
-                                                                <input type="text" class="form-control" value="<?= htmlspecialchars($loan['loan_product']); ?>" readonly>
-                                                            </div>
-                                                            <div class="col-md-6">
-                                                                <label class="form-label">Principal to Rollover</label>
-                                                                <input type="number" step="0.01" class="form-control" name="principal" value="<?= number_format(max(0, $loan['total_amount'] - $loan['total_paid']), 2, '.', ''); ?>" readonly>
-                                                            </div>
-                                                            <div class="col-md-6">
-                                                                <label class="form-label">Interest Rate %</label>
-                                                                <input type="number" step="0.01" class="form-control" value="<?= htmlspecialchars($loan['loan_interest']); ?>" readonly>
-                                                            </div>
-                                                            <div class="col-md-6">
-                                                                <label class="form-label">Rollover Start Date</label>
-                                                                <input type="date" class="form-control" name="rollover_date" required>
-                                                            </div>
-                                                            <div class="col-md-6">
-                                                                <label class="form-label">Rollover Duration</label>
-                                                                <input type="number" min="1" class="form-control" name="rollover_duration" required>
-                                                            </div>
-                                                            <div class="col-md-6">
-                                                                <label class="form-label">Duration Unit</label>
-                                                                <select class="form-select" name="rollover_duration_unit" required>
-                                                                    <option value="months" selected>Months</option>
-                                                                    <option value="weeks">Weeks</option>
-                                                                    <option value="years">Years</option>
-                                                                    <option value="days">Days</option>
-                                                                </select>
-                                                            </div>
-                                                            <div class="col-md-6">
-                                                                <label class="form-label">Repayment Cycle</label>
-                                                                <input type="text" class="form-control" value="<?= htmlspecialchars($loan['repayment_cycle']); ?>" readonly>
-                                                            </div>
-                                                        </div>
-                                                        <p class="small mt-3 text-muted">This rollover uses the remaining balance as the new principal amount. A new loan will be created and the current loan will be marked as rolled over.</p>
-                                                    </div>
-                                                    <div class="modal-footer">
-                                                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                                                        <button type="submit" class="btn btn-primary">Confirm Rollover</button>
-                                                    </div>
-                                                </form>
-                                            </div>
-                                        </div>
-                                    </div>
 
                                     <div class="modal fade" id="editLoanModal<?= $loan['loan_id']; ?>" tabindex="-1" aria-hidden="true">
                                         <div class="modal-dialog modal-lg">
@@ -833,9 +734,9 @@
                                                             <div class="col-md-6">
                                                                 <label class="form-label">Interest Calculation</label>
                                                                 <select class="form-select" name="interest_calculation" required>
-                                                                    <option value="weekly" <?= ($loan['interest_calculation'] == 'weekly') ? 'selected' : ''; ?>>Weekly</option>
-                                                                    <option value="monthly" <?= ($loan['interest_calculation'] == 'monthly') ? 'selected' : ''; ?>>Monthly</option>
-                                                                    <option value="yearly" <?= ($loan['interest_calculation'] == 'yearly') ? 'selected' : ''; ?>>Yearly</option>
+                                                                    <option value="weekly">Weekly</option>
+                                                                    <option value="monthly" selected>Monthly</option>
+                                                                    <option value="yearly">Yearly</option>
                                                                 </select>
                                                             </div>
                                                             <div class="col-md-6">
@@ -849,10 +750,10 @@
                                                             <div class="col-md-6">
                                                                 <label class="form-label">Loan Duration Unit</label>
                                                                 <select class="form-select" name="loan_duration_unit" required>
-                                                                    <option value="days" <?= ($loan['loan_duration_unit'] == 'days') ? 'selected' : ''; ?>>Days</option>
-                                                                    <option value="weeks" <?= ($loan['loan_duration_unit'] == 'weeks') ? 'selected' : ''; ?>>Weeks</option>
-                                                                    <option value="months" <?= ($loan['loan_duration_unit'] == 'months') ? 'selected' : ''; ?>>Months</option>
-                                                                    <option value="years" <?= ($loan['loan_duration_unit'] == 'years') ? 'selected' : ''; ?>>Years</option>
+                                                                    <option value="days">Days</option>
+                                                                    <option value="weeks">Weeks</option>
+                                                                    <option value="months" selected>Months</option>
+                                                                    <option value="years">Years</option>
                                                                 </select>
                                                             </div>
                                                             <div class="col-md-6">
@@ -909,24 +810,6 @@
     </main>
 
     <script>
-        document.addEventListener('DOMContentLoaded', function () {
-            const searchInput = document.getElementById('searchInput');
-            if (searchInput) {
-                const filterRows = () => {
-                    const filter = searchInput.value.toLowerCase();
-                    const rows = document.querySelectorAll('tbody tr[data-search]');
-
-                    rows.forEach(row => {
-                        const searchText = (row.getAttribute('data-search') || '').toLowerCase();
-                        row.style.display = searchText.includes(filter) ? '' : 'none';
-                    });
-                };
-
-                searchInput.addEventListener('input', filterRows);
-                filterRows();
-            }
-        });
-
         function calculateEditLoanDetails(form) {
             const principal = parseFloat(form.querySelector('[name="principal"]').value) || 0;
             const loanDuration = parseFloat(form.querySelector('[name="loan_duration"]').value) || 0;

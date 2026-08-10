@@ -76,7 +76,7 @@ function get_projected_maturity_date_for_loan($loan) {
 
 function get_eligible_loan_ids_for_arrears($conn) {
     $eligible_ids = [];
-    $stmt = $conn->prepare("SELECT id, loan_status, loan_release_date, repayment_cycle, number_of_repayments, loan_duration, loan_duration_unit FROM loan_applications WHERE loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(loan_status, ''))) LIKE '%roll%'");
+    $stmt = $conn->prepare("SELECT id, loan_status, loan_release_date, repayment_cycle, number_of_repayments, loan_duration FROM loan_applications WHERE loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(loan_status, ''))) LIKE '%roll%'");
     if (!$stmt) {
         return $eligible_ids;
     }
@@ -345,7 +345,7 @@ $sql_overdue = "SELECT
                     $officer_filter
                     $day_filter
                 GROUP BY 
-                    borrowers.full_name, borrowers.mobile
+                    borrowers.id, borrowers.full_name, borrowers.mobile
                 HAVING 
                     total_overdue > 0
                 ORDER BY 
@@ -578,7 +578,7 @@ if ((PHP_SAPI === 'cli' && isset($argv[1]) && $argv[1] === 'auto') || (isset($_G
 
         <!-- Search Input -->
         <div class="d-flex justify-content-end mt-3">
-            <input type="text" id="searchInput" class="form-control" placeholder="Search..." style="width: 300px;">
+            <input type="text" id="searchInput" class="form-control" placeholder="Search by borrower or phone..." style="width: 300px;">
         </div>
 
         <h3 class="section-title mt-4">Arrears List</h3>
@@ -616,13 +616,16 @@ if ((PHP_SAPI === 'cli' && isset($argv[1]) && $argv[1] === 'auto') || (isset($_G
         document.addEventListener('DOMContentLoaded', function () {
             const searchInput = document.getElementById('searchInput');
             const table = document.getElementById('arrearsListTable');
+            function normalizeSearchText(text) {
+                return text.toLowerCase().replace(/[^a-z0-9]/g, '');
+            }
             searchInput.addEventListener('input', function () {
-                const filter = searchInput.value.toLowerCase();
+                const filter = normalizeSearchText(searchInput.value);
                 const rows = table.getElementsByTagName('tr');
                 Array.from(rows).forEach((row, index) => {
                     if (index === 0) return; // Skip header row
                     const cells = row.getElementsByTagName('td');
-                    const match = Array.from(cells).some(cell => cell.textContent.toLowerCase().includes(filter));
+                    const match = Array.from(cells).some(cell => normalizeSearchText(cell.textContent).includes(filter));
                     row.style.display = match ? '' : 'none';
                 });
             });

@@ -358,7 +358,8 @@
     if (isset($conn) && $conn instanceof mysqli) {
         $expectedNavigationItems = [
             ['title' => 'View Expenses', 'url' => 'add_expenses.php', 'icon' => 'bi bi-cash-stack', 'parent_id' => null],
-            ['title' => 'Add Expenses', 'url' => 'add_expenses.php', 'icon' => 'bi bi-cash-stack', 'parent_id' => null]
+            ['title' => 'Add Expenses', 'url' => 'add_expenses.php', 'icon' => 'bi bi-cash-stack', 'parent_id' => null],
+            ['title' => 'Payroll', 'url' => 'payroll.php', 'icon' => 'bi bi-briefcase', 'parent_id' => null]
         ];
 
         foreach ($expectedNavigationItems as $navItem) {

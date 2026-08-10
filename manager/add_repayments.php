@@ -155,6 +155,19 @@ function distributeRepayment($loan_id, $amount_paid, $conn, $payment_date) {
     $result = $stmt->get_result();
     $total_distributed = 0;
 
+    // Fetch borrower name for a friendlier success message
+    $borrowerName = '';
+    $bstmt = $conn->prepare("SELECT b.full_name FROM loan_applications la JOIN borrowers b ON la.borrower = b.id WHERE la.id = ? LIMIT 1");
+    if ($bstmt) {
+        $bstmt->bind_param('i', $loan_id);
+        $bstmt->execute();
+        $brow = $bstmt->get_result()->fetch_assoc();
+        if ($brow && !empty($brow['full_name'])) {
+            $borrowerName = $brow['full_name'];
+        }
+        $bstmt->close();
+    }
+
     while ($row = $result->fetch_assoc()) {
         $installment_id = $row['id'];
         $remaining_due = $row['amount'] - $row['paid'];
@@ -190,10 +203,11 @@ function distributeRepayment($loan_id, $amount_paid, $conn, $payment_date) {
     $outstanding_balance = $outstanding_stmt->get_result()->fetch_assoc()['outstanding_balance'] ?? 0;
 
     if ($total_distributed > 0) {
-        return "<div class='alert alert-success text-center'>
-                    Successfully🤝. total paid is:" . number_format($total_distributed, 2) . " KES.<br>
-                    Outstanding Loan Balance: " . number_format($outstanding_balance, 2) . " KES.
-                </div>";
+        $clientLabel = $borrowerName !== '' ? htmlspecialchars($borrowerName) : 'Client';
+        return "<div class='alert alert-success text-center'>" .
+                    htmlspecialchars($clientLabel) . " has successfully paid KES: " . number_format($total_distributed, 2) . ".<br>" .
+                    "Outstanding Loan Balance: " . number_format($outstanding_balance, 2) . " KES." .
+                "</div>";
     } else {
         return "<div class='alert alert-warning text-center'>No repayments were necessary for this loan.</div>";
     }
@@ -223,6 +237,114 @@ function getLoanBalanceSummary($loan_id, $conn) {
     return $stmt->get_result()->fetch_assoc();
 }
 
+function getLoanOfficerPortfolioMetrics($officerEmail, $conn) {
+    // Aggregate per-loan totals using subqueries, then compute officer-level aggregates.
+    $sql1 = "SELECT 
+                COALESCE(SUM(GREATEST(la.total_amount - COALESCE(rep.total_paid, 0), 0)), 0) AS loan_book,
+                COALESCE(SUM(COALESCE(overdue.loan_overdue, 0)), 0) AS overdue_balance,
+                COALESCE(SUM(COALESCE(rep.total_amount, 0) - COALESCE(rep.total_paid, 0)), 0) AS total_dues
+            FROM loan_applications la
+            INNER JOIN borrowers b ON la.borrower = b.id
+            LEFT JOIN (
+                SELECT loan_id, SUM(amount) AS total_amount, SUM(paid) AS total_paid
+                FROM repayments
+                GROUP BY loan_id
+            ) rep ON la.id = rep.loan_id
+            LEFT JOIN (
+                SELECT loan_id, SUM(GREATEST(amount - COALESCE(paid, 0), 0)) AS loan_overdue
+                FROM repayments
+                WHERE repayment_date < CURDATE()
+                GROUP BY loan_id
+            ) overdue ON la.id = overdue.loan_id
+            WHERE b.loan_officer = ?";
+
+    $stmt1 = $conn->prepare($sql1);
+    if (!$stmt1) {
+        return ['loan_book' => 0.0, 'overdue_balance' => 0.0, 'par' => 0.0, 'total_clients' => 0, 'clients_in_arrears' => 0, 'total_dues' => 0.0];
+    }
+    $stmt1->bind_param('s', $officerEmail);
+    $stmt1->execute();
+    $metrics = $stmt1->get_result()->fetch_assoc();
+    $stmt1->close();
+
+    $loanBook = (float) ($metrics['loan_book'] ?? 0);
+    $overdueBalance = (float) ($metrics['overdue_balance'] ?? 0);
+    $totalDues = (float) ($metrics['total_dues'] ?? 0);
+
+    // Total clients assigned to this officer with active loans and positive outstanding balance
+    $sql2 = "SELECT COUNT(DISTINCT la.borrower) AS total_clients
+             FROM loan_applications la
+             INNER JOIN borrowers b ON la.borrower = b.id
+             LEFT JOIN (
+                 SELECT loan_id, SUM(paid) AS total_paid
+                 FROM repayments
+                 GROUP BY loan_id
+             ) rep ON la.id = rep.loan_id
+             WHERE b.loan_officer = ?
+               AND (la.loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(la.loan_status, ''))) LIKE '%roll%')
+               AND (la.total_amount - COALESCE(rep.total_paid, 0)) > 0";
+    $stmt2 = $conn->prepare($sql2);
+    $totalClients = 0;
+    if ($stmt2) {
+        $stmt2->bind_param('s', $officerEmail);
+        $stmt2->execute();
+        $totalClients = (int) ($stmt2->get_result()->fetch_assoc()['total_clients'] ?? 0);
+        $stmt2->close();
+    }
+
+    // Clients in arrears (distinct borrowers with any overdue amount)
+    $sql3 = "SELECT COUNT(DISTINCT la.borrower) AS clients_in_arrears
+             FROM loan_applications la
+             INNER JOIN borrowers b ON la.borrower = b.id
+             INNER JOIN (
+                 SELECT loan_id, SUM(GREATEST(amount - COALESCE(paid, 0), 0)) AS loan_overdue
+                 FROM repayments
+                 WHERE repayment_date < CURDATE()
+                 GROUP BY loan_id
+             ) overdue ON la.id = overdue.loan_id
+             WHERE b.loan_officer = ? AND overdue.loan_overdue > 0";
+
+    $stmt3 = $conn->prepare($sql3);
+    $clientsInArrears = 0;
+    if ($stmt3) {
+        $stmt3->bind_param('s', $officerEmail);
+        $stmt3->execute();
+        $clientsInArrears = (int) ($stmt3->get_result()->fetch_assoc()['clients_in_arrears'] ?? 0);
+        $stmt3->close();
+    }
+
+    $par = $loanBook > 0 ? ($overdueBalance / $loanBook) * 100 : 0;
+
+    return [
+        'loan_book' => $loanBook,
+        'overdue_balance' => $overdueBalance,
+        'par' => $par,
+        'total_clients' => $totalClients,
+        'clients_in_arrears' => $clientsInArrears,
+        'total_dues' => $totalDues,
+    ];
+}
+
+// Returns the sum of due amounts scheduled for the given date (default: today)
+function getLoanOfficerTodayDues($officerEmail, $conn, $date = null) {
+        $date = $date ?? date('Y-m-d');
+        $sql = "SELECT COALESCE(SUM(GREATEST(r.amount - COALESCE(r.paid,0), 0)), 0) AS total_dues_today
+                        FROM repayments r
+                        INNER JOIN loan_applications la ON r.loan_id = la.id
+                        INNER JOIN borrowers b ON la.borrower = b.id
+                        WHERE DATE(r.repayment_date) = ?
+                            AND b.loan_officer = ?";
+
+        $stmt = $conn->prepare($sql);
+        if (!$stmt) return 0.0;
+        $stmt->bind_param('ss', $date, $officerEmail);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        return (float) ($row['total_dues_today'] ?? 0);
+}
+
 function sendPaymentNotificationEmail($loan_id, $amount_paid, $conn) {
     $details = getLoanNotificationDetails($loan_id, $conn);
     if (!$details) {
@@ -248,6 +370,16 @@ function sendPaymentNotificationEmail($loan_id, $amount_paid, $conn) {
     $arrearsStatus = $overdueBalance <= 0 ? 'No overdue balance remains.' : 'Overdue balance remaining: KSH ' . number_format($overdueBalance, 2) . '.';
     $officerDisplay = !empty($details['loan_officer_name']) ? $details['loan_officer_name'] : $officerEmail;
 
+    $portfolioMetrics = getLoanOfficerPortfolioMetrics($officerEmail, $conn);
+    $totalLoanBook = number_format($portfolioMetrics['loan_book'] ?? 0, 2);
+    $totalArrears = number_format($portfolioMetrics['overdue_balance'] ?? 0, 2);
+    $totalClients = intval($portfolioMetrics['total_clients'] ?? 0);
+    $clientsInArrears = intval($portfolioMetrics['clients_in_arrears'] ?? 0);
+    $totalDues = number_format($portfolioMetrics['total_dues'] ?? 0, 2);
+    $todayDuesValue = getLoanOfficerTodayDues($officerEmail, $conn);
+    $todayDues = number_format($todayDuesValue, 2);
+    $parPercentage = number_format($portfolioMetrics['par'] ?? 0, 2);
+
         $subject = 'Payment Received for ' . $details['borrower_name'];
         $recipient_email = $officerEmail;
         $greetName = !empty($officerDisplay) ? $officerDisplay : 'Team';
@@ -255,6 +387,13 @@ function sendPaymentNotificationEmail($loan_id, $amount_paid, $conn) {
               . '<p>The client <strong>' . htmlspecialchars($details['borrower_name']) . '</strong> has paid <strong>KSH ' . number_format($amount_paid, 2) . '</strong>.</p>'
               . '<p><strong>Outstanding balance:</strong> KSH ' . number_format($outstandingBalance, 2) . '</p>'
               . '<p><strong>Arrears status:</strong> ' . $arrearsStatus . '</p>'
+              . '<hr />'
+              . '<p><strong>Total loan book:</strong> KSH ' . $totalLoanBook . '</p>'
+              . '<p><strong>Total arrears (overdue):</strong> KSH ' . $totalArrears . '</p>'
+              . '<p><strong>Total clients:</strong> ' . $totalClients . '</p>'
+              . '<p><strong>Clients in arrears:</strong> ' . $clientsInArrears . '</p>'
+              . '<p><strong>Total dues (today):</strong> KSH ' . $todayDues . '</p>'
+              . '<p><strong>Portfolio at Risk (PAR):</strong> ' . $parPercentage . '%</p>'
               . '<p>Thank you,<br>Inua Premium Services</p>';
 
         $emailCredentials = getEmailAccount();
@@ -263,7 +402,11 @@ function sendPaymentNotificationEmail($loan_id, $amount_paid, $conn) {
         }
 
         try {
+            ignore_user_abort(true);
+            set_time_limit(130);
+
             $mail = new PHPMailer(true);
+            $mail->Timeout = 120;
             $mail->SMTPOptions = [
                 'ssl' => [
                     'verify_peer' => false,
@@ -290,7 +433,8 @@ function sendPaymentNotificationEmail($loan_id, $amount_paid, $conn) {
 
             return "<div class='alert alert-success text-center'>Payment notification sent to " . htmlspecialchars($recipient_email) . ".</div>";
         } catch (Exception $e) {
-            return "<div class='alert alert-warning text-center'>Payment saved but notification email failed: " . htmlspecialchars($mail->ErrorInfo) . "</div>";
+            $errorInfo = isset($mail) ? $mail->ErrorInfo : $e->getMessage();
+            return "<div class='alert alert-warning text-center'>Payment saved successfully. Notification email failed or timed out: " . htmlspecialchars($errorInfo) . "</div>";
         }
 }
 ?>

@@ -30,6 +30,26 @@ function getCycleInterval($cycle) {
     }
 }
 
+function normalizeDurationUnit($loan_duration_unit) {
+    $unit = strtolower(trim((string) $loan_duration_unit));
+    switch ($unit) {
+        case 'day':
+        case 'days':
+            return 'days';
+        case 'week':
+        case 'weeks':
+            return 'weeks';
+        case 'month':
+        case 'months':
+            return 'months';
+        case 'year':
+        case 'years':
+            return 'years';
+        default:
+            return 'months';
+    }
+}
+
 function rebuildLoanRepaymentScheduleFromCurrentTerms($conn, $loanId) {
     $loanStmt = $conn->prepare("SELECT principal, total_amount, loan_release_date, loan_duration, loan_duration_unit, repayment_cycle, number_of_repayments FROM loan_applications WHERE id = ?");
     if (!$loanStmt) {
@@ -49,7 +69,7 @@ function rebuildLoanRepaymentScheduleFromCurrentTerms($conn, $loanId) {
     $interestAmount = max(0, ((float) ($loanRow['total_amount'] ?? 0)) - $principalAmount);
     $loanReleaseDate = $loanRow['loan_release_date'];
     $loanDuration = (int) ($loanRow['loan_duration'] ?? 0);
-    $loanDurationUnit = $loanRow['loan_duration_unit'] ?? 'months';
+    $loanDurationUnit = normalizeDurationUnit($loanRow['loan_duration_unit'] ?? 'months');
     $repaymentCycle = $loanRow['repayment_cycle'] ?? 'once';
     $numberOfRepayments = max(1, (int) ($loanRow['number_of_repayments'] ?? 0));
 
@@ -63,35 +83,28 @@ function rebuildLoanRepaymentScheduleFromCurrentTerms($conn, $loanId) {
 
         $startDate = new DateTime($loanReleaseDate);
 
+        $projectedMaturityDate = !empty($loanRow['projected_maturity_date']) ? $loanRow['projected_maturity_date'] : null;
+
         if ($repaymentCycle === 'once') {
-            $maturityDate = new DateTime($loanReleaseDate);
-            switch ($loanDurationUnit) {
-                case 'days':
-                    $maturityDate->modify('+' . max(1, $loanDuration) . ' days');
-                    break;
-                case 'weeks':
-                    $maturityDate->modify('+' . max(1, $loanDuration) . ' weeks');
-                    break;
-                case 'months':
-                    $maturityDate->modify('+' . max(1, $loanDuration) . ' months');
-                    break;
-                case 'years':
-                    $maturityDate->modify('+' . max(1, $loanDuration) . ' years');
-                    break;
-                default:
-                    $maturityDate->modify('+' . max(1, $loanDuration) . ' months');
-                    break;
+            if (!empty($projectedMaturityDate)) {
+                $maturityDate = new DateTime($projectedMaturityDate);
+            } else {
+                $maturityDate = getMaturityDate($loanReleaseDate, $loanDuration, $loanDurationUnit);
             }
-            $repaymentAmount = $principalAmount + $interestAmount;
             $repaymentDate = $maturityDate->format('Y-m-d');
+            $repaymentAmount = $principalAmount + $interestAmount;
             $insertStmt = $conn->prepare("INSERT INTO repayments (loan_id, repayment_date, amount) VALUES (?, ?, ?)");
             $insertStmt->bind_param("isd", $loanId, $repaymentDate, $repaymentAmount);
             $insertStmt->execute();
             $insertStmt->close();
         } else {
             for ($i = 1; $i <= $numberOfRepayments; $i++) {
-                $scheduleDate = clone $startDate;
-                $scheduleDate->modify('+' . getCycleInterval($repaymentCycle));
+                if ($i === $numberOfRepayments && !empty($projectedMaturityDate)) {
+                    $scheduleDate = new DateTime($projectedMaturityDate);
+                } else {
+                    $scheduleDate = clone $startDate;
+                    $scheduleDate->modify('+' . getCycleInterval($repaymentCycle));
+                }
                 $repaymentAmount = ($principalAmount + $interestAmount) / max(1, $numberOfRepayments);
                 $repaymentDate = $scheduleDate->format('Y-m-d');
                 $insertStmt = $conn->prepare("INSERT INTO repayments (loan_id, repayment_date, amount) VALUES (?, ?, ?)");
@@ -163,7 +176,7 @@ function rebuildLoanRepaymentScheduleFromCurrentTerms($conn, $loanId) {
     }
 }
 
-function generate_repayment_details_pdf($loan, $guarantors, $adjusted_history, $daysInArrears, $projectedMaturityDate, $daysAfterProjectedMaturity, $payment_records) {
+function generate_repayment_details_pdf($loan, $guarantors, $adjusted_history, $daysInArrears, $projectedMaturityDate, $daysAfterProjectedMaturity, $payment_records, $totalPaid, $overpayments) {
     $overdueAmount = 0.0;
     $pdf = new TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
     $pdf->SetCreator('Inua Premium Services');
@@ -232,16 +245,17 @@ function generate_repayment_details_pdf($loan, $guarantors, $adjusted_history, $
     $loanSummary = [
         'Principal: KSH ' . number_format($loan['principal_amount'], 2),
         'Total Amount: KSH ' . number_format(($loan['total_amount_due'] ?? 0), 2),
-        'Total Paid: KSH ' . number_format(($loan['total_amount_paid'] ?? 0), 2),
-        'Balance: KSH ' . number_format((($loan['total_amount_due'] ?? 0) - ($loan['total_amount_paid'] ?? 0)), 2),
+        'Total Paid: KSH ' . number_format($totalPaid, 2) . ($overpayments > 0 ? ' (Overpaid by KSh ' . number_format($overpayments, 2) . ')' : ''),
+        'Balance: KSH ' . number_format((($loan['total_amount_due'] ?? 0) - $totalPaid), 2),
         'Release Date: ' . (!empty($loan['loan_release_date']) ? date('d/m/Y', strtotime($loan['loan_release_date'])) : 'N/A'),
         'Loan Duration: ' . ((int)($loan['loan_duration'] ?? 0)) . ' ' . strtoupper($loan['loan_duration_unit'] ?? 'months'),
-        'Interest Calculation: ' . (!empty($loan['interest_calculation']) ? ucfirst($loan['interest_calculation']) : 'Monthly'),
+        'Interest Calculation: ' . ucfirst($loan['interest_calculation'] ?? $loan['repayment_cycle'] ?? 'monthly'),
         'Loan Officer: ' . (!empty($loan['loan_officer_name']) ? $loan['loan_officer_name'] : 'Unassigned')
     ];
 
     $arrearsInfo = [
         'Arrears Amount: KSH ' . number_format($overdueAmount, 2),
+        'Overpayments: KSH ' . number_format($overpayments, 2),
         'Days in arrears: ' . $daysInArrears,
         'Projected maturity date: ' . ($projectedMaturityDate ? $projectedMaturityDate->format('d/m/Y') : 'N/A'),
         'Days overdue: ' . $daysAfterProjectedMaturity
@@ -336,32 +350,113 @@ function send_pdf_email($recipient_email, $subject, $body, $pdf_content, $filena
  * Determine projected maturity date using loan duration and unit.
  * This uses the explicit loan duration (eg 2) and unit (days/weeks/months/years)
  */
-function getProjectedMaturityDate($releaseDate, $loan_duration, $loan_duration_unit) {
+// Compute projected maturity by generating the repayment schedule and taking its last date.
+function getProjectedMaturityDate($releaseDate, $loan_duration, $loan_duration_unit, $repayment_cycle = null) {
     if (empty($releaseDate)) {
         return null;
     }
 
-    $maturity_date = new DateTime($releaseDate);
+    $repayment_cycle = $repayment_cycle ?? 'once';
+    $dates = getRepaymentScheduleDates($releaseDate, (int)$loan_duration, $loan_duration_unit, $repayment_cycle);
+    if (empty($dates)) {
+        return null;
+    }
+
+    $last = end($dates);
+    try {
+        return new DateTime($last);
+    } catch (Exception $e) {
+        return null;
+    }
+}
+
+function getMaturityDate($loan_release_date, $loan_duration, $loan_duration_unit) {
+    $loan_duration_unit = normalizeDurationUnit($loan_duration_unit);
+    $maturity_date = new DateTime($loan_release_date);
+
     switch ($loan_duration_unit) {
         case 'days':
-            $maturity_date->modify('+' . (int) $loan_duration . ' days');
+            $interval = new DateInterval('P' . (int) $loan_duration . 'D');
             break;
         case 'weeks':
-            $maturity_date->modify('+' . (int) $loan_duration . ' weeks');
+            $interval = new DateInterval('P' . (int) $loan_duration . 'W');
             break;
         case 'months':
-            $maturity_date->modify('+' . (int) $loan_duration . ' months');
+            $interval = new DateInterval('P' . (int) $loan_duration . 'M');
             break;
         case 'years':
-            $maturity_date->modify('+' . (int) $loan_duration . ' years');
+            $interval = new DateInterval('P' . (int) $loan_duration . 'Y');
             break;
         default:
-            // fallback to months if unit missing
-            $maturity_date->modify('+' . (int) $loan_duration . ' months');
+            $interval = new DateInterval('P' . (int) $loan_duration . 'M');
             break;
     }
 
-    return $maturity_date;
+    return $maturity_date->add($interval);
+}
+
+function getRepaymentScheduleDates($loan_release_date, $loan_duration, $loan_duration_unit, $repayment_cycle) {
+    $loan_duration_unit = normalizeDurationUnit($loan_duration_unit);
+    $maturity_date = getMaturityDate($loan_release_date, $loan_duration, $loan_duration_unit);
+
+    // If repayment is a single ('once') payment, compute the booking schedule
+    // using a sensible periodic cycle derived from the duration unit so that
+    // the single payment date aligns with the last periodic booking.
+    if ($repayment_cycle === 'once') {
+        switch ($loan_duration_unit) {
+            case 'days':
+            case 'weeks':
+                $scheduleCycle = 'weekly';
+                break;
+            case 'months':
+                $scheduleCycle = 'monthly';
+                break;
+            case 'years':
+                $scheduleCycle = 'yearly';
+                break;
+            default:
+                $scheduleCycle = 'monthly';
+                break;
+        }
+
+        $scheduleDates = array();
+        $current = new DateTime($loan_release_date);
+        $interval = DateInterval::createFromDateString(getCycleInterval($scheduleCycle));
+
+        while (true) {
+            $next = clone $current;
+            $next->add($interval);
+
+            if ($next >= $maturity_date) {
+                $scheduleDates[] = $maturity_date->format('Y-m-d');
+                break;
+            }
+
+            $scheduleDates[] = $next->format('Y-m-d');
+            $current = $next;
+        }
+
+        return $scheduleDates;
+    }
+
+    $scheduleDates = array();
+    $current = new DateTime($loan_release_date);
+    $interval = DateInterval::createFromDateString(getCycleInterval($repayment_cycle));
+
+    while (true) {
+        $next = clone $current;
+        $next->add($interval);
+
+        if ($next >= $maturity_date) {
+            $scheduleDates[] = $maturity_date->format('Y-m-d');
+            break;
+        }
+
+        $scheduleDates[] = $next->format('Y-m-d');
+        $current = $next;
+    }
+
+    return $scheduleDates;
 }
 
 function calculateDaysOverdueAfterMaturity($projectedMaturityDate, $repaymentRows, $totalDue) {
@@ -555,7 +650,6 @@ $sql_loan = "SELECT
                 loan_applications.loan_release_date,
                 loan_applications.loan_duration,
                 loan_applications.loan_duration_unit,
-                loan_applications.interest_calculation,
                 loan_applications.repayment_cycle,
                 loan_applications.number_of_repayments,
                 loan_applications.total_amount,
@@ -579,7 +673,8 @@ $sql_loan = "SELECT
             GROUP BY 
                 repayments.loan_id, borrowers.full_name, borrowers.mobile, borrowers.unique_number, borrowers.guarantor_name, borrowers.guarantor_phone,
                 loan_applications.loan_product, loan_applications.principal, loan_applications.loan_release_date,
-                loan_applications.loan_duration, loan_applications.loan_duration_unit, loan_applications.interest_calculation,
+                loan_applications.loan_duration,
+                loan_applications.loan_duration_unit,
                 loan_applications.repayment_cycle, loan_applications.number_of_repayments,
                 loan_applications.total_amount, users.name";
 
@@ -594,8 +689,9 @@ if (!$loan) {
 }
 
 $totalDue = $loan['total_amount_due'];
-$totalPaid = $loan['total_amount_paid'];
-$balance = $totalDue - $totalPaid;
+$totalPaid = 0.0;
+$balance = 0.0;
+$overpayments = 0.0;
 
 $guarantorStmt = $conn->prepare(
     "SELECT g.full_name, g.phone, g.email FROM guarantors g INNER JOIN loan_guarantors lg ON g.id = lg.guarantor_id WHERE lg.loan_id = ? ORDER BY g.full_name"
@@ -636,18 +732,24 @@ while ($overdueRow = $overdueResult->fetch_assoc()) {
 }
 $overdueStmt->close();
 
-// Use the actual repayment schedule if available, otherwise fall back to loan duration.
+// Use the stored projected maturity date if available, otherwise fall back to the repayment schedule or loan duration.
 $projectedMaturityDate = null;
-$projectedStmt = $conn->prepare("SELECT MAX(repayment_date) AS projected_maturity_date FROM repayments WHERE loan_id = ?");
-if ($projectedStmt) {
-    $projectedStmt->bind_param("i", $loanId);
-    $projectedStmt->execute();
-    $projectedResult = $projectedStmt->get_result();
-    $projectedRow = $projectedResult->fetch_assoc();
-    $projectedStmt->close();
+if (!empty($loan['projected_maturity_date'])) {
+    $projectedMaturityDate = new DateTime($loan['projected_maturity_date']);
+}
 
-    if (!empty($projectedRow['projected_maturity_date'])) {
-        $projectedMaturityDate = new DateTime($projectedRow['projected_maturity_date']);
+if ($projectedMaturityDate === null) {
+    $projectedStmt = $conn->prepare("SELECT MAX(repayment_date) AS projected_maturity_date FROM repayments WHERE loan_id = ?");
+    if ($projectedStmt) {
+        $projectedStmt->bind_param("i", $loanId);
+        $projectedStmt->execute();
+        $projectedResult = $projectedStmt->get_result();
+        $projectedRow = $projectedResult->fetch_assoc();
+        $projectedStmt->close();
+
+        if (!empty($projectedRow['projected_maturity_date'])) {
+            $projectedMaturityDate = new DateTime($projectedRow['projected_maturity_date']);
+        }
     }
 }
 
@@ -655,10 +757,33 @@ if ($projectedMaturityDate === null) {
     $projectedMaturityDate = getProjectedMaturityDate(
         $loan['loan_release_date'],
         (int) ($loan['loan_duration'] ?? 0),
-        $loan['loan_duration_unit'] ?? 'months'
+        $loan['loan_duration_unit'] ?? 'months',
+        $loan['repayment_cycle'] ?? 'once'
     );
 }
 $daysAfterProjectedMaturity = 0;
+
+$sql_records = "SELECT id, Amount, PaymentDate 
+                FROM payment_date_records 
+                WHERE loan_id = ? 
+                ORDER BY PaymentDate DESC";
+$stmt_records = $conn->prepare($sql_records);
+$stmt_records->bind_param("i", $loanId);
+$stmt_records->execute();
+$result_records = $stmt_records->get_result();
+
+$payment_records = [];
+while ($row_records = $result_records->fetch_assoc()) {
+    $payment_records[] = $row_records;
+}
+$stmt_records->close();
+
+$totalPaid = 0.0;
+foreach ($payment_records as $record) {
+    $totalPaid += (float) ($record['Amount'] ?? 0);
+}
+$balance = $totalDue - $totalPaid;
+$overpayments = max(0, $totalPaid - $totalDue);
 
 // Fetch repayment history with adjusted logic
 $sql_history = "SELECT 
@@ -687,21 +812,6 @@ while ($row = $result_history->fetch_assoc()) {
         'repayment_date' => date('d/m/Y', strtotime($row['repayment_date'])) // Format date as dd/mm/yyyy
     ];
 }
-
-$sql_records = "SELECT id, Amount, PaymentDate 
-                FROM payment_date_records 
-                WHERE loan_id = ? 
-                ORDER BY PaymentDate DESC";
-$stmt_records = $conn->prepare($sql_records);
-$stmt_records->bind_param("i", $loanId);
-$stmt_records->execute();
-$result_records = $stmt_records->get_result();
-
-$payment_records = [];
-while ($row_records = $result_records->fetch_assoc()) {
-    $payment_records[] = $row_records;
-}
-$result_records->data_seek(0);
 
 $repayment_rows_stmt = $conn->prepare("SELECT amount, paid, repayment_date, repaid_date FROM repayments WHERE loan_id = ? ORDER BY repaid_date ASC, repayment_date ASC");
 $repayment_rows_stmt->bind_param("i", $loanId);
@@ -769,7 +879,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
     $body = '<p>Dear ' . htmlspecialchars($loan_officer_name) . ',</p><p>Please find the attached payment records report for <strong>' . htmlspecialchars($loan['borrower_name']) . '</strong>.</p><p>This report was generated automatically by Inua Premium Services.</p>';
 
     try {
-        $pdf_content = generate_repayment_details_pdf($loan, $guarantors, $adjusted_history, $daysInArrears, $projectedMaturityDate, $daysAfterProjectedMaturity, $payment_records_for_email);
+        $pdf_content = generate_repayment_details_pdf($loan, $guarantors, $adjusted_history, $daysInArrears, $projectedMaturityDate, $daysAfterProjectedMaturity, $payment_records_for_email, $totalPaid, $overpayments);
         $filename = 'repayment_details_' . date('Ymd_His') . '.pdf';
         send_pdf_email($recipient_email, $subject, $body, $pdf_content, $filename);
         $email_status = 'success';
@@ -864,11 +974,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
     <div class="container mt-5">
         <div class="d-flex justify-content-between align-items-center mb-3">
             <a href="index.php" class="btn btn-secondary">Back to Dashboard</a>
-            <form method="post" class="d-inline-block">
-                <input type="hidden" name="send_email" value="1">
-                <input type="hidden" name="loanId" value="<?= intval($loanId); ?>">
-                <button type="submit" class="btn btn-outline-danger">Send Email</button>
-            </form>
+            <div class="d-flex gap-2">
+                <a href="full_information.php?loanId=<?= intval($loanId); ?>" class="btn btn-secondary">More Info</a>
+                <form method="post" class="d-inline-block">
+                    <input type="hidden" name="send_email" value="1">
+                    <input type="hidden" name="loanId" value="<?= intval($loanId); ?>">
+                    <button type="submit" class="btn btn-outline-danger">Send Email</button>
+                </form>
+            </div>
         </div>
         <?php if (!empty($email_message)): ?>
             <div class="alert alert-<?= htmlspecialchars($email_status); ?> text-center" role="alert">
@@ -892,7 +1005,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
                         <h6 class="fw-bold">Loan Summary</h6>
                         <p class="mb-1"><strong>Principal:</strong> <?php echo number_format($loan['principal_amount'], 2); ?> KES</p>
                         <p class="mb-1"><strong>Total Amount:</strong> <?php echo number_format($totalDue, 2); ?> KES</p>
-                        <p class="mb-1"><strong>Total Paid:</strong> <?php echo number_format($totalPaid, 2); ?> KES</p>
+                        <p class="mb-1"><strong>Total Paid:</strong> <?php echo number_format($totalPaid, 2); ?> KES<?php echo $overpayments > 0 ? ' <span class="text-success">(Overpaid by KSh ' . number_format($overpayments, 2) . ')</span>' : ''; ?></p>
                         <p class="mb-1"><strong>Balance:</strong> <?php echo number_format($balance, 2); ?> KES</p>
                         <p class="mb-1"><strong>Release Date:</strong> <?php echo !empty($loan['loan_release_date']) ? date('d/m/Y', strtotime($loan['loan_release_date'])) : 'N/A'; ?></p>
                         <p class="mb-1"><strong>Loan Officer:</strong> <?php echo !empty($loan['loan_officer_name']) ? htmlspecialchars($loan['loan_officer_name']) : 'Unassigned'; ?></p>
@@ -900,6 +1013,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
                     <div class="col-md-4">
                         <h6 class="fw-bold">Arrears Summary</h6>
                         <p class="mb-1"><strong>Arrears Amount:</strong> <?php echo number_format($overdueAmount, 2); ?> KES</p>
+                        <p class="mb-1"><strong>Overpayments:</strong> <?php echo number_format($overpayments, 2); ?> KES</p>
                         <p class="mb-1"><strong>Days in Arrears:</strong> <?php echo (int) $daysInArrears; ?></p>
                         <p class="mb-1"><strong>Projected Maturity Date:</strong> <?php echo $projectedMaturityDate ? $projectedMaturityDate->format('d/m/Y') : 'N/A'; ?></p>
                         <p class="mb-1"><strong>Days Overdue:</strong> <?php echo (int) $daysAfterProjectedMaturity; ?></p>
@@ -997,6 +1111,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
             totalAmount: <?= json_encode(number_format($totalDue, 2)); ?>,
             totalPaid: <?= json_encode(number_format($totalPaid, 2)); ?>,
             balance: <?= json_encode(number_format($balance, 2)); ?>,
+            overpayments: <?= json_encode(number_format($overpayments, 2)); ?>,
             overdueAmount: <?= json_encode(number_format($overdueAmount, 2)); ?>,
             loanReleaseDate: <?= json_encode(!empty($loan['loan_release_date']) ? date('d/m/Y', strtotime($loan['loan_release_date'])) : 'N/A'); ?>,
             loanOfficer: <?= json_encode(!empty($loan['loan_officer_name']) ? $loan['loan_officer_name'] : 'Unassigned'); ?>
@@ -1089,7 +1204,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
                     const loanSummary = [
                         `Principal: ${loanDetails.principal} KES`,
                         `Total Amount: ${loanDetails.totalAmount} KES`,
-                        `Total Paid: ${loanDetails.totalPaid} KES`,
+                        `Total Paid: ${loanDetails.totalPaid} KES${loanDetails.overpayments > 0 ? ' (Overpaid by KSh ' + loanDetails.overpayments + ')' : ''}`,
                         `Balance: ${loanDetails.balance} KES`,
                         `Release Date: ${loanDetails.loanReleaseDate}`,
                         `Loan Officer: ${loanDetails.loanOfficer}`
@@ -1097,6 +1212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
 
                     const arrearsInfo = [
                         `Arrears Amount: ${loanDetails.overdueAmount} KES`,
+                        `Overpayments: ${loanDetails.overpayments} KES`,
                         `Days in arrears: ${arrearsSummary.daysInArrears}`,
                         `Projected maturity date: ${arrearsSummary.projectedMaturityDate}`,
                         `Days overdue: ${arrearsSummary.daysAfterProjectedMaturity}`
@@ -1198,6 +1314,5 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
 <?php 
 $stmt_loan->close();
 $stmt_history->close();
-$stmt_records->close();
 $conn->close();
 ?>

@@ -400,7 +400,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
             <button id="downloadDueLoansPdf" class="btn btn-success">
                 <i class="bi bi-download"></i> Download PDF
             </button>
-            <input type="text" id="searchInput" placeholder="Search by Borrower or Phone..." class="form-control" style="width: 300px;">
+            <input type="text" id="searchInput" placeholder="Search by borrower or phone..." class="form-control" style="width: 300px;">
         </div>
     </div>
     <?php if (!empty($email_message)): ?>
@@ -498,14 +498,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
     document.addEventListener('DOMContentLoaded', function () {
         const searchInput = document.getElementById('searchInput');
         if (searchInput) {
+            function normalizeSearchText(text) {
+                return text.toLowerCase().replace(/[^a-z0-9]/g, '');
+            }
+
             searchInput.addEventListener('input', function () {
-                const filter = this.value.toLowerCase();
+                const filter = normalizeSearchText(this.value);
                 const rows = document.querySelectorAll('.table tbody tr');
 
                 rows.forEach(row => {
-                    const borrowerName = row.cells[0]?.textContent.toLowerCase() || '';
-                    const phoneNumber = row.cells[1]?.textContent.toLowerCase() || '';
-                    row.style.display = (borrowerName.includes(filter) || phoneNumber.includes(filter)) ? '' : 'none';
+                    const cells = Array.from(row.cells).map(cell => normalizeSearchText(cell.textContent));
+                    const match = cells.some(text => text.includes(filter));
+                    row.style.display = match ? '' : 'none';
                 });
             });
         }
