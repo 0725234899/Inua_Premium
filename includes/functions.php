@@ -28,7 +28,17 @@ function getBranches() {
 }
 
 // User management functions
-function add_user($name, $email, $password, $role, $area = null, $phone = null) {
+function ensureUserSalaryColumnExists() {
+    $conn = db_connect();
+    $stmt = $conn->prepare("SHOW COLUMNS FROM users LIKE 'basic_salary'");
+    $stmt->execute();
+    if (!$stmt->fetch()) {
+        $conn->exec("ALTER TABLE users ADD COLUMN basic_salary DECIMAL(12,2) NOT NULL DEFAULT 0.00");
+    }
+}
+
+function add_user($name, $email, $password, $role, $area = null, $phone = null, $basic_salary = 0.00) {
+    ensureUserSalaryColumnExists();
     $conn = db_connect();
     $email = strtolower(trim((string) $email));
 
@@ -39,9 +49,9 @@ function add_user($name, $email, $password, $role, $area = null, $phone = null) 
         return false;
     }
 
-    $stmt = $conn->prepare("INSERT INTO users (name, email, password, role_id, area, phone) VALUES (?, ?, ?, ?, ?, ?)");
+    $stmt = $conn->prepare("INSERT INTO users (name, email, password, role_id, area, phone, basic_salary) VALUES (?, ?, ?, ?, ?, ?, ?)");
     try {
-        return $stmt->execute([$name, $email, password_hash($password, PASSWORD_DEFAULT), $role, $area, $phone]);
+        return $stmt->execute([$name, $email, password_hash($password, PASSWORD_DEFAULT), $role, $area, $phone, $basic_salary]);
     } catch (PDOException $e) {
         error_log('Failed to add staff user: ' . $e->getMessage());
         return false;

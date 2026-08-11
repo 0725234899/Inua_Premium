@@ -95,20 +95,34 @@ function generate_performing_book_pdf($rows, $officer_display_name, $day_label, 
     ];
 
     $headers = ['Borrower', 'Loan Release Date', 'Loan Duration', 'Principal', 'Total Amount', 'Total Paid', 'Loan Balance', 'Arrears', 'Maturity Date', 'Status'];
+
+    // Table header rendering helper (used for initial page and repeated on new pages)
+    $tableHeaderHeight = 8;
+    $pdf->SetFont('helvetica', 'B', 9);
     $pdf->SetFillColor(56, 152, 219);
     $pdf->SetTextColor(255, 255, 255);
-    $pdf->SetFont('helvetica', 'B', 9);
-    $pdf->SetX($leftMargin);
-    foreach ($headers as $i => $h) {
-        $pdf->Cell($colWidths[$i], 8, $h, 1, 0, 'C', true);
-    }
-    $pdf->Ln();
 
-    $pdf->SetFillColor(255, 255, 255);
-    $pdf->SetTextColor(33, 37, 41);
-    $pdf->SetFont('helvetica', '', 8);
+    $printTableHeader = function() use ($pdf, $headers, $colWidths, $leftMargin, $tableHeaderHeight) {
+        $pdf->SetFont('helvetica', 'B', 9);
+        $pdf->SetFillColor(56, 152, 219);
+        $pdf->SetTextColor(255, 255, 255);
+        $pdf->SetX($leftMargin);
+        foreach ($headers as $i => $h) {
+            $pdf->Cell($colWidths[$i], $tableHeaderHeight, $h, 1, 0, 'C', true);
+        }
+        $pdf->Ln();
+        // prepare for row output
+        $pdf->SetFillColor(255, 255, 255);
+        $pdf->SetTextColor(33, 37, 41);
+        $pdf->SetFont('helvetica', '', 8);
+    };
+
+    // Print the first header row
+    $printTableHeader();
 
     $lineHeight = 4; // approximate
+    // compute page break trigger once
+    $pageBreakTrigger = $pdf->getPageHeight() - $pdf->getBreakMargin();
     if (!empty($rows)) {
         foreach ($rows as $row) {
             $loanStatusValue = strtolower(trim((string) ($row['loan_status'] ?? '')));
@@ -155,6 +169,12 @@ function generate_performing_book_pdf($rows, $officer_display_name, $day_label, 
             $rowHeight = $maxLines * $lineHeight;
 
             // output cells using MultiCell so text wraps and row height is consistent
+            // check for page break before printing the row
+            if ($pdf->GetY() + $rowHeight > $pageBreakTrigger) {
+                $pdf->AddPage();
+                $printTableHeader();
+            }
+
             $pdf->SetX($leftMargin);
             foreach ($colTexts as $i => $txt) {
                 $align = 'L';
@@ -495,10 +515,10 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
 
     <?php
     // Get selected region/area, loan officer and day from the request
-    $selected_area = isset($_GET['area_id']) ? trim($_GET['area_id']) : 'all';
+    $selected_area = isset($_GET['area_id']) ? trim($_GET['area_id']) : (isset($_POST['area_id']) ? trim($_POST['area_id']) : 'all');
     $selected_area = ($selected_area !== 'all' && !ctype_digit($selected_area)) ? 'all' : $selected_area;
-    $selected_officer = isset($_GET['officer_id']) ? trim($_GET['officer_id']) : 'all';
-    $selected_day = isset($_GET['day']) ? trim($_GET['day']) : 'all';
+    $selected_officer = isset($_GET['officer_id']) ? trim($_GET['officer_id']) : (isset($_POST['officer_id']) ? trim($_POST['officer_id']) : 'all');
+    $selected_day = isset($_GET['day']) ? trim($_GET['day']) : (isset($_POST['day']) ? trim($_POST['day']) : 'all');
 
     // Fetch all loan officers, optionally filtered by selected region/area
     $sql_officers = "SELECT id, name AS full_name, email, area FROM users WHERE role_id = '2'";
@@ -633,7 +653,6 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
     $email_message = '';
     $email_status = '';
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
-        $recipient_email = ($selected_officer !== 'all' && !empty($selected_officer_email)) ? $selected_officer_email : getConfiguredSenderEmail();
         $officer_display_name = ($selected_officer !== 'all' && isset($officer_lookup[$selected_officer]))
             ? $officer_lookup[$selected_officer]['full_name']
             : 'All Loan Officers';
@@ -641,31 +660,46 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
 
         // determine selected region label
         $area_label = 'All Regions';
-        if ($selected_area !== 'all') {
-            foreach ($areas as $a) {
-                if (isset($a['area_id']) && (string)$a['area_id'] === (string)$selected_area) {
-                    $area_label = $a['area_name'];
-                    break;
-                }
+
+        if ($selected_officer !== 'all') {
+            if (!empty($selected_officer_email)) {
+                $recipient_email = $selected_officer_email;
+            } else {
+                $recipient_email = '';
+                $email_status = 'danger';
+                $email_message = 'The selected loan officer does not have a valid email configured. Please update the loan officer email before sending.';
             }
+        } else {
+            $recipient_email = getConfiguredSenderEmail();
         }
 
-        $subject = 'Performing Book Report - ' . htmlspecialchars($officer_display_name) . ' - ' . htmlspecialchars($area_label);
-        $body = '<p>Dear ' . htmlspecialchars($officer_display_name) . ',</p>';
-        $body .= '<p>Please find the attached performing book report for <strong>' . htmlspecialchars($officer_display_name) . '</strong>';
-        $body .= ' (Region: <strong>' . htmlspecialchars($area_label) . '</strong>; Day: <strong>' . htmlspecialchars($day_label) . '</strong>).</p>';
-        $body .= '<p>This report was generated automatically by Inua Premium Services.</p>';
+        if (!empty($recipient_email)) {
+            if ($selected_area !== 'all') {
+                foreach ($areas as $a) {
+                    if (isset($a['area_id']) && (string)$a['area_id'] === (string)$selected_area) {
+                        $area_label = $a['area_name'];
+                        break;
+                    }
+                }
+            }
 
-        try {
-            $pdf_content = generate_performing_book_pdf($loans, $officer_display_name, $day_label, $area_label);
-            $filename = 'performing_book_report_' . date('Ymd_His') . '.pdf';
-            send_pdf_email($recipient_email, $subject, $body, $pdf_content, $filename);
-            $email_status = 'success';
-            $email_message = 'Performing book PDF sent successfully to ' . $recipient_email . '.';
-        } catch (Exception $e) {
-            error_log('Performing book email send failed: ' . $e->getMessage());
-            $email_status = 'danger';
-            $email_message = 'Unable to send the performing book PDF email. Please review the SMTP configuration.';
+            $subject = 'Performing Book Report - ' . htmlspecialchars($officer_display_name) . ' - ' . htmlspecialchars($area_label);
+            $body = '<p>Dear ' . htmlspecialchars($officer_display_name) . ',</p>';
+            $body .= '<p>Please find the attached performing book report for <strong>' . htmlspecialchars($officer_display_name) . '</strong>';
+            $body .= ' (Region: <strong>' . htmlspecialchars($area_label) . '</strong>; Day: <strong>' . htmlspecialchars($day_label) . '</strong>).</p>';
+            $body .= '<p>This report was generated automatically by Inua Premium Services.</p>';
+
+            try {
+                $pdf_content = generate_performing_book_pdf($loans, $officer_display_name, $day_label, $area_label);
+                $filename = 'performing_book_report_' . date('Ymd_His') . '.pdf';
+                send_pdf_email($recipient_email, $subject, $body, $pdf_content, $filename);
+                $email_status = 'success';
+                $email_message = 'Performing book PDF sent successfully to ' . $recipient_email . '.';
+            } catch (Exception $e) {
+                error_log('Performing book email send failed: ' . $e->getMessage());
+                $email_status = 'danger';
+                $email_message = 'Unable to send the performing book PDF email. Please review the SMTP configuration.';
+            }
         }
     }
     ?>
@@ -679,6 +713,9 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
                     <div class="header-actions">
                         <form method="post" class="d-inline-block">
                             <input type="hidden" name="send_email" value="1">
+                            <input type="hidden" name="area_id" value="<?= htmlspecialchars($selected_area); ?>">
+                            <input type="hidden" name="officer_id" value="<?= htmlspecialchars($selected_officer); ?>">
+                            <input type="hidden" name="day" value="<?= htmlspecialchars($selected_day); ?>">
                             <button type="submit" class="btn btn-outline-primary">
                                 <i class="bi bi-envelope"></i> Send Email
                             </button>

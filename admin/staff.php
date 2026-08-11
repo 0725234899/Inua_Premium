@@ -124,6 +124,7 @@ $roles = getRoles();
                                                     data-name="<?php echo htmlspecialchars($officer['name'], ENT_QUOTES); ?>"
                                                     data-email="<?php echo htmlspecialchars($officer['email'], ENT_QUOTES); ?>"
                                                     data-phone="<?php echo htmlspecialchars($officer['phone'], ENT_QUOTES); ?>"
+                                                    data-basic_salary="<?php echo htmlspecialchars(number_format(floatval($officer['basic_salary'] ?? 0), 2), ENT_QUOTES); ?>"
                                                     data-area="<?php echo htmlspecialchars($officer['area'] ?? '', ENT_QUOTES); ?>"
                                                     data-role="<?php echo htmlspecialchars($officer['role_id'] ?? '', ENT_QUOTES); ?>"
                                                     data-bs-toggle="modal"
@@ -169,6 +170,10 @@ $roles = getRoles();
                             <div class="mb-3">
                                 <label for="officerPhone" class="form-label">Phone</label>
                                 <input type="text" class="form-control" id="officerPhone" name="officerPhone" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="officerSalary" class="form-label">Basic Salary</label>
+                                <input type="number" step="0.01" min="0" class="form-control" id="officerSalary" name="basicSalary" value="0.00" required>
                             </div>
                             <div class="mb-3">
                                 <label for="officerPassword" class="form-label">Password</label>
@@ -226,6 +231,10 @@ $roles = getRoles();
                                 <input type="text" class="form-control" id="editOfficerPhone" name="officerPhone" required>
                             </div>
                             <div class="mb-3">
+                                <label for="editBasicSalary" class="form-label">Basic Salary</label>
+                                <input type="number" step="0.01" min="0" class="form-control" id="editBasicSalary" name="basicSalary" value="0.00" required>
+                            </div>
+                            <div class="mb-3">
                                 <label for="editOfficerPassword" class="form-label">New Password (leave blank to keep current)</label>
                                 <input type="password" class="form-control" id="editOfficerPassword" name="officerPassword">
                             </div>
@@ -274,6 +283,7 @@ $roles = getRoles();
                     document.getElementById('editOfficerName').value = this.getAttribute('data-name');
                     document.getElementById('editOfficerEmail').value = this.getAttribute('data-email');
                     document.getElementById('editOfficerPhone').value = this.getAttribute('data-phone');
+                    document.getElementById('editBasicSalary').value = this.getAttribute('data-basic_salary') || '0.00';
                     document.getElementById('editAreaId').value = this.getAttribute('data-area');
                     document.getElementById('editRoleId').value = this.getAttribute('data-role');
                     document.getElementById('editOfficerPassword').value = '';

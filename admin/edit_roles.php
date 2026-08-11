@@ -358,8 +358,7 @@
     if (isset($conn) && $conn instanceof mysqli) {
         $expectedNavigationItems = [
             ['title' => 'View Expenses', 'url' => 'add_expenses.php', 'icon' => 'bi bi-cash-stack', 'parent_id' => null],
-            ['title' => 'Add Expenses', 'url' => 'add_expenses.php', 'icon' => 'bi bi-cash-stack', 'parent_id' => null],
-            ['title' => 'Payroll', 'url' => 'payroll.php', 'icon' => 'bi bi-briefcase', 'parent_id' => null]
+            ['title' => 'Add Expenses', 'url' => 'add_expenses.php', 'icon' => 'bi bi-cash-stack', 'parent_id' => null]
         ];
 
         foreach ($expectedNavigationItems as $navItem) {
@@ -376,6 +375,49 @@
             }
 
             $checkStmt->close();
+        }
+
+        // Ensure Payroll parent and child items exist
+        $payrollParentTitle = 'Payroll';
+        $payrollParentUrl = 'payroll.php';
+        $payrollParentIcon = 'bi bi-briefcase';
+        $payrollParentId = null;
+
+        $checkPayrollParent = $conn->prepare("SELECT id FROM navigation_items WHERE title = ? LIMIT 1");
+        $checkPayrollParent->bind_param('s', $payrollParentTitle);
+        $checkPayrollParent->execute();
+        $checkPayrollParent->store_result();
+
+        if ($checkPayrollParent->num_rows === 0) {
+            $insertPayrollParent = $conn->prepare("INSERT INTO navigation_items (title, url, icon) VALUES (?, ?, ?)");
+            $insertPayrollParent->bind_param('sss', $payrollParentTitle, $payrollParentUrl, $payrollParentIcon);
+            $insertPayrollParent->execute();
+            $payrollParentId = $conn->insert_id;
+            $insertPayrollParent->close();
+        } else {
+            $checkPayrollParent->bind_result($payrollParentId);
+            $checkPayrollParent->fetch();
+        }
+        $checkPayrollParent->close();
+
+        $payrollChildren = [
+            ['title' => 'Add Payroll', 'url' => 'add_payroll.php', 'icon' => 'bi bi-plus-circle'],
+            ['title' => 'View Payroll', 'url' => 'view_payroll.php', 'icon' => 'bi bi-eye']
+        ];
+
+        foreach ($payrollChildren as $childItem) {
+            $checkChild = $conn->prepare("SELECT id FROM navigation_items WHERE title = ? AND parent_id = ? LIMIT 1");
+            $checkChild->bind_param('si', $childItem['title'], $payrollParentId);
+            $checkChild->execute();
+            $checkChild->store_result();
+
+            if ($checkChild->num_rows === 0) {
+                $insertChild = $conn->prepare("INSERT INTO navigation_items (title, url, icon, parent_id) VALUES (?, ?, ?, ?)");
+                $insertChild->bind_param('sssi', $childItem['title'], $childItem['url'], $childItem['icon'], $payrollParentId);
+                $insertChild->execute();
+                $insertChild->close();
+            }
+            $checkChild->close();
         }
 
         // Ensure Advance parent and 'advance' child exist

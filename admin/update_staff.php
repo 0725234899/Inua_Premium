@@ -9,6 +9,7 @@ if (isset($_POST['updateStaff'])) {
     $password = trim($_POST['officerPassword'] ?? '');
     $area = trim($_POST['areaId'] ?? '');
     $role = trim($_POST['roleId'] ?? '');
+    $basicSalary = floatval($_POST['basicSalary'] ?? 0);
 
     if ($id <= 0 || $name === '' || $email === '' || $phone === '' || $area === '' || $role === '') {
         header('Location: staff.php');
@@ -31,13 +32,13 @@ if (isset($_POST['updateStaff'])) {
 
         $oldEmail = $oldUser['email'];
 
-        $sql = 'UPDATE users SET name = ?, email = ?, phone = ?, area = ?, role_id = ?';
+        $sql = 'UPDATE users SET name = ?, email = ?, phone = ?, area = ?, role_id = ?, basic_salary = ?';
         if ($password !== '') {
             $sql .= ', password = ?';
         }
         $sql .= ' WHERE id = ?';
 
-        $params = [$name, $email, $phone, $area, $role];
+        $params = [$name, $email, $phone, $area, $role, $basicSalary];
         if ($password !== '') {
             $params[] = password_hash($password, PASSWORD_DEFAULT);
         }

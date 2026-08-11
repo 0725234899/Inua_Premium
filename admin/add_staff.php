@@ -8,8 +8,9 @@ if (isset($_POST['addStaff'])) {
     $password = $_POST['officerPassword'] ?? '';
     $area = $_POST['areaId'] ?? null;
     $role = (int) ($_POST['roleId'] ?? 0);
+    $basicSalary = floatval($_POST['basicSalary'] ?? 0);
 
-    if ($name !== '' && $email !== '' && $password !== '' && $role > 0 && add_user($name, $email, $password, $role, $area, $phone)) {
+    if ($name !== '' && $email !== '' && $password !== '' && $role > 0 && add_user($name, $email, $password, $role, $area, $phone, $basicSalary)) {
         sendWelcomeEmailToStaff($name, $email, $role);
         header('Location: staff.php');
         exit;
