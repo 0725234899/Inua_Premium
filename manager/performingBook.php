@@ -296,10 +296,30 @@ function getCycleInterval($cycle) {
 }
 
 function getMaturityDate($loan_release_date, $loan_duration, $loan_duration_unit) {
-    try {
-        $date = new DateTime($loan_release_date);
-    } catch (Exception $e) {
-        return null;
+    // Accept common date formats (d/m/Y, d-m-Y, Y-m-d) and fall back to DateTime
+    $date = false;
+    $formats = [
+        'd/m/Y',
+        'd-m-Y',
+        'Y-m-d',
+        'Y/m/d',
+        'd/m/Y H:i:s',
+        'd-m-Y H:i:s',
+        'Y-m-d H:i:s',
+    ];
+    foreach ($formats as $fmt) {
+        $dt = DateTime::createFromFormat($fmt, $loan_release_date);
+        if ($dt !== false) {
+            $date = $dt;
+            break;
+        }
+    }
+    if ($date === false) {
+        try {
+            $date = new DateTime($loan_release_date);
+        } catch (Exception $e) {
+            return null;
+        }
     }
 
     switch ($loan_duration_unit) {

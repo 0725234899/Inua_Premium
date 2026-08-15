@@ -214,8 +214,9 @@ $sql_due_loans = "SELECT
                     borrowers ON loan_applications.borrower = borrowers.id
                   WHERE 
                     repayments.repayment_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
-                    $day_filter
-                    $officer_filter
+                                        AND (loan_applications.loan_status IS NULL OR loan_applications.loan_status != 'rolled_over')
+                                        $day_filter
+                                        $officer_filter
                   ORDER BY repayments.repayment_date ASC, loan_applications.id ASC, repayments.id ASC";
 
 $stmt_due_loans = $conn->prepare($sql_due_loans);

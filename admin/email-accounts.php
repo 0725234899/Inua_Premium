@@ -11,18 +11,30 @@ $conn = db_connect();
 $conn->exec("CREATE TABLE IF NOT EXISTS email_accounts (
     id INT AUTO_INCREMENT PRIMARY KEY,
     sender_email VARCHAR(255) NOT NULL,
-    sender_app_password VARCHAR(255) NOT NULL,
+    sender_app_password VARCHAR(255) DEFAULT NULL,
     admin_email VARCHAR(255) DEFAULT NULL,
     admin_app_password VARCHAR(255) DEFAULT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 $columnCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'sender_app_password'");
 if ($columnCheck->rowCount() === 0) {
-    $conn->exec("ALTER TABLE email_accounts ADD COLUMN sender_app_password VARCHAR(255) NOT NULL AFTER sender_email");
+// Make column nullable by default to avoid insert failures in strict SQL modes when no default is provided
+$conn->exec("ALTER TABLE email_accounts ADD COLUMN sender_app_password VARCHAR(255) DEFAULT NULL AFTER sender_email");
 }
 $columnCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'admin_app_password'");
 if ($columnCheck->rowCount() === 0) {
     $conn->exec("ALTER TABLE email_accounts ADD COLUMN admin_app_password VARCHAR(255) DEFAULT NULL AFTER admin_email");
+}
+
+// Ensure legacy 'app_password' column (if present) is nullable to avoid strict-mode insert errors
+try {
+    $legacyCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'app_password'");
+    if ($legacyCheck && $legacyCheck->rowCount() > 0) {
+        // Make it nullable with a sensible length. Use MODIFY to preserve column name.
+        $conn->exec("ALTER TABLE email_accounts MODIFY COLUMN app_password VARCHAR(255) DEFAULT NULL");
+    }
+} catch (Exception $e) {
+    // Ignore — best-effort migration without blocking page load
 }
 
 $messages = [];
@@ -134,14 +146,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if (empty($errors)) {
-        if ($emailId > 0) {
-            $stmt = $conn->prepare("UPDATE email_accounts SET sender_email = ?, sender_app_password = ?, admin_email = ?, admin_app_password = ?, updated_at = NOW() WHERE id = ?");
-            $stmt->execute([$senderEmail, $passwordToSave, $adminEmail, $adminPasswordToSave, $emailId]);
-            $messages[] = 'Email account updated successfully.';
-        } else {
-            $stmt = $conn->prepare("INSERT INTO email_accounts (sender_email, sender_app_password, admin_email, admin_app_password) VALUES (?, ?, ?, ?)");
-            $stmt->execute([$senderEmail, $passwordToSave, $adminEmail, $adminPasswordToSave]);
-            $messages[] = 'Email account added successfully.';
+        try {
+            if ($emailId > 0) {
+                $stmt = $conn->prepare("UPDATE email_accounts SET sender_email = ?, sender_app_password = ?, admin_email = ?, admin_app_password = ?, updated_at = NOW() WHERE id = ?");
+                $stmt->execute([$senderEmail, $passwordToSave, $adminEmail, $adminPasswordToSave, $emailId]);
+                $messages[] = 'Email account updated successfully.';
+            } else {
+                $stmt = $conn->prepare("INSERT INTO email_accounts (sender_email, sender_app_password, admin_email, admin_app_password) VALUES (?, ?, ?, ?)");
+                $stmt->execute([$senderEmail, $passwordToSave, $adminEmail, $adminPasswordToSave]);
+                $messages[] = 'Email account added successfully.';
+            }
+        } catch (PDOException $e) {
+            $errors[] = 'Database error saving email account: ' . $e->getMessage();
         }
 
         $accounts = fetchEmailAccounts($conn);

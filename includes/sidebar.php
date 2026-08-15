@@ -77,6 +77,19 @@ function renderNavItems($items, $parentId = NULL) {
     <aside class="sidebar">
         <ul class="sidebar-nav" id="sidebar-nav">
             <?= renderNavItems($navItems) ?>
+            <?php
+            // Fallback: if there is no navigation item for view_payroll.php, add a link
+            $hasViewPayroll = false;
+            foreach ($navItems as $ni) {
+                if (isset($ni['url']) && stripos($ni['url'], 'view_payroll.php') !== false) {
+                    $hasViewPayroll = true;
+                    break;
+                }
+            }
+            if (!$hasViewPayroll && file_exists(__DIR__ . '/../manager/view_payroll.php')) {
+                echo '<li class="nav-item"><a class="nav-link" href="view_payroll.php"><i class="bi bi-file-earmark-text"></i><span>View Payroll</span></a></li>';
+            }
+            ?>
         </ul>
     </aside><!-- End Sidebar -->
 

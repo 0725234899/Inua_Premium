@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
@@ -14,6 +14,151 @@ require_once __DIR__ . '/PHPMailer/src/Exception.php';
 require_once __DIR__ . '/PHPMailer/src/SMTP.php';
 
 $message = ""; // To store success or error messages
+
+function formatLoanDurationDisplay($duration, $unit) {
+    $duration = (int) $duration;
+    $unit = strtolower(trim((string) $unit));
+
+    if ($duration === 1) {
+        $unit = rtrim($unit, 's');
+    } elseif ($unit !== '' && !str_ends_with($unit, 's')) {
+        $unit .= 's';
+    }
+
+    return $duration > 0 && $unit !== '' ? $duration . ' ' . ucfirst($unit) : '';
+}
+
+function normalizeDurationUnit($loan_duration_unit) {
+    $unit = strtolower(trim((string) ($loan_duration_unit ?? 'months')));
+
+    switch ($unit) {
+        case 'day':
+        case 'days':
+            return 'days';
+        case 'week':
+        case 'weeks':
+            return 'weeks';
+        case 'month':
+        case 'months':
+            return 'months';
+        case 'year':
+        case 'years':
+            return 'years';
+        default:
+            return 'months';
+    }
+}
+
+function getMaturityDate($loan_release_date, $loan_duration, $loan_duration_unit) {
+    $loan_duration = (int) $loan_duration;
+    $loan_duration_unit = normalizeDurationUnit($loan_duration_unit);
+
+    if (empty($loan_release_date) || $loan_duration <= 0) {
+        return null;
+    }
+
+    try {
+        $maturity_date = new DateTime($loan_release_date);
+        switch ($loan_duration_unit) {
+            case 'days':
+                $interval = new DateInterval('P' . $loan_duration . 'D');
+                break;
+            case 'weeks':
+                $interval = new DateInterval('P' . $loan_duration . 'W');
+                break;
+            case 'months':
+                $interval = new DateInterval('P' . $loan_duration . 'M');
+                break;
+            case 'years':
+                $interval = new DateInterval('P' . $loan_duration . 'Y');
+                break;
+            default:
+                $interval = new DateInterval('P' . $loan_duration . 'M');
+                break;
+        }
+
+        return $maturity_date->add($interval);
+    } catch (Exception $e) {
+        return null;
+    }
+}
+
+function getCycleInterval($cycle) {
+    switch (strtolower(trim((string) $cycle))) {
+        case 'daily':
+            return '1 day';
+        case 'weekly':
+            return '1 week';
+        case 'monthly':
+            return '1 month';
+        case 'yearly':
+        case 'year':
+            return '1 year';
+        case 'once':
+            return '1 month';
+        default:
+            return '1 month';
+    }
+}
+
+function getRepaymentScheduleDates($loan_release_date, $loan_duration, $loan_duration_unit, $repayment_cycle) {
+    $loan_duration_unit = normalizeDurationUnit($loan_duration_unit);
+    $maturity_date = getMaturityDate($loan_release_date, $loan_duration, $loan_duration_unit);
+    if (!$maturity_date) {
+        return [];
+    }
+
+    $scheduleDates = [];
+    $repayment_cycle = strtolower(trim((string) ($repayment_cycle ?? 'once')));
+
+    if ($repayment_cycle === 'once') {
+        $scheduleCycle = match ($loan_duration_unit) {
+            'days', 'weeks' => 'weekly',
+            'months' => 'monthly',
+            'years' => 'yearly',
+            default => 'monthly'
+        };
+    } else {
+        $scheduleCycle = $repayment_cycle;
+    }
+
+    $current = new DateTime($loan_release_date);
+    $interval = DateInterval::createFromDateString(getCycleInterval($scheduleCycle));
+
+    while (true) {
+        $next = clone $current;
+        $next->add($interval);
+
+        if ($next >= $maturity_date) {
+            $scheduleDates[] = $maturity_date->format('Y-m-d');
+            break;
+        }
+
+        $scheduleDates[] = $next->format('Y-m-d');
+        $current = $next;
+    }
+
+    return $scheduleDates;
+}
+
+function getProjectedMaturityDate($releaseDate, $loan_duration, $loan_duration_unit, $repayment_cycle = null) {
+    if (empty($releaseDate) || (int) $loan_duration <= 0) {
+        return null;
+    }
+
+    $dates = getRepaymentScheduleDates($releaseDate, (int) $loan_duration, $loan_duration_unit, $repayment_cycle ?? 'once');
+    if (empty($dates)) {
+        return null;
+    }
+
+    $last = end($dates);
+    try {
+        return new DateTime($last);
+    } catch (Exception $e) {
+        return null;
+    }
+}
+
 if (isset($_POST['search'])) {
     $search_key = trim($_POST['search_key']);
     if (strlen($search_key) < 4 && !preg_match('/^\d{10}$/', $search_key)) {
@@ -60,6 +205,195 @@ if (isset($_POST['search'])) {
     }
 }
 
+/**
+ * Send a single combined email to the loan officer containing:
+ * - payment received notification and portfolio metrics
+ * - payslip-style payment record with recent payments and loan terms
+ */
+function sendCombinedStaffNotification($loan_id, $amount_paid, $conn) {
+    $details = getLoanNotificationDetails($loan_id, $conn);
+    if (!$details) return "<div class='alert alert-warning text-center'>Payment saved but loan/staff details not found for notification.</div>";
+
+    $officerEmail = trim($details['officer_email'] ?? '');
+    $officerName = !empty($details['loan_officer_name']) ? $details['loan_officer_name'] : $officerEmail;
+    $senderEmail = getConfiguredSenderEmail();
+    if (empty($officerEmail) || !filter_var($officerEmail, FILTER_VALIDATE_EMAIL)) {
+        $officerEmail = $senderEmail;
+    }
+
+    if (empty($officerEmail) || !filter_var($officerEmail, FILTER_VALIDATE_EMAIL)) {
+        return "<div class='alert alert-warning text-center'>Payment saved but no valid loan officer email exists for notification.</div>";
+    }
+
+    $loanSummary = getLoanBalanceSummary($loan_id, $conn);
+    $outstanding = number_format($loanSummary['outstanding_balance'] ?? 0, 2);
+    $overdue = number_format($loanSummary['overdue_balance'] ?? 0, 2);
+
+    $portfolioMetrics = getLoanOfficerPortfolioMetrics($officerEmail, $conn);
+    $totalLoanBook = number_format($portfolioMetrics['loan_book'] ?? 0, 2);
+    $totalArrears = number_format($portfolioMetrics['overdue_balance'] ?? 0, 2);
+    $totalClients = intval($portfolioMetrics['total_clients'] ?? 0);
+    $clientsInArrears = intval($portfolioMetrics['clients_in_arrears'] ?? 0);
+    $todayDuesValue = getLoanOfficerTodayDues($officerEmail, $conn);
+    $todayDues = number_format($todayDuesValue, 2);
+    $parPercentage = number_format($portfolioMetrics['par'] ?? 0, 2);
+
+    // Recent payments
+    $payments = [];
+    $ps = $conn->prepare("SELECT id, PaymentDate, Amount FROM payment_date_records WHERE loan_id = ? ORDER BY PaymentDate ASC, id ASC");
+    if ($ps) {
+        $ps->bind_param('i', $loan_id);
+        $ps->execute();
+        $payments = $ps->get_result()->fetch_all(MYSQLI_ASSOC);
+        $ps->close();
+    }
+
+    // Loan terms (best-effort)
+    $loanTerms = getLoanTermsForEmail($loan_id, $conn);
+
+    $emailCredentials = getEmailAccount();
+    if (!$emailCredentials || empty($emailCredentials['sender_email']) || empty($emailCredentials['sender_app_password'])) {
+        return "<div class='alert alert-warning text-center'>Payment saved but notification email was not sent because email settings are not configured.</div>";
+    }
+
+    $logoPath = __DIR__ . '/../assets/img/logo.png';
+
+    // Build combined HTML
+    $subject = 'Payment Received for ' . ($details['borrower_name'] ?? 'client');
+    $greet = !empty($officerName) ? $officerName : 'Team';
+
+    $body = '<html><body style="margin:0;padding:0;font-family:Inter,Arial,sans-serif;background:#eaf5ff;color:#0f172a;">';
+    $body .= '<table width="100%" cellpadding="0" cellspacing="0" style="background:#eaf5ff;padding:24px;">';
+    $body .= '<tr><td align="center">';
+    $body .= '<table width="700" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 20px 60px rgba(14,88,161,0.12);border:1px solid #dbeafe;">';
+    $body .= '<tr><td style="padding:20px 24px;background:#0ea5e9;color:#ffffff;text-align:center;">';
+    if (file_exists($logoPath)) $body .= '<img src="cid:company_logo" alt="Company Logo" width="80" style="display:block;margin:0 auto 12px;">';
+    $body .= '<h2 style="margin:0;font-size:20px;">Inua Premium Services</h2>';
+    $body .= '<p style="margin:6px 0 0;font-size:13px;color:#dbeafe;">Payment Notification & Record</p>';
+    $body .= '</td></tr>';
+
+    $body .= '<tr><td style="padding:18px 24px;">';
+    $body .= '<p style="margin:0 0 8px;">Dear ' . htmlspecialchars($greet) . ',</p>';
+    $body .= '<p style="margin:0 0 12px;">The client <strong>' . htmlspecialchars($details['borrower_name'] ?? '') . '</strong> has paid <strong>KES ' . number_format($amount_paid, 2) . '</strong>.</p>';
+
+    // Loan terms if available
+    if (!empty($loanTerms)) {
+        $prod = htmlspecialchars($loanTerms['loan_product_name'] ?? $loanTerms['loan_product'] ?? '');
+        $principal = isset($loanTerms['principal']) ? number_format((float)$loanTerms['principal'], 2) : '';
+        $totalAmt = isset($loanTerms['total_amount']) ? number_format((float)$loanTerms['total_amount'], 2) : '';
+        $numRepay = isset($loanTerms['number_of_repayments']) ? intval($loanTerms['number_of_repayments']) : 0;
+        $duration = isset($loanTerms['loan_duration']) ? intval($loanTerms['loan_duration']) : '';
+        $durationUnit = htmlspecialchars($loanTerms['loan_duration_unit'] ?? '');
+        $release = !empty($loanTerms['loan_release_date']) ? htmlspecialchars(date('d/m/Y', strtotime($loanTerms['loan_release_date']))) : '';
+        $maturity = !empty($loanTerms['projected_maturity_date']) ? htmlspecialchars(date('d/m/Y', strtotime($loanTerms['projected_maturity_date']))) : '';
+        $status = htmlspecialchars($loanTerms['loan_status'] ?? '');
+
+        // Calculate total paid from actual payment records
+        $totalPaidAmount = 0;
+        foreach ($payments as $p) {
+            $totalPaidAmount += (float)$p['Amount'];
+        }
+        $totalPaid = $totalPaidAmount > 0 ? number_format($totalPaidAmount, 2) : '';
+        $totalBalance = number_format(max(0, (float)($loanTerms['total_amount'] ?? 0) - $totalPaidAmount), 2);
+        $installmentAmount = ($numRepay > 0) ? number_format((float)($loanTerms['total_amount'] ?? 0) / $numRepay, 2) : '';
+
+        $body .= '<h4 style="margin:12px 0 8px;font-size:15px;color:#0f172a;">Loan Terms</h4>';
+        $body .= '<table width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;border-radius:8px;">';
+        $body .= '<tr style="background:#f8fafc;color:#0f172a;font-weight:700;"><td><strong>Product</strong></td><td align="right"><strong>' . $prod . '</strong></td></tr>';
+        if ($principal) {
+            $body .= '<tr><td>Principal Amount</td><td align="right">KES ' . $principal . '</td></tr>';
+        }
+        $body .= '<tr><td>Total Amount</td><td align="right">KES ' . $totalAmt . '</td></tr>';
+        if ($installmentAmount) {
+            $body .= '<tr><td>Installment Amount</td><td align="right">KES ' . $installmentAmount . '</td></tr>';
+        }
+        if ($totalPaid) {
+            $body .= '<tr><td>Total Paid</td><td align="right">KES ' . $totalPaid . '</td></tr>';
+        }
+        $body .= '<tr><td>Total Balance</td><td align="right">KES ' . $totalBalance . '</td></tr>';
+        if ($status) {
+            $statusDisplay = ucfirst($status);
+            $body .= '<tr><td>Status</td><td align="right"><strong>' . $statusDisplay . '</strong></td></tr>';
+        }
+        $body .= '</table>';
+
+        $summaryBlock = [];
+        if ($release) {
+            $summaryBlock[] = '<p style="margin:0 0 6px;font-size:14px;color:#0f172a;"><strong>Release Date:</strong> ' . htmlspecialchars($release) . '</p>';
+        }
+        if ($maturity) {
+            $summaryBlock[] = '<p style="margin:0;font-size:14px;color:#0f172a;"><strong>Maturity Date:</strong> ' . htmlspecialchars($maturity) . '</p>';
+        }
+
+        if (!empty($summaryBlock)) {
+            $body .= '<div style="margin-top:18px;padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#f8fafc;">';
+            $body .= implode('', $summaryBlock);
+            $body .= '</div>';
+        }
+
+        // Fetch the assigned loan officer's portfolio metrics for footer
+        $officerDetails = getLoanNotificationDetails($loan_id, $conn);
+        $officerEmail = trim($officerDetails['officer_email'] ?? '');
+        $portfolioMetrics = getLoanOfficerPortfolioMetrics($officerEmail, $conn);
+        $lb = number_format($portfolioMetrics['loan_book'] ?? 0, 2);
+        $par = number_format($portfolioMetrics['par'] ?? 0, 2);
+        $noc = intval($portfolioMetrics['total_clients'] ?? 0);
+        $nocA = intval($portfolioMetrics['clients_in_arrears'] ?? 0);
+    }
+
+    // Recent payments table
+    if (!empty($payments)) {
+        $body .= '<h4 style="margin:12px 0 8px;font-size:15px;color:#0f172a;">Recent Payments</h4>';
+        $body .= '<table width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;border-radius:8px;">';
+        $body .= '<tr style="background:#f1f5f9;color:#0f172a;font-weight:700;"><th align="left">Date</th><th align="right">Amount (KES)</th></tr>';
+        foreach ($payments as $p) {
+            $d = htmlspecialchars(date('d/m/Y', strtotime($p['PaymentDate'])));
+            $a = number_format((float)$p['Amount'], 2);
+            $body .= '<tr><td>' . $d . '</td><td align="right">' . $a . '</td></tr>';
+        }
+        $body .= '</table>';
+    }
+
+    if (empty($footerMetricsAppended)) {
+        $body .= '<div style="margin-top:12px;padding:8px 10px;background:#f0f4f8;border:1px solid #e2e8f0;border-radius:8px;font-style:italic;font-size:13px;color:#475569;">LB: KES ' . $lb . ' | PAR: ' . $par . '% | NoC: ' . $noc . ' | NoC-A: ' . $nocA . '</div>';
+        $body .= '<p style="margin:12px 0 0;font-size:14px;color:#0f172a;">Thank you,<br>' . htmlspecialchars(!empty($officerName) ? $officerName : ($officerDetails['loan_officer_name'] ?? $officerEmail)) . (!empty($officerEmail) ? '<br>' . htmlspecialchars($officerEmail) : '') . '</p>';
+        $footerMetricsAppended = true;
+    }
+    $body .= '</td></tr></table></td></tr></table></body></html>';
+
+    // send
+    try {
+        $mail = new PHPMailer(true);
+        $mail->SMTPOptions = [
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false,
+                'allow_self_signed' => true,
+            ],
+        ];
+        $mail->SMTPDebug = 0;
+        $mail->isSMTP();
+        $mail->Host = 'smtp.gmail.com';
+        $mail->SMTPAuth = true;
+        $mail->Username = $emailCredentials['sender_email'];
+        $mail->Password = $emailCredentials['sender_app_password'];
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = 587;
+        $mail->CharSet = 'UTF-8';
+        $mail->setFrom($emailCredentials['sender_email'], 'Inua Premium Services');
+        $mail->addAddress($officerEmail, $officerName);
+        $mail->isHTML(true);
+        $mail->Subject = $subject;
+        if (file_exists($logoPath)) $mail->addEmbeddedImage($logoPath, 'company_logo');
+        $mail->Body = $body;
+        $mail->AltBody = strip_tags(str_replace(['<br>', '<br/>', '<p>', '</p>'], "\n", $body));
+        $mail->send();
+        return "<div class='alert alert-success text-center'>Combined payment notification & record sent to " . htmlspecialchars($officerEmail) . "</div>";
+    } catch (Exception $e) {
+        return "<div class='alert alert-warning text-center'>Payment saved but failed sending combined notification to staff: " . htmlspecialchars($e->getMessage()) . "</div>";
+    }
+}
+
 // Repayment functionality
 if (isset($_POST['repay'])) {
     $loan_id = $_POST['loan_id'];
@@ -72,14 +406,28 @@ if (isset($_POST['repay'])) {
     }
 
     if ($amount_paid > 0) {
+        $amount_paid = floatval($amount_paid); // Ensure proper numeric type
         $message = distributeRepayment($loan_id, $amount_paid, $conn, $payment_date);
 
         $insertPayment = "INSERT INTO payment_date_records (loan_id, PaymentDate, Amount) VALUES (?, ?, ?)";
         $insert_stmt = $conn->prepare($insertPayment);
-        $insert_stmt->bind_param("isd", $loan_id, $payment_date, $amount_paid);
-        $insert_stmt->execute();
+        if (!$insert_stmt) {
+            $message .= "<div class='alert alert-danger text-center'>Error preparing payment record: " . htmlspecialchars($conn->error) . "</div>";
+        } else {
+            $insert_stmt->bind_param("isd", $loan_id, $payment_date, $amount_paid);
+            if (!$insert_stmt->execute()) {
+                $message .= "<div class='alert alert-danger text-center'>Error saving payment record: " . htmlspecialchars($insert_stmt->error) . "</div>";
+            } else {
+                $message .= "<div class='alert alert-info text-center'>Payment record saved successfully.</div>";
+            }
+            $insert_stmt->close();
+        }
 
-        $message .= sendPaymentNotificationEmail($loan_id, $amount_paid, $conn);
+            // Send a single combined email to the loan officer that includes
+            // the payment-received notification + payslip-style payment record
+            $message .= sendCombinedStaffNotification($loan_id, $amount_paid, $conn);
+            // Also send payment receipt to the client (borrower) formatted like payslip
+            $message .= sendPaymentRecordToClient($loan_id, $amount_paid, $conn);
     } else {
         $message = "<div class='alert alert-warning text-center'>Please enter a valid amount.</div>";
     }
@@ -131,15 +479,28 @@ if (isset($_POST['bulk_repay'])) {
         $loan_id = $resL['id'];
 
         // Apply the repayment distribution
+        $amount = floatval($amount); // Ensure proper numeric type
         $msg = distributeRepayment($loan_id, $amount, $conn, $payment_date);
         $bulk_messages[] = $msg;
 
         // Record payment date entry
         $ins = $conn->prepare("INSERT INTO payment_date_records (loan_id, PaymentDate, Amount) VALUES (?, ?, ?)");
-        $ins->bind_param("isd", $loan_id, $payment_date, $amount);
-        $ins->execute();
+        if (!$ins) {
+            $bulk_messages[] = "<div class='alert alert-danger'>Error preparing payment record for " . htmlspecialchars($mobile) . ": " . htmlspecialchars($conn->error) . "</div>";
+        } else {
+            $ins->bind_param("isd", $loan_id, $payment_date, $amount);
+            if (!$ins->execute()) {
+                $bulk_messages[] = "<div class='alert alert-danger'>Error saving payment record for " . htmlspecialchars($mobile) . ": " . htmlspecialchars($ins->error) . "</div>";
+            } else {
+                $bulk_messages[] = "<div class='alert alert-info'>Payment record saved for " . htmlspecialchars($mobile) . ".</div>";
+            }
+            $ins->close();
+        }
 
-        $bulk_messages[] = sendPaymentNotificationEmail($loan_id, $amount, $conn);
+        // Send combined notification+record to loan officer
+        $bulk_messages[] = sendCombinedStaffNotification($loan_id, $amount, $conn);
+        // Also send client receipt email
+        $bulk_messages[] = sendPaymentRecordToClient($loan_id, $amount, $conn);
     }
 
     $message = implode('', $bulk_messages);
@@ -150,8 +511,16 @@ function distributeRepayment($loan_id, $amount_paid, $conn, $payment_date) {
     $sql = "SELECT * FROM repayments WHERE loan_id = ? AND COALESCE(paid, 0) < amount ORDER BY repayment_date ASC";
     
     $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        return "<div class='alert alert-danger text-center'>Error preparing repayment query: " . htmlspecialchars($conn->error) . "</div>";
+    }
+    
     $stmt->bind_param("i", $loan_id);
-    $stmt->execute();
+    if (!$stmt->execute()) {
+        $stmt->close();
+        return "<div class='alert alert-danger text-center'>Error executing repayment query: " . htmlspecialchars($stmt->error) . "</div>";
+    }
+    
     $result = $stmt->get_result();
     $total_distributed = 0;
 
@@ -189,18 +558,32 @@ function distributeRepayment($loan_id, $amount_paid, $conn, $payment_date) {
         // Update the installment with the new paid amount
         $update_sql = "UPDATE repayments SET paid = ?, repaid_date = ? WHERE id = ?";
         $update_stmt = $conn->prepare($update_sql);
-        $update_stmt->bind_param("dsi", $new_amount_paid, $payment_date, $installment_id);
-        $update_stmt->execute();
+        if ($update_stmt) {
+            $update_stmt->bind_param("dsi", $new_amount_paid, $payment_date, $installment_id);
+            $update_stmt->execute();
+            $update_stmt->close();
+        }
         
         $total_distributed += $applied_amount;
     }
+    
+    $stmt->close();
 
     // Fetch the updated outstanding loan balance
     $outstanding_sql = "SELECT SUM(amount - COALESCE(paid, 0)) AS outstanding_balance FROM repayments WHERE loan_id = ?";
     $outstanding_stmt = $conn->prepare($outstanding_sql);
+    if (!$outstanding_stmt) {
+        return "<div class='alert alert-danger text-center'>Error preparing balance query: " . htmlspecialchars($conn->error) . "</div>";
+    }
+    
     $outstanding_stmt->bind_param("i", $loan_id);
-    $outstanding_stmt->execute();
+    if (!$outstanding_stmt->execute()) {
+        $outstanding_stmt->close();
+        return "<div class='alert alert-danger text-center'>Error executing balance query: " . htmlspecialchars($outstanding_stmt->error) . "</div>";
+    }
+    
     $outstanding_balance = $outstanding_stmt->get_result()->fetch_assoc()['outstanding_balance'] ?? 0;
+    $outstanding_stmt->close();
 
     if ($total_distributed > 0) {
         $clientLabel = $borrowerName !== '' ? htmlspecialchars($borrowerName) : 'Client';
@@ -225,6 +608,73 @@ function getLoanNotificationDetails($loan_id, $conn) {
     return $stmt->get_result()->fetch_assoc();
 }
 
+function getLoanTermsForEmail($loan_id, $conn) {
+    $sql = "SELECT 
+        lp.name AS loan_product_name,
+        la.loan_product,
+        la.principal,
+        la.total_amount,
+        la.repayment_cycle,
+        la.number_of_repayments,
+        la.loan_release_date,
+        la.loan_duration,
+        la.loan_duration_unit,
+        la.loan_status
+    FROM loan_applications la
+    LEFT JOIN loan_products lp ON la.loan_product = lp.id
+    WHERE la.id = ?";
+
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        return [];
+    }
+
+    $stmt->bind_param('i', $loan_id);
+    if (!$stmt->execute()) {
+        $stmt->close();
+        return [];
+    }
+
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if (!$row) {
+        return [];
+    }
+
+    $loanReleaseDate = $row['loan_release_date'] ?? null;
+    $loanDuration = isset($row['loan_duration']) ? (int) $row['loan_duration'] : 0;
+    $loanDurationUnit = normalizeDurationUnit($row['loan_duration_unit'] ?? 'months');
+    $repaymentCycle = $row['repayment_cycle'] ?? 'once';
+    
+    // First, try to get the maturity date from the actual repayments table (last repayment date)
+    $maturityStmt = $conn->prepare("SELECT MAX(repayment_date) AS projected_maturity_date FROM repayments WHERE loan_id = ?");
+    $maturityStmt->bind_param('i', $loan_id);
+    $maturityStmt->execute();
+    $maturityResult = $maturityStmt->get_result()->fetch_assoc();
+    $maturityStmt->close();
+    
+    $projectedMaturityDate = null;
+    if (!empty($maturityResult['projected_maturity_date'])) {
+        $projectedMaturityDate = $maturityResult['projected_maturity_date'];
+    } else {
+        // Fall back to calculating from schedule if no repayments exist
+        $calcMaturityDate = getProjectedMaturityDate($loanReleaseDate, $loanDuration, $loanDurationUnit, $repaymentCycle);
+        $projectedMaturityDate = $calcMaturityDate ? $calcMaturityDate->format('Y-m-d') : null;
+        
+        // Further fallback to duration-based calculation
+        if (!$projectedMaturityDate) {
+            $fallbackMaturityDate = getMaturityDate($loanReleaseDate, $loanDuration, $loanDurationUnit);
+            $projectedMaturityDate = $fallbackMaturityDate ? $fallbackMaturityDate->format('Y-m-d') : null;
+        }
+    }
+
+    $row['loan_duration_unit'] = $loanDurationUnit;
+    $row['projected_maturity_date'] = $projectedMaturityDate;
+
+    return $row;
+}
+
 function getLoanBalanceSummary($loan_id, $conn) {
     $sql = "SELECT 
                 COALESCE(SUM(amount - COALESCE(paid, 0)), 0) AS outstanding_balance,
@@ -238,80 +688,86 @@ function getLoanBalanceSummary($loan_id, $conn) {
 }
 
 function getLoanOfficerPortfolioMetrics($officerEmail, $conn) {
-    // Aggregate per-loan totals using subqueries, then compute officer-level aggregates.
-    $sql1 = "SELECT 
-                COALESCE(SUM(GREATEST(la.total_amount - COALESCE(rep.total_paid, 0), 0)), 0) AS loan_book,
-                COALESCE(SUM(COALESCE(overdue.loan_overdue, 0)), 0) AS overdue_balance,
-                COALESCE(SUM(COALESCE(rep.total_amount, 0) - COALESCE(rep.total_paid, 0)), 0) AS total_dues
-            FROM loan_applications la
-            INNER JOIN borrowers b ON la.borrower = b.id
-            LEFT JOIN (
-                SELECT loan_id, SUM(amount) AS total_amount, SUM(paid) AS total_paid
-                FROM repayments
-                GROUP BY loan_id
-            ) rep ON la.id = rep.loan_id
-            LEFT JOIN (
-                SELECT loan_id, SUM(GREATEST(amount - COALESCE(paid, 0), 0)) AS loan_overdue
-                FROM repayments
-                WHERE repayment_date < CURDATE()
-                GROUP BY loan_id
-            ) overdue ON la.id = overdue.loan_id
-            WHERE b.loan_officer = ?";
-
-    $stmt1 = $conn->prepare($sql1);
-    if (!$stmt1) {
+    $officerEmail = trim((string) $officerEmail);
+    if ($officerEmail === '') {
         return ['loan_book' => 0.0, 'overdue_balance' => 0.0, 'par' => 0.0, 'total_clients' => 0, 'clients_in_arrears' => 0, 'total_dues' => 0.0];
     }
-    $stmt1->bind_param('s', $officerEmail);
-    $stmt1->execute();
-    $metrics = $stmt1->get_result()->fetch_assoc();
-    $stmt1->close();
 
-    $loanBook = (float) ($metrics['loan_book'] ?? 0);
-    $overdueBalance = (float) ($metrics['overdue_balance'] ?? 0);
-    $totalDues = (float) ($metrics['total_dues'] ?? 0);
+    $borrowerStmt = $conn->prepare("SELECT id FROM borrowers WHERE loan_officer = ?");
+    if (!$borrowerStmt) {
+        return ['loan_book' => 0.0, 'overdue_balance' => 0.0, 'par' => 0.0, 'total_clients' => 0, 'clients_in_arrears' => 0, 'total_dues' => 0.0];
+    }
 
-    // Total clients assigned to this officer with active loans and positive outstanding balance
-    $sql2 = "SELECT COUNT(DISTINCT la.borrower) AS total_clients
-             FROM loan_applications la
-             INNER JOIN borrowers b ON la.borrower = b.id
-             LEFT JOIN (
-                 SELECT loan_id, SUM(paid) AS total_paid
-                 FROM repayments
-                 GROUP BY loan_id
-             ) rep ON la.id = rep.loan_id
-             WHERE b.loan_officer = ?
-               AND (la.loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(la.loan_status, ''))) LIKE '%roll%')
-               AND (la.total_amount - COALESCE(rep.total_paid, 0)) > 0";
-    $stmt2 = $conn->prepare($sql2);
+    $borrowerStmt->bind_param('s', $officerEmail);
+    $borrowerStmt->execute();
+    $borrowerResult = $borrowerStmt->get_result();
+
+    $loanBook = 0.0;
+    $overdueBalance = 0.0;
     $totalClients = 0;
-    if ($stmt2) {
-        $stmt2->bind_param('s', $officerEmail);
-        $stmt2->execute();
-        $totalClients = (int) ($stmt2->get_result()->fetch_assoc()['total_clients'] ?? 0);
-        $stmt2->close();
-    }
-
-    // Clients in arrears (distinct borrowers with any overdue amount)
-    $sql3 = "SELECT COUNT(DISTINCT la.borrower) AS clients_in_arrears
-             FROM loan_applications la
-             INNER JOIN borrowers b ON la.borrower = b.id
-             INNER JOIN (
-                 SELECT loan_id, SUM(GREATEST(amount - COALESCE(paid, 0), 0)) AS loan_overdue
-                 FROM repayments
-                 WHERE repayment_date < CURDATE()
-                 GROUP BY loan_id
-             ) overdue ON la.id = overdue.loan_id
-             WHERE b.loan_officer = ? AND overdue.loan_overdue > 0";
-
-    $stmt3 = $conn->prepare($sql3);
     $clientsInArrears = 0;
-    if ($stmt3) {
-        $stmt3->bind_param('s', $officerEmail);
-        $stmt3->execute();
-        $clientsInArrears = (int) ($stmt3->get_result()->fetch_assoc()['clients_in_arrears'] ?? 0);
-        $stmt3->close();
+
+    while ($borrower = $borrowerResult->fetch_assoc()) {
+        $borrowerId = (int) ($borrower['id'] ?? 0);
+        if ($borrowerId <= 0) {
+            continue;
+        }
+
+        $loanStmt = $conn->prepare("SELECT la.id, la.total_amount, COALESCE(SUM(r.paid), 0) AS total_paid
+            FROM loan_applications la
+            LEFT JOIN repayments r ON r.loan_id = la.id
+            WHERE la.borrower = ? AND la.loan_status = 'approved'
+            GROUP BY la.id, la.total_amount");
+        if (!$loanStmt) {
+            continue;
+        }
+
+        $loanStmt->bind_param('i', $borrowerId);
+        $loanStmt->execute();
+        $loanRows = $loanStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $loanStmt->close();
+
+        $borrowerOutstanding = 0.0;
+        foreach ($loanRows as $loan) {
+            $totalAmount = (float) ($loan['total_amount'] ?? 0);
+            $totalPaid = (float) ($loan['total_paid'] ?? 0);
+            $borrowerOutstanding += max(0.0, $totalAmount - $totalPaid);
+        }
+
+        if ($borrowerOutstanding > 0) {
+            $totalClients++;
+        }
+
+        $loanBook += $borrowerOutstanding;
+
+        $arrearsStmt = $conn->prepare("SELECT GREATEST(
+                COALESCE(SUM(CASE
+                    WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0)
+                    ELSE 0
+                END), 0)
+                - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0),
+                0
+            ) AS total_overdue
+            FROM borrowers
+            LEFT JOIN loan_applications ON borrowers.id = loan_applications.borrower
+            LEFT JOIN repayments ON loan_applications.id = repayments.loan_id
+            WHERE borrowers.id = ? AND loan_applications.loan_status = 'approved'
+            GROUP BY borrowers.id");
+        if ($arrearsStmt) {
+            $arrearsStmt->bind_param('i', $borrowerId);
+            $arrearsStmt->execute();
+            $arrearsRow = $arrearsStmt->get_result()->fetch_assoc();
+            $arrearsStmt->close();
+            $borrowerOverdue = (float) ($arrearsRow['total_overdue'] ?? 0.0);
+            $overdueBalance += $borrowerOverdue;
+
+            if ($borrowerOutstanding > 0 && $borrowerOverdue > 0) {
+                $clientsInArrears++;
+            }
+        }
     }
+
+    $borrowerStmt->close();
 
     $par = $loanBook > 0 ? ($overdueBalance / $loanBook) * 100 : 0;
 
@@ -321,7 +777,7 @@ function getLoanOfficerPortfolioMetrics($officerEmail, $conn) {
         'par' => $par,
         'total_clients' => $totalClients,
         'clients_in_arrears' => $clientsInArrears,
-        'total_dues' => $totalDues,
+        'total_dues' => 0.0,
     ];
 }
 
@@ -394,7 +850,7 @@ function sendPaymentNotificationEmail($loan_id, $amount_paid, $conn) {
               . '<p><strong>Clients in arrears:</strong> ' . $clientsInArrears . '</p>'
               . '<p><strong>Total dues (today):</strong> KSH ' . $todayDues . '</p>'
               . '<p><strong>Portfolio at Risk (PAR):</strong> ' . $parPercentage . '%</p>'
-              . '<p>Thank you,<br>Inua Premium Services</p>';
+              . '<p>Thank you,<br>' . htmlspecialchars($officerDisplay) . (!empty($officerEmail) ? '<br>' . htmlspecialchars($officerEmail) : '') . '</p>';
 
         $emailCredentials = getEmailAccount();
         if (!$emailCredentials || empty($emailCredentials['sender_email']) || empty($emailCredentials['sender_app_password'])) {
@@ -436,6 +892,375 @@ function sendPaymentNotificationEmail($loan_id, $amount_paid, $conn) {
             $errorInfo = isset($mail) ? $mail->ErrorInfo : $e->getMessage();
             return "<div class='alert alert-warning text-center'>Payment saved successfully. Notification email failed or timed out: " . htmlspecialchars($errorInfo) . "</div>";
         }
+}
+
+function sendPaymentRecordToClient($loan_id, $amount_paid, $conn) {
+    // Get borrower contact and loan details
+    $sql = "SELECT b.full_name AS borrower_name, COALESCE(b.email, '') AS borrower_email, b.mobile AS borrower_mobile, la.loan_product, la.id AS loan_id
+            FROM loan_applications la
+            JOIN borrowers b ON la.borrower = b.id
+            WHERE la.id = ? LIMIT 1";
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) return "";
+    $stmt->bind_param('i', $loan_id);
+    $stmt->execute();
+    $details = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    $borrowerEmail = trim($details['borrower_email'] ?? '');
+    if (empty($borrowerEmail) || !filter_var($borrowerEmail, FILTER_VALIDATE_EMAIL)) {
+        // No valid borrower email to send to — return informative warning
+        return "<div class='alert alert-warning text-center'>Payment saved but borrower has no valid email; receipt not sent to client.</div>";
+    }
+
+    $borrowerName = $details['borrower_name'] ?? 'Client';
+
+    // Fetch updated loan balances
+    $summary = getLoanBalanceSummary($loan_id, $conn);
+    $outstanding = number_format($summary['outstanding_balance'] ?? 0, 2);
+    $overdue = number_format($summary['overdue_balance'] ?? 0, 2);
+
+    // Fetch loan terms (best-effort)
+    $loanTerms = getLoanTermsForEmail($loan_id, $conn);
+
+    // Optional: fetch recent payment records for this loan
+    $payments = [];
+    $ps = $conn->prepare("SELECT id, PaymentDate, Amount FROM payment_date_records WHERE loan_id = ? ORDER BY PaymentDate ASC, id ASC");
+    if ($ps) {
+        $ps->bind_param('i', $loan_id);
+        $ps->execute();
+        $payments = $ps->get_result()->fetch_all(MYSQLI_ASSOC);
+        $ps->close();
+    }
+
+    $emailCredentials = getEmailAccount();
+    if (!$emailCredentials || empty($emailCredentials['sender_email']) || empty($emailCredentials['sender_app_password'])) {
+        return "";
+    }
+
+    $logoPath = __DIR__ . '/../assets/img/logo.png';
+
+    // Build HTML body similar to payslip in view_payroll.php
+    $body = '<html><body style="margin:0;padding:0;font-family:Inter,Arial,sans-serif;background:#eaf5ff;color:#0f172a;">';
+    $body .= '<table width="100%" cellpadding="0" cellspacing="0" style="background:#eaf5ff;padding:24px;">';
+    $body .= '<tr><td align="center">';
+    $body .= '<table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:24px;overflow:hidden;box-shadow:0 28px 80px rgba(14,88,161,0.15);border:1px solid #dbeafe;">';
+    $body .= '<tr><td style="padding:28px 32px;background:#0ea5e9;color:#ffffff;text-align:center;">';
+    if (file_exists($logoPath)) {
+        $body .= '<img src="cid:company_logo" alt="Company Logo" width="96" style="display:block;margin:0 auto 18px;">';
+    }
+    $body .= '<h1 style="margin:0;font-size:28px;font-weight:700;letter-spacing:-0.04em;">Inua Premium Services</h1>';
+    $body .= '<p style="margin:10px 0 0;font-size:15px;color:#dbeafe;">Payment Receipt</p>';
+    $body .= '</td></tr>';
+    $body .= '<tr><td style="padding:0 32px 16px;">';
+    $body .= '<p style="margin:0;font-size:14px;color:#475569;">Dear ' . htmlspecialchars($borrowerName) . ',</p>';
+    $body .= '<p style="margin:8px 0 0;font-size:14px;color:#475569;">This email confirms receipt of your payment.</p>';
+    $body .= '</td></tr>';
+    $body .= '<tr><td style="padding:28px 32px 16px;">';
+    $body .= '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">';
+    $body .= '<tr><td style="padding:8px 0;font-size:14px;color:#111827;"><strong>Loan ID:</strong> ' . htmlspecialchars($loan_id) . '</td><td style="padding:8px 0;font-size:14px;color:#111827;text-align:right;"><strong>Amount Paid:</strong> KES ' . number_format((float)$amount_paid, 2) . '</td></tr>';
+    $body .= '<tr><td style="padding:8px 0;font-size:14px;color:#111827;"><strong>Outstanding Balance:</strong> KES ' . $outstanding . '</td><td style="padding:8px 0;font-size:14px;color:#111827;text-align:right;"><strong>Overdue:</strong> KES ' . $overdue . '</td></tr>';
+    $body .= '</table>';
+
+    // Loan terms section
+    if (!empty($loanTerms)) {
+        $prod = htmlspecialchars($loanTerms['loan_product_name'] ?? $loanTerms['loan_product'] ?? '');
+        $principal = isset($loanTerms['principal']) ? number_format((float)$loanTerms['principal'], 2) : '';
+        $totalAmt = isset($loanTerms['total_amount']) ? number_format((float)$loanTerms['total_amount'], 2) : '';
+        $numRepay = isset($loanTerms['number_of_repayments']) ? intval($loanTerms['number_of_repayments']) : 0;
+        $duration = isset($loanTerms['loan_duration']) ? intval($loanTerms['loan_duration']) : 0;
+        $durationUnit = $loanTerms['loan_duration_unit'] ?? '';
+        $release = !empty($loanTerms['loan_release_date']) ? htmlspecialchars(date('d/m/Y', strtotime($loanTerms['loan_release_date']))) : '';
+        $maturity = !empty($loanTerms['projected_maturity_date']) ? htmlspecialchars(date('d/m/Y', strtotime($loanTerms['projected_maturity_date']))) : '';
+        $status = htmlspecialchars($loanTerms['loan_status'] ?? '');
+        $durationDisplay = formatLoanDurationDisplay($duration, $durationUnit);
+
+        // Calculate total paid from actual payment records
+        $totalPaidAmount = 0;
+        foreach ($payments as $p) {
+            $totalPaidAmount += (float)$p['Amount'];
+        }
+        $totalPaid = $totalPaidAmount > 0 ? number_format($totalPaidAmount, 2) : '';
+        $totalBalance = number_format(max(0, (float)($loanTerms['total_amount'] ?? 0) - $totalPaidAmount), 2);
+        $installmentAmount = ($numRepay > 0) ? number_format((float)($loanTerms['total_amount'] ?? 0) / $numRepay, 2) : '';
+
+        // Fetch the assigned loan officer's portfolio metrics for footer
+        $officerInfo = getLoanNotificationDetails($loan_id, $conn);
+        $officerEmail = trim($officerInfo['officer_email'] ?? '');
+        $portfolioMetrics = getLoanOfficerPortfolioMetrics($officerEmail, $conn);
+        $lb = number_format($portfolioMetrics['loan_book'] ?? 0, 2);
+        $par = number_format($portfolioMetrics['par'] ?? 0, 2);
+        $noc = intval($portfolioMetrics['total_clients'] ?? 0);
+        $nocA = intval($portfolioMetrics['clients_in_arrears'] ?? 0);
+
+        $body .= '<div style="margin-top:18px;">';
+        $body .= '<h4 style="margin:0 0 8px;font-size:16px;color:#0f172a;">Loan Terms</h4>';
+        $body .= '<table width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;border-radius:8px;">';
+        $body .= '<tr style="background:#f8fafc;color:#0f172a;font-weight:700;"><td><strong>Product</strong></td><td align="right"><strong>' . $prod . '</strong></td></tr>';
+        if ($principal) {
+            $body .= '<tr><td>Principal Amount</td><td align="right">KES ' . $principal . '</td></tr>';
+        }
+        $body .= '<tr><td>Total Amount</td><td align="right">KES ' . $totalAmt . '</td></tr>';
+        if ($installmentAmount) {
+            $body .= '<tr><td>Installment Amount</td><td align="right">KES ' . $installmentAmount . '</td></tr>';
+        }
+        if ($totalPaid) {
+            $body .= '<tr><td>Total Paid</td><td align="right">KES ' . $totalPaid . '</td></tr>';
+        }
+        $body .= '<tr><td>Total Balance</td><td align="right">KES ' . $totalBalance . '</td></tr>';
+        if ($status) {
+            $statusDisplay = ucfirst($status);
+            $body .= '<tr><td>Status</td><td align="right"><strong>' . $statusDisplay . '</strong></td></tr>';
+        }
+        $body .= '</table></div>';
+
+        $summaryBlock = [];
+        if ($release) {
+            $summaryBlock[] = '<p style="margin:0 0 6px;font-size:14px;color:#0f172a;"><strong>Release Date:</strong> ' . $release . '</p>';
+        }
+        if ($maturity) {
+            $summaryBlock[] = '<p style="margin:0;font-size:14px;color:#0f172a;"><strong>Maturity Date:</strong> ' . $maturity . '</p>';
+        }
+
+        if (!empty($summaryBlock)) {
+            $body .= '<div style="margin-top:18px;padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#f8fafc;">';
+            $body .= implode('', $summaryBlock);
+            $body .= '</div>';
+        }
+
+        $body .= '<div style="margin-top:12px;padding:8px 10px;background:#f0f4f8;border:1px solid #e2e8f0;border-radius:8px;font-style:italic;font-size:13px;color:#475569;">LB: KES ' . $lb . ' | PAR: ' . $par . '% | NoC: ' . $noc . ' | NoC-A: ' . $nocA . '</div>';
+    }
+
+    if (!empty($payments)) {
+        $body .= '<div style="margin-top:18px;">';
+        $body .= '<h4 style="margin:0 0 8px;font-size:16px;color:#0f172a;">Recent Payments</h4>';
+        $body .= '<table width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;border-radius:8px;">';
+        $body .= '<tr style="background:#f1f5f9;color:#0f172a;font-weight:700;"><th align="left">Date</th><th align="right">Amount (KES)</th></tr>';
+        foreach ($payments as $p) {
+            $d = htmlspecialchars(date('d/m/Y', strtotime($p['PaymentDate'])));
+            $a = number_format((float)$p['Amount'], 2);
+            $body .= '<tr><td>' . $d . '</td><td align="right">' . $a . '</td></tr>';
+        }
+        $body .= '</table>';
+        $body .= '</div>';
+    }
+
+    if (empty($footerMetricsAppended)) {
+        $body .= '<div style="margin-top:12px;padding:8px 10px;background:#f0f4f8;border:1px solid #e2e8f0;border-radius:8px;font-style:italic;font-size:13px;color:#475569;">LB: KES ' . $lb . ' | PAR: ' . $par . '% | NoC: ' . $noc . ' | NoC-A: ' . $nocA . '</div>';
+        $footerMetricsAppended = true;
+    }
+    $body .= '</td></tr></table></td></tr></table></body></html>';
+
+    // Send email
+    try {
+        $mail = new PHPMailer(true);
+        $mail->SMTPOptions = [
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false,
+                'allow_self_signed' => true,
+            ],
+        ];
+        $mail->SMTPDebug = 0;
+        $mail->isSMTP();
+        $mail->Host = 'smtp.gmail.com';
+        $mail->SMTPAuth = true;
+        $mail->Username = $emailCredentials['sender_email'];
+        $mail->Password = $emailCredentials['sender_app_password'];
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = 587;
+        $mail->CharSet = 'UTF-8';
+        $mail->setFrom($emailCredentials['sender_email'], 'Inua Premium Services');
+        $mail->addAddress($borrowerEmail, $borrowerName);
+        $mail->isHTML(true);
+        $mail->Subject = 'Payment Receipt - Inua Premium Services';
+        if (file_exists($logoPath)) {
+            $mail->addEmbeddedImage($logoPath, 'company_logo');
+        }
+        $mail->Body = $body;
+        $mail->AltBody = strip_tags(str_replace(['<br>', '<br/>', '<p>', '</p>'], "\n", $body));
+        $mail->send();
+        return "<div class='alert alert-success text-center'>Payment receipt sent to client: " . htmlspecialchars($borrowerEmail) . "</div>";
+    } catch (Exception $e) {
+        return "<div class='alert alert-warning text-center'>Payment saved but failed sending receipt to client: " . htmlspecialchars($e->getMessage()) . "</div>";
+    }
+}
+
+function sendPaymentRecordToStaff($loan_id, $amount_paid, $conn) {
+    $details = getLoanNotificationDetails($loan_id, $conn);
+    if (!$details) return "<div class='alert alert-warning text-center'>Payment saved but staff details not found for sending payment record.</div>";
+
+    $officerEmail = trim($details['officer_email'] ?? '');
+    $officerName = !empty($details['loan_officer_name']) ? $details['loan_officer_name'] : $officerEmail;
+    $senderEmail = getConfiguredSenderEmail();
+    if (empty($officerEmail) || !filter_var($officerEmail, FILTER_VALIDATE_EMAIL)) {
+        $officerEmail = $senderEmail;
+    }
+
+    $summary = getLoanBalanceSummary($loan_id, $conn);
+    $outstanding = number_format($summary['outstanding_balance'] ?? 0, 2);
+    $overdue = number_format($summary['overdue_balance'] ?? 0, 2);
+
+    // Fetch loan terms (best-effort)
+    $loanTerms = getLoanTermsForEmail($loan_id, $conn);
+
+    $payments = [];
+    $ps = $conn->prepare("SELECT id, PaymentDate, Amount FROM payment_date_records WHERE loan_id = ? ORDER BY PaymentDate ASC, id ASC");
+    if ($ps) {
+        $ps->bind_param('i', $loan_id);
+        $ps->execute();
+        $payments = $ps->get_result()->fetch_all(MYSQLI_ASSOC);
+        $ps->close();
+    }
+
+    $emailCredentials = getEmailAccount();
+    if (!$emailCredentials || empty($emailCredentials['sender_email']) || empty($emailCredentials['sender_app_password'])) {
+        return "<div class='alert alert-warning text-center'>Payment saved but notification email was not sent because email settings are not configured.</div>";
+    }
+
+    $logoPath = __DIR__ . '/../assets/img/logo.png';
+
+    $body = '<html><body style="margin:0;padding:0;font-family:Inter,Arial,sans-serif;background:#eaf5ff;color:#0f172a;">';
+    $body .= '<table width="100%" cellpadding="0" cellspacing="0" style="background:#eaf5ff;padding:24px;">';
+    $body .= '<tr><td align="center">';
+    $body .= '<table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:24px;overflow:hidden;box-shadow:0 28px 80px rgba(14,88,161,0.15);border:1px solid #dbeafe;">';
+    $body .= '<tr><td style="padding:28px 32px;background:#0ea5e9;color:#ffffff;text-align:center;">';
+    if (file_exists($logoPath)) {
+        $body .= '<img src="cid:company_logo" alt="Company Logo" width="96" style="display:block;margin:0 auto 18px;">';
+    }
+    $body .= '<h1 style="margin:0;font-size:28px;font-weight:700;letter-spacing:-0.04em;">Inua Premium Services</h1>';
+    $body .= '<p style="margin:10px 0 0;font-size:15px;color:#dbeafe;">Payment Record</p>';
+    $body .= '</td></tr>';
+    $body .= '<tr><td style="padding:0 32px 16px;">';
+    $body .= '<p style="margin:0;font-size:14px;color:#475569;">Dear ' . htmlspecialchars($officerName) . ',</p>';
+    $body .= '<p style="margin:8px 0 0;font-size:14px;color:#475569;">A payment has been received for Loan ID ' . htmlspecialchars($loan_id) . '.</p>';
+    $body .= '</td></tr>';
+    $body .= '<tr><td style="padding:28px 32px 16px;">';
+    $body .= '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">';
+    $body .= '<tr><td style="padding:8px 0;font-size:14px;color:#111827;"><strong>Loan ID:</strong> ' . htmlspecialchars($loan_id) . '</td><td style="padding:8px 0;font-size:14px;color:#111827;text-align:right;"><strong>Amount Paid:</strong> KES ' . number_format((float)$amount_paid, 2) . '</td></tr>';
+    $body .= '<tr><td style="padding:8px 0;font-size:14px;color:#111827;"><strong>Outstanding Balance:</strong> KES ' . $outstanding . '</td><td style="padding:8px 0;font-size:14px;color:#111827;text-align:right;"><strong>Overdue:</strong> KES ' . $overdue . '</td></tr>';
+    $body .= '</table>';
+
+    // Loan terms section for staff
+    if (!empty($loanTerms)) {
+        $prod = htmlspecialchars($loanTerms['loan_product_name'] ?? $loanTerms['loan_product'] ?? '');
+        $principal = isset($loanTerms['principal']) ? number_format((float)$loanTerms['principal'], 2) : '';
+        $totalAmt = isset($loanTerms['total_amount']) ? number_format((float)$loanTerms['total_amount'], 2) : '';
+        $numRepay = isset($loanTerms['number_of_repayments']) ? intval($loanTerms['number_of_repayments']) : 0;
+        $duration = isset($loanTerms['loan_duration']) ? intval($loanTerms['loan_duration']) : 0;
+        $durationUnit = $loanTerms['loan_duration_unit'] ?? '';
+        $release = !empty($loanTerms['loan_release_date']) ? htmlspecialchars(date('d/m/Y', strtotime($loanTerms['loan_release_date']))) : '';
+        $maturity = !empty($loanTerms['projected_maturity_date']) ? htmlspecialchars(date('d/m/Y', strtotime($loanTerms['projected_maturity_date']))) : '';
+        $status = htmlspecialchars($loanTerms['loan_status'] ?? '');
+
+        // Calculate total paid from actual payment records
+        $totalPaidAmount = 0;
+        foreach ($payments as $p) {
+            $totalPaidAmount += (float)$p['Amount'];
+        }
+        $totalPaid = $totalPaidAmount > 0 ? number_format($totalPaidAmount, 2) : '';
+        $totalBalance = number_format(max(0, (float)($loanTerms['total_amount'] ?? 0) - $totalPaidAmount), 2);
+        $installmentAmount = ($numRepay > 0) ? number_format((float)($loanTerms['total_amount'] ?? 0) / $numRepay, 2) : '';
+
+        // Fetch the assigned loan officer's portfolio metrics for footer
+        $officerDetails = getLoanNotificationDetails($loan_id, $conn);
+        $officerEmail = trim($officerDetails['officer_email'] ?? '');
+        $portfolioMetrics = getLoanOfficerPortfolioMetrics($officerEmail, $conn);
+        $lb = number_format($portfolioMetrics['loan_book'] ?? 0, 2);
+        $par = number_format($portfolioMetrics['par'] ?? 0, 2);
+        $noc = intval($portfolioMetrics['total_clients'] ?? 0);
+        $nocA = intval($portfolioMetrics['clients_in_arrears'] ?? 0);
+
+        $body .= '<div style="margin-top:18px;">';
+        $body .= '<h4 style="margin:0 0 8px;font-size:16px;color:#0f172a;">Loan Terms</h4>';
+        $body .= '<table width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;border-radius:8px;">';
+        $body .= '<tr style="background:#f8fafc;color:#0f172a;font-weight:700;"><td><strong>Product</strong></td><td align="right"><strong>' . $prod . '</strong></td></tr>';
+        if ($principal) {
+            $body .= '<tr><td>Principal Amount</td><td align="right">KES ' . $principal . '</td></tr>';
+        }
+        $body .= '<tr><td>Total Amount</td><td align="right">KES ' . $totalAmt . '</td></tr>';
+        if ($installmentAmount) {
+            $body .= '<tr><td>Installment Amount</td><td align="right">KES ' . $installmentAmount . '</td></tr>';
+        }
+        if ($totalPaid) {
+            $body .= '<tr><td>Total Paid</td><td align="right">KES ' . $totalPaid . '</td></tr>';
+        }
+        $body .= '<tr><td>Total Balance</td><td align="right">KES ' . $totalBalance . '</td></tr>';
+        if ($status) {
+            $statusDisplay = ucfirst($status);
+            $body .= '<tr><td>Status</td><td align="right"><strong>' . $statusDisplay . '</strong></td></tr>';
+        }
+        $body .= '</table></div>';
+
+        $summaryBlock = [];
+        if ($release) {
+            $summaryBlock[] = '<p style="margin:0 0 6px;font-size:14px;color:#0f172a;"><strong>Release Date:</strong> ' . $release . '</p>';
+        }
+        if ($maturity) {
+            $summaryBlock[] = '<p style="margin:0;font-size:14px;color:#0f172a;"><strong>Maturity Date:</strong> ' . $maturity . '</p>';
+        }
+
+        if (!empty($summaryBlock)) {
+            $body .= '<div style="margin-top:18px;padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#f8fafc;">';
+            $body .= implode('', $summaryBlock);
+            $body .= '</div>';
+        }
+
+        $body .= '<div style="margin-top:12px;padding:8px 10px;background:#f0f4f8;border:1px solid #e2e8f0;border-radius:8px;font-style:italic;font-size:13px;color:#475569;">LB: KES ' . $lb . ' | PAR: ' . $par . '% | NoC: ' . $noc . ' | NoC-A: ' . $nocA . '</div>';
+    }
+
+    if (!empty($payments)) {
+        $body .= '<div style="margin-top:18px;">';
+        $body .= '<h4 style="margin:0 0 8px;font-size:16px;color:#0f172a;">Recent Payments</h4>';
+        $body .= '<table width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;border-radius:8px;">';
+        $body .= '<tr style="background:#f1f5f9;color:#0f172a;font-weight:700;"><th align="left">Date</th><th align="right">Amount (KES)</th></tr>';
+        foreach ($payments as $p) {
+            $d = htmlspecialchars(date('d/m/Y', strtotime($p['PaymentDate'])));
+            $a = number_format((float)$p['Amount'], 2);
+            $body .= '<tr><td>' . $d . '</td><td align="right">' . $a . '</td></tr>';
+        }
+        $body .= '</table>';
+        $body .= '</div>';
+    }
+
+    if (empty($footerMetricsAppended)) {
+        $body .= '<div style="margin-top:12px;padding:8px 10px;background:#f0f4f8;border:1px solid #e2e8f0;border-radius:8px;font-style:italic;font-size:13px;color:#475569;">LB: KES ' . $lb . ' | PAR: ' . $par . '% | NoC: ' . $noc . ' | NoC-A: ' . $nocA . '</div>';
+        $footerMetricsAppended = true;
+    }
+    $body .= '</td></tr></table></td></tr></table></body></html>';
+
+    try {
+        $mail = new PHPMailer(true);
+        $mail->SMTPOptions = [
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false,
+                'allow_self_signed' => true,
+            ],
+        ];
+        $mail->SMTPDebug = 0;
+        $mail->isSMTP();
+        $mail->Host = 'smtp.gmail.com';
+        $mail->SMTPAuth = true;
+        $mail->Username = $emailCredentials['sender_email'];
+        $mail->Password = $emailCredentials['sender_app_password'];
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = 587;
+        $mail->CharSet = 'UTF-8';
+        $mail->setFrom($emailCredentials['sender_email'], 'Inua Premium Services');
+        $mail->addAddress($officerEmail, $officerName);
+        $mail->isHTML(true);
+        $mail->Subject = 'Payment Record - Inua Premium Services';
+        if (file_exists($logoPath)) {
+            $mail->addEmbeddedImage($logoPath, 'company_logo');
+        }
+        $mail->Body = $body;
+        $mail->AltBody = strip_tags(str_replace(['<br>', '<br/>', '<p>', '</p>'], "\n", $body));
+        $mail->send();
+        return "<div class='alert alert-success text-center'>Payment record sent to staff: " . htmlspecialchars($officerEmail) . "</div>";
+    } catch (Exception $e) {
+        return "<div class='alert alert-warning text-center'>Payment saved but failed sending record to staff: " . htmlspecialchars($e->getMessage()) . "</div>";
+    }
 }
 ?>
 

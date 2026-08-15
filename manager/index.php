@@ -2,6 +2,15 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 include 'db.php';
+require_once __DIR__ . '/../includes/functions.php';
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+if (empty($_SESSION['email'])) {
+    header('Location: ../index.html');
+    exit();
+}
 
 // Fetch total overdue amount using same calculation as overdue_repayments.php (sum per-borrower amounts)
 $sql_total_overdue = "SELECT 
@@ -88,6 +97,7 @@ $sql_interest_details = "SELECT
     (l.total_amount - l.principal) AS interest,
     COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0) AS total_paid,
     (l.total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)) AS loan_balance,
+    GREATEST(0, (l.total_amount - ((0.06 * l.loan_duration * l.principal) + l.principal))) AS penalty_amount,
     l.loan_status
 FROM loan_applications l
 INNER JOIN borrowers b ON l.borrower = b.id
@@ -364,10 +374,7 @@ if (session_status() === PHP_SESSION_NONE) {
     </style>
 </head>
 <body>
-<?php 
-    include '../includes/functions.php';
-    include 'includes/header.php'; 
-?>
+<?php include 'includes/header.php'; ?>
 <div class="sidebar" id="sidebarWrapper">
     <?php include '../includes/sidebar.php'; ?>
 </div>
@@ -451,6 +458,7 @@ if (session_status() === PHP_SESSION_NONE) {
                         <th>Interest (KSH)</th>
                         <th>Total Paid (KSH)</th>
                         <th>Loan Balance (KSH)</th>
+                        <th>Penalties (KSH)</th>
                         <th>Status</th>
                     </tr>
                 </thead>
@@ -460,6 +468,10 @@ if (session_status() === PHP_SESSION_NONE) {
                             <?php
                                 $isRolledOver = preg_match('/roll/i', trim($row['loan_status'] ?? ''));
                                 $isCleared = !$isRolledOver && floatval($row['loan_balance']) <= 0;
+                                $penalty = floatval($row['penalty_amount'] ?? 0);
+                                if (!$isCleared) {
+                                    $penalty = 0;
+                                }
                                 $rowClass = $isRolledOver ? 'rolled-over-loan' : ($isCleared ? 'cleared-loan' : '');
                             ?>
                             <tr class="<?php echo $rowClass; ?>">
@@ -470,6 +482,7 @@ if (session_status() === PHP_SESSION_NONE) {
                                 <td><?php echo number_format($row['interest'], 2); ?></td>
                                 <td><?php echo number_format($row['total_paid'], 2); ?></td>
                                 <td><?php echo number_format($row['loan_balance'], 2); ?></td>
+                                <td><?php echo number_format($penalty, 2); ?></td>
                                 <td>
                                     <?php if ($isRolledOver): ?>
                                         <span class="rolled-over-badge">Rolled Over</span>
@@ -482,7 +495,7 @@ if (session_status() === PHP_SESSION_NONE) {
                             </tr>
                         <?php endwhile; ?>
                     <?php else: ?>
-                        <tr><td colspan="8" class="text-center">No loans found.</td></tr>
+                        <tr><td colspan="9" class="text-center">No loans found.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
