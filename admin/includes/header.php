@@ -1,11 +1,15 @@
 <?php
-// Start session only if not already started
-if (session_status() === PHP_SESSION_NONE) {
+// Start session only if not already started and no headers have been sent.
+if (session_status() === PHP_SESSION_NONE && !headers_sent()) {
     session_start();
 }
+
 if (!isset($_SESSION['email']) || empty($_SESSION['email'])) {
-    header("Location: ../index.html");
-    exit();
+    if (!headers_sent()) {
+        header("Location: ../index.html");
+        exit();
+    }
+    return;
 }
 // Include functions and database connection
 ?>

@@ -10,15 +10,6 @@ require_once __DIR__ . '/PHPMailer/src/Exception.php';
 require_once __DIR__ . '/PHPMailer/src/SMTP.php';
 require_once __DIR__ . '/TCPDF/tcpdf.php';
 
-// Create tables if not exist
-$conn->query("CREATE TABLE IF NOT EXISTS advance_templates (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    title VARCHAR(255) NOT NULL,
-    monthly_deduction DECIMAL(12,2) NOT NULL DEFAULT 0.00,
-    created_by INT DEFAULT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
-
 $conn->query("CREATE TABLE IF NOT EXISTS advances (
     id INT AUTO_INCREMENT PRIMARY KEY,
     loan_officer_id INT NOT NULL,
@@ -32,6 +23,25 @@ $conn->query("CREATE TABLE IF NOT EXISTS advances (
     recorded_by INT DEFAULT NULL,
     recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
+$conn->query("CREATE TABLE IF NOT EXISTS advance_templates (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    monthly_deduction DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    start_date DATE NOT NULL,
+    created_by INT DEFAULT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
+$templateAmountCheck = $conn->query("SHOW COLUMNS FROM advance_templates LIKE 'amount'");
+if ($templateAmountCheck && $templateAmountCheck->num_rows === 0) {
+    $conn->query("ALTER TABLE advance_templates ADD COLUMN amount DECIMAL(12,2) NOT NULL DEFAULT 0.00 AFTER title");
+}
+$templateStartDateCheck = $conn->query("SHOW COLUMNS FROM advance_templates LIKE 'start_date'");
+if ($templateStartDateCheck && $templateStartDateCheck->num_rows === 0) {
+    $conn->query("ALTER TABLE advance_templates ADD COLUMN start_date DATE NULL AFTER monthly_deduction");
+}
 
 $advanceDurationCheck = $conn->query("SHOW COLUMNS FROM advances LIKE 'duration_months'");
 if ($advanceDurationCheck && $advanceDurationCheck->num_rows === 0) {
@@ -151,11 +161,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Create template
     if (isset($_POST['create_template'])) {
         $title = trim($_POST['title']);
+        $amount = floatval($_POST['template_amount'] ?? 0);
         $monthly = floatval($_POST['monthly_deduction']);
+        $start_date = $_POST['template_start_date'] ?? date('Y-m-d');
         $created_by = $_SESSION['user_id'] ?? null;
 
-        $stmt = $conn->prepare("INSERT INTO advance_templates (title, monthly_deduction, created_by) VALUES (?, ?, ?)");
-        $stmt->bind_param('sdi', $title, $monthly, $created_by);
+        $stmt = $conn->prepare("INSERT INTO advance_templates (title, amount, monthly_deduction, start_date, created_by) VALUES (?, ?, ?, ?, ?)");
+        $stmt->bind_param('sddsi', $title, $amount, $monthly, $start_date, $created_by);
         if ($stmt->execute()) {
             $messages[] = 'Template created.';
         } else {
@@ -170,7 +182,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $template_id = !empty($_POST['template_id']) ? (int) $_POST['template_id'] : null;
         $amount = floatval($_POST['amount']);
         $monthly = floatval($_POST['monthly_deduction']);
-        $duration = max(1, min(36, (int) ($_POST['duration_months'] ?? 1)));
+        if ($amount > 0 && $monthly > 0) {
+            $duration = max(1, min(36, (int) ceil($amount / $monthly)));
+        } else {
+            $duration = 1;
+        }
         $start_date = $_POST['start_date'];
         $recorded_by = $_SESSION['user_id'] ?? null;
 
@@ -185,8 +201,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (empty($loan_officer_name)) {
             $messages[] = 'Loan officer not found.';
         } else {
-            if ($monthly <= 0 || $monthly * $duration > $amount) {
-                $monthly = round($amount / $duration, 2);
+            if ($monthly <= 0) {
+                $monthly = $amount;
+                $duration = 1;
             }
             $balance = $amount;
             $stmt = $conn->prepare("INSERT INTO advances (loan_officer_id, loan_officer_name, template_id, amount, balance, start_date, monthly_deduction, duration_months, recorded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -261,7 +278,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $template_id = !empty($_POST['template_id']) ? (int) $_POST['template_id'] : null;
         $amount = floatval($_POST['amount']);
         $monthly = floatval($_POST['monthly_deduction']);
-        $duration = max(1, min(36, (int) ($_POST['duration_months'] ?? 1)));
+        $duration = ($amount > 0 && $monthly > 0)
+            ? max(1, min(36, (int) ceil($amount / $monthly)))
+            : 1;
         $start_date = $_POST['start_date'];
         $recorded_by = $_SESSION['user_id'] ?? null;
 
@@ -495,26 +514,6 @@ $templates = [];
 $tres = $conn->query("SELECT * FROM advance_templates ORDER BY id DESC");
 if ($tres) $templates = $tres->fetch_all(MYSQLI_ASSOC);
 
-$advances = [];
-$ares = $conn->query("SELECT * FROM advances ORDER BY recorded_at DESC");
-if ($ares) $advances = $ares->fetch_all(MYSQLI_ASSOC);
-
-$repayments_map = [];
-$rres = $conn->query("SELECT * FROM advance_repayments ORDER BY recorded_at DESC");
-if ($rres) {
-    while ($r = $rres->fetch_assoc()) {
-        $repayments_map[$r['advance_id']][] = $r;
-    }
-}
-
-$schedule_map = [];
-$sres = $conn->query("SELECT * FROM advance_repayment_schedule ORDER BY due_date ASC");
-if ($sres) {
-    while ($s = $sres->fetch_assoc()) {
-        $schedule_map[$s['advance_id']][] = $s;
-    }
-}
-
 // Fetch loan officers
 $loan_officers = [];
 $lor = $conn->query("SELECT id, name FROM users WHERE role_id = 2");
@@ -534,7 +533,10 @@ if ($lor) {
 <div class="container mt-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h1 class="h3 mb-0">Advance Templates & Bookings</h1>
-        <a href="./index.php" class="btn btn-secondary btn-sm">Back to Home</a>
+        <div>
+            <a href="view_Advance.php" class="btn btn-info btn-sm">View Booked Advances</a>
+            <a href="./index.php" class="btn btn-secondary btn-sm">Back to Home</a>
+        </div>
     </div>
 
     <?php foreach ($messages as $m): ?>
@@ -634,7 +636,7 @@ if ($lor) {
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Duration (months)</label>
-                            <input id="duration_months" name="duration_months" class="form-control" type="number" min="1" max="36" value="6" required>
+                            <input id="duration_months" name="duration_months" class="form-control" type="number" min="1" max="36" value="1" readonly required>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Start Date</label>
@@ -650,112 +652,18 @@ if ($lor) {
                 </div>
             </div>
 
-            <div class="card shadow-sm">
-                <div class="card-header bg-info text-white">
-                    <h5 class="mb-0">Active Advances</h5>
-                </div>
-                <div class="card-body p-0">
-                    <?php if (count($advances) > 0): ?>
-                        <div class="table-responsive">
-                            <table class="table table-hover mb-0">
-                                <thead>
-                                    <tr>
-                                        <th>Officer</th>
-                                        <th>Amount</th>
-                                        <th>Balance</th>
-                                        <th>Start</th>
-                                        <th>Monthly</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($advances as $a): ?>
-                                        <tr>
-                                            <td><?php echo htmlspecialchars($a['loan_officer_name']); ?></td>
-                                            <td><?php echo number_format($a['amount'],2); ?></td>
-                                            <td><?php echo number_format($a['balance'],2); ?></td>
-                                            <td><?php echo date('d-m-Y', strtotime($a['start_date'])); ?></td>
-                                            <td><?php echo number_format($a['monthly_deduction'],2); ?></td>
-                                            <td>
-                                                <form method="POST" style="display:inline-block; margin-right:4px;">
-                                                    <input type="hidden" name="advance_id" value="<?php echo $a['id']; ?>">
-                                                    <button class="btn btn-sm btn-primary" name="apply_deduction" onclick="return confirm('Apply monthly deduction now?')">Apply Monthly</button>
-                                                </form>
-                                                <button type="button" class="btn btn-sm btn-secondary" onclick="showRepayForm(<?php echo $a['id']; ?>)">Add Repayment</button>
-                                                <button type="button" class="btn btn-sm btn-warning" onclick="editAdvance(<?php echo $a['id']; ?>, <?php echo $a['loan_officer_id']; ?>, '<?php echo !empty($a['template_id']) ? $a['template_id'] : ''; ?>', '<?php echo addslashes($a['amount']); ?>', '<?php echo addslashes($a['monthly_deduction']); ?>', '<?php echo addslashes($a['duration_months'] ?? 1); ?>', '<?php echo $a['start_date']; ?>')">Edit</button>
-                                                <button type="button" class="btn btn-sm btn-info" onclick="toggleSchedule(<?php echo $a['id']; ?>)">View Schedule</button>
-                                                <form method="POST" style="display:inline-block; margin-left:4px;">
-                                                    <input type="hidden" name="advance_id" value="<?php echo $a['id']; ?>">
-                                                    <button class="btn btn-sm btn-danger" name="delete_advance" onclick="return confirm('Delete advance? This will remove repayments.')">Delete</button>
-                                                </form>
-                                            </td>
-                                        </tr>
-                                        <tr id="schedule-row-<?php echo $a['id']; ?>" style="display:none">
-                                            <td colspan="6">
-                                                <div class="table-responsive">
-                                                    <table class="table table-bordered mb-0">
-                                                        <thead>
-                                                            <tr>
-                                                                <th>Amount Due</th>
-                                                                <th>Amount Paid</th>
-                                                                <th>Repayment Date</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            <?php if (!empty($schedule_map[$a['id']])): ?>
-                                                                <?php foreach ($schedule_map[$a['id']] as $schedule): ?>
-                                                                    <tr>
-                                                                        <td><?php echo number_format($schedule['due_amount'], 2); ?> KES</td>
-                                                                        <td>0.00 KES</td>
-                                                                        <td><?php echo date('d-m-Y', strtotime($schedule['due_date'])); ?></td>
-                                                                    </tr>
-                                                                <?php endforeach; ?>
-                                                            <?php else: ?>
-                                                                <tr><td colspan="3">No schedule generated.</td></tr>
-                                                            <?php endif; ?>
-                                                        </tbody>
-                                                    </table>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                        <tr id="repay-form-<?php echo $a['id']; ?>" style="display:none">
-                                            <td colspan="6">
-                                                <form method="POST" class="row g-2">
-                                                    <input type="hidden" name="advance_id" value="<?php echo $a['id']; ?>">
-                                                    <div class="col-md-4"><input name="repayment_amount" class="form-control" type="number" step="0.01" placeholder="Amount" required></div>
-                                                    <div class="col-md-4"><input name="payment_date" class="form-control" type="date" value="<?php echo date('Y-m-d'); ?>" required></div>
-                                                    <div class="col-md-4"><button class="btn btn-success" name="add_repayment">Save Repayment</button></div>
-                                                </form>
-                                                <?php if (!empty($repayments_map[$a['id']])): ?>
-                                                    <div class="mt-3">
-                                                        <strong>Repayments:</strong>
-                                                        <ul class="mb-0">
-                                                            <?php foreach ($repayments_map[$a['id']] as $r): ?>
-                                                                <li><?php echo date('d-m-Y', strtotime($r['payment_date'])) . ' - ' . number_format($r['amount'],2); ?></li>
-                                                            <?php endforeach; ?>
-                                                        </ul>
-                                                    </div>
-                                                <?php endif; ?>
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    <?php else: ?>
-                        <div class="p-3 text-muted">No advances booked yet.</div>
-                    <?php endif; ?>
-                </div>
-            </div>
         </div>
     </div>
 </div>
 
 <script>
-function showRepayForm(id){
-    var el = document.getElementById('repay-form-' + id);
-    if(el.style.display === 'none') el.style.display = ''; else el.style.display = 'none';
+function updateDuration() {
+    var amount = parseFloat(document.getElementById('amount').value) || 0;
+    var monthly = parseFloat(document.getElementById('monthly_deduction').value) || 0;
+    var duration = amount > 0 && monthly > 0 ? Math.ceil(amount / monthly) : 1;
+    document.getElementById('duration_months').value = Math.min(36, Math.max(1, duration));
 }
+
 function editAdvance(id, loanOfficerId, templateId, amount, monthly, duration, startDate) {
     document.getElementById('edit_advance_id').value = id;
     document.getElementById('loan_officer_id').value = loanOfficerId;
@@ -766,7 +674,7 @@ function editAdvance(id, loanOfficerId, templateId, amount, monthly, duration, s
     }
     document.getElementById('amount').value = amount;
     document.getElementById('monthly_deduction').value = monthly;
-    document.getElementById('duration_months').value = duration;
+    updateDuration();
     document.getElementById('start_date').value = startDate;
     document.getElementById('book_advance_btn').classList.add('d-none');
     document.getElementById('update_advance_btn').classList.remove('d-none');
@@ -778,7 +686,7 @@ function cancelEdit() {
     document.getElementById('template_id').selectedIndex = 0;
     document.getElementById('amount').value = '';
     document.getElementById('monthly_deduction').value = '0.00';
-    document.getElementById('duration_months').value = '6';
+    document.getElementById('duration_months').value = '1';
     document.getElementById('start_date').value = '<?php echo date('Y-m-d'); ?>';
     document.getElementById('book_advance_btn').classList.remove('d-none');
     document.getElementById('update_advance_btn').classList.add('d-none');
@@ -788,13 +696,11 @@ function cancelEdit() {
         var selected = this.options[this.selectedIndex];
         var monthly = selected.getAttribute('data-monthly') || '0.00';
         document.getElementById('monthly_deduction').value = parseFloat(monthly).toFixed(2);
+        updateDuration();
     });
-function toggleSchedule(id){
-    var el = document.getElementById('schedule-row-' + id);
-    if (el) {
-        el.style.display = (el.style.display === 'none' || el.style.display === '') ? '' : 'none';
-    }
-}
+
+    document.getElementById('amount').addEventListener('input', updateDuration);
+    document.getElementById('monthly_deduction').addEventListener('input', updateDuration);
 </script>
 
 </body>

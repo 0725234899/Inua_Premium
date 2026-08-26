@@ -1,4 +1,13 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+if (empty($_SESSION['email'])) {
+    header('Location: ../login.php');
+    exit();
+}
+
 // payroll_generate.php
 // Generates a single payslip as HTML or PDF (if Dompdf is available).
 // Usage:

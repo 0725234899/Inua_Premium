@@ -152,9 +152,62 @@
     </style>
 </head>
 <body>
-    <?php 
+    <?php
     include '../includes/functions.php';
-    include 'includes/header.php'; ?>
+    include 'includes/header.php';
+
+    $navigationConnection = db_connect();
+    $advanceParentStatement = $navigationConnection->prepare('SELECT id FROM navigation_items WHERE title = ? AND parent_id IS NULL LIMIT 1');
+    $advanceParentTitle = 'Advance';
+    $advanceParentStatement->execute([$advanceParentTitle]);
+    $advanceParentId = $advanceParentStatement->fetchColumn();
+    $advanceParentStatement->closeCursor();
+
+    if (!$advanceParentId) {
+        $insertParentStatement = $navigationConnection->prepare('INSERT INTO navigation_items (title, url, icon, parent_id) VALUES (?, ?, ?, NULL)');
+        $insertParentStatement->execute(['Advance', '#', 'bi bi-wallet2']);
+        $advanceParentId = $navigationConnection->lastInsertId();
+    }
+
+    $advanceChildren = [
+        ['Add Advance', '../manager/add_advance.php', 'bi bi-plus-circle'],
+        ['View Advance', '../manager/view_Advance.php', 'bi bi-eye'],
+        ['Advance Report', '../manager/advance_report.php', 'bi bi-file-earmark-text']
+    ];
+    $childStatement = $navigationConnection->prepare('SELECT id FROM navigation_items WHERE title = ? AND parent_id = ? LIMIT 1');
+    $existingChildStatement = $navigationConnection->prepare('SELECT id FROM navigation_items WHERE title = ? LIMIT 1');
+    $updateChildStatement = $navigationConnection->prepare('UPDATE navigation_items SET url = ?, parent_id = ?, icon = ? WHERE id = ?');
+    $insertChildStatement = $navigationConnection->prepare('INSERT INTO navigation_items (title, url, icon, parent_id) VALUES (?, ?, ?, ?)');
+    $navigationItemIds = [$advanceParentId];
+
+    foreach ($advanceChildren as $advanceChild) {
+        $childStatement->execute([$advanceChild[0], $advanceParentId]);
+        $childId = $childStatement->fetchColumn();
+
+        if (!$childId) {
+            $existingChildStatement->execute([$advanceChild[0]]);
+            $childId = $existingChildStatement->fetchColumn();
+
+            if (!$childId) {
+                $insertChildStatement->execute([$advanceChild[0], $advanceChild[1], $advanceChild[2], $advanceParentId]);
+                $childId = $navigationConnection->lastInsertId();
+            }
+        }
+
+        $updateChildStatement->execute([$advanceChild[1], $advanceParentId, $advanceChild[2], $childId]);
+
+        $navigationItemIds[] = $childId;
+    }
+
+    $roleMappingStatement = $navigationConnection->prepare('INSERT IGNORE INTO navigation_item_roles (navigation_item_id, role_id) VALUES (?, ?)');
+    foreach ($navigationItemIds as $navigationItemId) {
+        foreach ([1, 4] as $advanceRoleId) {
+            $roleMappingStatement->execute([$navigationItemId, $advanceRoleId]);
+        }
+    }
+
+    $navigationConnection = null;
+    ?>
     <div class="sidebar">
         <?php include '../includes/sidebar.php'; ?>
     </div>

@@ -1,5 +1,11 @@
 ﻿<?php
 session_start();
+
+if (empty($_SESSION['email'])) {
+    header('Location: ../login.php');
+    exit();
+}
+
 require_once 'db.php';
 
 function safe($value) {
@@ -93,143 +99,92 @@ $post = $_POST;
 $payDateDefault = date('Y-m-d');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $staffId = (int)($post['staff_id'] ?? 0);
-    $regionId = (int)($post['region_id'] ?? 0);
     $payPeriod = trim($post['pay_period'] ?? '');
     $payDate = trim($post['pay_date'] ?? $payDateDefault);
-    $basicSalary = 0;
-    $advanceId = 0;
-    $advanceAmount = 0;
-    $deductions = [];
-
     $payDateObj = DateTime::createFromFormat('Y-m-d', $payDate);
-    if (!$payDateObj || $payDateObj->format('Y-m-d') !== $payDate) {
-        $payDate = '';
-    }
 
-    if ($staffId <= 0 || $regionId <= 0 || $payPeriod === '' || $payDate === '') {
-        $error = 'Please select a staff member, choose a region, enter a pay period, and choose a valid pay date.';
-    } elseif ($basicSalary < 0) {
-        $error = 'Basic salary must be zero or higher.';
+    if ($payPeriod === '' || !$payDateObj || $payDateObj->format('Y-m-d') !== $payDate) {
+        $error = 'Please enter a pay period and choose a valid pay date.';
+    } elseif (empty($staffs)) {
+        $error = 'No staff members are available for payroll.';
     } else {
-        $staffStmt = $conn->prepare("SELECT id, name, email, COALESCE(basic_salary, 0) AS basic_salary FROM users WHERE id = ? LIMIT 1");
-        $staffStmt->bind_param('i', $staffId);
-        $staffStmt->execute();
-        $staffRes = $staffStmt->get_result();
-        $staff = $staffRes ? $staffRes->fetch_assoc() : null;
-        $staffStmt->close();
+        $recordedBy = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null;
+        $templateId = null;
+        $templateNameToSave = null;
+        $notes = null;
+        $payrollIds = [];
+        $insertStmt = $conn->prepare("INSERT INTO staff_payrolls (
+            template_id, template_name, staff_id, staff_name, staff_email,
+            region_id, region_name, pay_period, pay_date, basic_salary, gross_pay, total_deductions,
+            net_pay, earnings, deductions, notes, recorded_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
-        if (!$staff) {
-            $error = 'The selected staff member was not found.';
-        } else {
-            $regionName = null;
-            $regionStmt = $conn->prepare("SELECT area_name FROM areas WHERE area_id = ? LIMIT 1");
-            $regionStmt->bind_param('i', $regionId);
-            $regionStmt->execute();
-            $regionRes = $regionStmt->get_result();
-            $regionRow = $regionRes ? $regionRes->fetch_assoc() : null;
-            $regionStmt->close();
-            if ($regionRow) {
-                $regionName = $regionRow['area_name'];
-            } else {
-                $error = 'Selected region was not found.';
+        foreach ($staffs as $staff) {
+            $staffId = (int)$staff['id'];
+            $regionId = (int)($staff['region_id'] ?? 0);
+            $regionName = '';
+            foreach ($regions as $region) {
+                if ((int)$region['area_id'] === $regionId) {
+                    $regionName = $region['area_name'];
+                    break;
+                }
             }
-        }
 
-        if (empty($error)) {
-            $basicSalary = floatval($staff['basic_salary'] ?? 0);
+            $basicSalary = (float)($staff['basic_salary'] ?? 0);
             $grossPay = $basicSalary;
-
+            $deductions = [];
+            $advanceId = 0;
+            $advanceAmount = 0;
             $advanceStmt = $conn->prepare("SELECT id, monthly_deduction FROM advances WHERE loan_officer_id = ? AND balance > 0 ORDER BY id DESC LIMIT 1");
             $advanceStmt->bind_param('i', $staffId);
             $advanceStmt->execute();
-            $advanceRes = $advanceStmt->get_result();
-            $activeAdvance = $advanceRes ? $advanceRes->fetch_assoc() : null;
+            $advanceResult = $advanceStmt->get_result();
+            $activeAdvance = $advanceResult ? $advanceResult->fetch_assoc() : null;
             $advanceStmt->close();
 
-            if ($activeAdvance && floatval($activeAdvance['monthly_deduction']) > 0) {
+            if ($activeAdvance && (float)$activeAdvance['monthly_deduction'] > 0) {
                 $advanceId = (int)$activeAdvance['id'];
-                $advanceAmount = floatval($activeAdvance['monthly_deduction']);
+                $advanceAmount = (float)$activeAdvance['monthly_deduction'];
                 $deductions[] = ['label' => 'Advance', 'amount' => $advanceAmount];
             }
 
-            $totalDeductions = 0;
-            foreach ($deductions as $deduction) {
-                $totalDeductions += floatval($deduction['amount']);
-            }
+            $totalDeductions = $advanceAmount;
             $netPay = $grossPay - $totalDeductions;
-
             $earningsJson = json_encode([]);
             $deductionsJson = json_encode($deductions);
-            $recordedBy = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null;
-            $templateId = null;
-            $templateNameToSave = null;
-            $notes = null;
+            $staffIdValue = $staff['id'];
+            $staffName = $staff['name'];
+            $staffEmail = $staff['email'];
+            $insertStmt->bind_param('isississsddddsssi', $templateId, $templateNameToSave, $staffIdValue, $staffName, $staffEmail, $regionId, $regionName, $payPeriod, $payDate, $basicSalary, $grossPay, $totalDeductions, $netPay, $earningsJson, $deductionsJson, $notes, $recordedBy);
 
-            $insertStmt = $conn->prepare("INSERT INTO staff_payrolls (
-                template_id, template_name, staff_id, staff_name, staff_email,
-                region_id, region_name,
-                pay_period, pay_date, basic_salary, gross_pay, total_deductions,
-                net_pay, earnings, deductions, notes, recorded_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-
-            $insertStmt->bind_param(
-                'isississsddddsssi',
-                $templateId,
-                $templateNameToSave,
-                $staff['id'],
-                $staff['name'],
-                $staff['email'],
-                $regionId,
-                $regionName,
-                $payPeriod,
-                $payDate,
-                $basicSalary,
-                $grossPay,
-                $totalDeductions,
-                $netPay,
-                $earningsJson,
-                $deductionsJson,
-                $notes,
-                $recordedBy
-            );
-
-            if ($insertStmt->execute()) {
-                if ($advanceId > 0 && $advanceAmount > 0) {
-                    $paymentDate = date('Y-m-d');
-                    $advanceStmt = $conn->prepare("INSERT INTO advance_repayments (advance_id, amount, payment_date, recorded_by) VALUES (?, ?, ?, ?)");
-                    $advanceStmt->bind_param('idsi', $advanceId, $advanceAmount, $paymentDate, $recordedBy);
-                    if ($advanceStmt->execute()) {
-                        $advanceStmt->close();
-                        $upd = $conn->prepare("UPDATE advances SET balance = balance - ? WHERE id = ?");
-                        $upd->bind_param('di', $advanceAmount, $advanceId);
-                        $upd->execute();
-                        $upd->close();
-                        $message = 'Payroll saved and advance deduction applied for ' . safe($staff['name']) . '.';
-                    } else {
-                        $advanceStmt->close();
-                        $message = 'Payroll saved, but advance deduction could not be applied.';
-                    }
-                } else {
-                    $message = 'Payroll record saved successfully for ' . safe($staff['name']) . '.';
-                }
-
-                $payPeriod = '';
-                $payDate = $payDateDefault;
-                $basicSalary = '';
-                $advanceId = 0;
-                $advanceAmount = 0;
-                $deductions = [];
-                $insertStmt->close();
-
-                $recentResult = $conn->query("SELECT id, template_name, staff_name, pay_period, pay_date, gross_pay, total_deductions, net_pay, created_at FROM staff_payrolls ORDER BY created_at DESC LIMIT 20");
-                if ($recentResult) {
-                    $recentPayrolls = $recentResult->fetch_all(MYSQLI_ASSOC);
-                }
-            } else {
-                $error = 'Unable to save payroll record. Please try again.';
-                $insertStmt->close();
+            if (!$insertStmt->execute()) {
+                $error = 'Unable to save payroll records. Please try again.';
+                break;
             }
+
+            $payrollIds[] = (int)$conn->insert_id;
+            if ($advanceId > 0 && $advanceAmount > 0) {
+                $paymentDate = date('Y-m-d');
+                $repaymentStmt = $conn->prepare("INSERT INTO advance_repayments (advance_id, amount, payment_date, recorded_by) VALUES (?, ?, ?, ?)");
+                $repaymentStmt->bind_param('idsi', $advanceId, $advanceAmount, $paymentDate, $recordedBy);
+                if ($repaymentStmt->execute()) {
+                    $updateAdvance = $conn->prepare("UPDATE advances SET balance = balance - ? WHERE id = ?");
+                    $updateAdvance->bind_param('di', $advanceAmount, $advanceId);
+                    $updateAdvance->execute();
+                    $updateAdvance->close();
+                }
+                $repaymentStmt->close();
+            }
+        }
+        $insertStmt->close();
+
+        if (empty($error) && !empty($payrollIds)) {
+            $_SESSION['payroll_email_queue'] = [
+                'ids' => $payrollIds,
+                'period' => $payPeriod,
+            ];
+            header('Location: view_payroll.php');
+            exit();
         }
     }
 }
@@ -360,6 +315,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <div class="container">
     <div class="card hero">
         <div>
+            <a href="index.php" class="btn btn-light btn-sm">Back to Dashboard</a>
             <h1>Payroll Management</h1>
             <p></p>
         </div>
@@ -377,129 +333,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="section-title">Payroll details</div>
         <form method="POST" action="add_payroll.php" id="payrollForm">
             <div class="row g-3">
-                <div class="col-lg-4">
-                    <label class="form-label" for="region_id">Region</label>
-                    <select id="region_id" name="region_id" class="form-select" required>
-                        <option value="">Select region</option>
-                        <?php foreach ($regions as $region): ?>
-                            <option value="<?php echo (int)$region['area_id']; ?>"<?php echo (isset($post['region_id']) && (int)$post['region_id'] === (int)$region['area_id']) ? ' selected' : ''; ?>>
-                                <?php echo safe($region['area_name']); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="col-lg-4">
-                    <label class="form-label" for="staff_id">Staff member</label>
-                    <select id="staff_id" name="staff_id" class="form-select" required>
-                        <option value="">Select staff</option>
-                        <?php foreach ($staffs as $staff): ?>
-                            <option value="<?php echo (int)$staff['id']; ?>"<?php echo (isset($post['staff_id']) && (int)$post['staff_id'] === (int)$staff['id']) ? ' selected' : ''; ?>>
-                                <?php echo safe($staff['name'] . ' (' . $staff['email'] . ')'); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                
-                <div class="col-lg-4">
+                <div class="col-lg-6">
                     <label class="form-label" for="pay_period">Pay period</label>
                     <input id="pay_period" name="pay_period" type="text" class="form-control" placeholder="e.g. August 2026" value="<?php echo safe($post['pay_period'] ?? ''); ?>" required>
                 </div>
-                <div class="col-lg-4">
+                <div class="col-lg-6">
                     <label class="form-label" for="pay_date">Pay date</label>
                     <input id="pay_date" name="pay_date" type="date" class="form-control" value="<?php echo safe($post['pay_date'] ?? $payDateDefault); ?>" required>
                 </div>
-                <div class="col-lg-4">
-                    <label class="form-label" for="basic_salary">Basic salary</label>
-                    <div class="input-group">
-                        <span class="input-group-text">KES</span>
-                        <input id="basic_salary" name="basic_salary" type="number" step="0.01" min="0" class="form-control" value="<?php echo safe(number_format($selectedStaffSalary ?: floatval($post['basic_salary'] ?? 0), 2)); ?>" readonly>
-                    </div>
-                </div>
-                <div class="col-lg-4">
-                    <label class="form-label" for="advance_amount">Advance deduction</label>
-                    <div class="input-group">
-                        <span class="input-group-text">KES</span>
-                        <input id="advance_amount" name="advance_amount" type="number" step="0.01" min="0" class="form-control" value="0.00" readonly>
-                    </div>
-                    <input type="hidden" id="advance_id" name="advance_id" value="0">
-                    <div class="form-text" id="advance_info">Active advance deduction will be applied automatically upon save.</div>
-                </div>
-            </div>
-
-            <div class="summary-card">
-                <div class="summary-line"><strong>Basic salary</strong><span id="displayBasic">KES <?php echo safe(number_format($selectedStaffSalary ?: floatval($post['basic_salary'] ?? 0), 2)); ?></span></div>
-                <div class="summary-line"><strong>Advance deduction</strong><span id="displayDeductions">KES 0.00</span></div>
-                <div class="summary-total"><span>Net pay</span><strong id="displayNet">KES 0.00</strong></div>
             </div>
 
             <div class="mt-4">
-                <button type="submit" class="btn btn-primary">Save payroll</button>
+                <button type="submit" class="btn btn-primary">Save Payroll and Send Payslips</button>
             </div>
         </form>
     </div>
 </div>
 
 <script>
-    function formatCurrency(value) {
-        return Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
-
-    const allStaffs = <?php echo json_encode($staffs, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT|JSON_HEX_AMP); ?>;
-    const activeAdvanceMap = <?php echo json_encode($activeAdvanceMap, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT|JSON_HEX_AMP); ?>;
-
-    function filterStaffsByRegion(regionId) {
-        return allStaffs.filter(staff => parseInt(staff.region_id || 0, 10) === regionId);
-    }
-
-    function populateStaffOptions() {
-        const regionId = parseInt(document.querySelector('#region_id').value || 0, 10);
-        const staffSelect = document.querySelector('#staff_id');
-        const selectedStaff = parseInt(staffSelect.value || 0, 10);
-        const options = [];
-
-        const filteredStaffs = regionId > 0 ? filterStaffsByRegion(regionId) : allStaffs;
-        filteredStaffs.forEach(staff => {
-            const option = document.createElement('option');
-            option.value = staff.id;
-            option.textContent = staff.name + ' (' + staff.email + ')';
-            if (staff.id === selectedStaff) {
-                option.selected = true;
-            }
-            options.push(option);
-        });
-
-        staffSelect.innerHTML = '<option value="">Select staff</option>';
-        options.forEach(option => staffSelect.appendChild(option));
-        if (selectedStaff && !filteredStaffs.some(staff => staff.id === selectedStaff)) {
-            staffSelect.value = '';
-        }
-    }
-
-    function updateTotals() {
-        const staffId = parseInt(document.querySelector('#staff_id').value || 0, 10);
-        const staff = allStaffs.find(item => parseInt(item.id || 0, 10) === staffId) || { basic_salary: 0 };
-        const basicSalary = parseFloat(staff.basic_salary || 0);
-        const advance = activeAdvanceMap[staffId] || null;
-        const advanceAmount = advance ? parseFloat(advance.monthly_deduction || 0) : 0;
-        const netPay = basicSalary - advanceAmount;
-
-        document.querySelector('#basic_salary').value = basicSalary.toFixed(2);
-        document.querySelector('#advance_amount').value = advanceAmount.toFixed(2);
-        document.querySelector('#advance_id').value = advance ? advance.id : 0;
-        document.querySelector('#advance_info').textContent = advance ? 'Active advance deduction will apply automatically when payroll is saved.' : 'No active advance for selected staff.';
-        document.querySelector('#displayBasic').textContent = 'KES ' + formatCurrency(basicSalary);
-        document.querySelector('#displayDeductions').textContent = 'KES ' + formatCurrency(advanceAmount);
-        document.querySelector('#displayNet').textContent = 'KES ' + formatCurrency(netPay);
-    }
-
-    document.querySelector('#region_id').addEventListener('change', function () {
-        populateStaffOptions();
-        updateTotals();
-    });
-    document.querySelector('#staff_id').addEventListener('change', updateTotals);
-
-    populateStaffOptions();
-    updateTotals();
 </script>
 </body>
 </html>

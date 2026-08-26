@@ -1,4 +1,13 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+if (empty($_SESSION['email'])) {
+    header('Location: ../login.php');
+    exit();
+}
+
 // payroll_bulk.php
 // Accepts a CSV upload and generates a ZIP of individual payslip HTML files.
 // Expected CSV header (recommended): name,id,role,pay_period,pay_date,basic,hra,bonus,federal_tax,health_insurance,401k

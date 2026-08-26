@@ -148,6 +148,7 @@ include '../includes/sidebar.php';
                 <ul>
                     <h3>Settings</h3>
                     <li><a href="account_settings.php">Account Settings</a></li>
+                    <li><a href="company_settings.php">Company Settings</a></li>
                     <li><a href="email-accounts.php">Email Settings</a></li>
                 </ul>
                 <ul>

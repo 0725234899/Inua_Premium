@@ -402,7 +402,8 @@
 
         $payrollChildren = [
             ['title' => 'Add Payroll', 'url' => 'add_payroll.php', 'icon' => 'bi bi-plus-circle'],
-            ['title' => 'View Payroll', 'url' => 'view_payroll.php', 'icon' => 'bi bi-eye']
+            ['title' => 'View Payroll', 'url' => 'view_payroll.php', 'icon' => 'bi bi-eye'],
+            ['title' => 'Payroll Settings', 'url' => 'payroll_settings.php', 'icon' => 'bi bi-gear']
         ];
 
         foreach ($payrollChildren as $childItem) {

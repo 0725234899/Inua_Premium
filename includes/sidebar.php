@@ -10,13 +10,19 @@ function renderNavItems($items, $parentId = NULL) {
     $html = '';
     foreach ($items as $item) {
         if ($item['parent_id'] == $parentId) {
+            $advanceUrls = [
+                'Add Advance' => '../manager/add_advance.php',
+                'View Advance' => '../manager/view_Advance.php',
+                'Advance Report' => '../manager/advance_report.php'
+            ];
+            $itemUrl = $advanceUrls[$item['title']] ?? $item['url'];
             $subItems = array_filter($items, function($i) use ($item) {
                 return $i['parent_id'] == $item['id'];
             });
 
             $hasSubItems = !empty($subItems);
             $html .= '<li class="nav-item">';
-            $html .= '<a class="nav-link' . ($hasSubItems ? ' collapsed' : '') . '" href="' . $item['url'] . '"';
+            $html .= '<a class="nav-link' . ($hasSubItems ? ' collapsed' : '') . '" href="' . htmlspecialchars($itemUrl, ENT_QUOTES, 'UTF-8') . '"';
             if ($hasSubItems) {
                 $html .= ' data-bs-toggle="collapse" data-bs-target="#collapse-' . $item['id'] . '" aria-expanded="false" aria-controls="collapse-' . $item['id'] . '"';
             }

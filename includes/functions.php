@@ -27,6 +27,98 @@ function getBranches() {
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
+function ensureCompanyTableExists() {
+    $conn = db_connect();
+    $conn->exec("CREATE TABLE IF NOT EXISTS companies (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        registration_number VARCHAR(255) DEFAULT NULL,
+        country VARCHAR(255) DEFAULT NULL,
+        timezone VARCHAR(255) DEFAULT NULL,
+        currency VARCHAR(50) DEFAULT NULL,
+        address VARCHAR(255) DEFAULT NULL,
+        city VARCHAR(255) DEFAULT NULL,
+        province VARCHAR(255) DEFAULT NULL,
+        zipcode VARCHAR(50) DEFAULT NULL,
+        phone VARCHAR(50) DEFAULT NULL,
+        email VARCHAR(255) DEFAULT NULL,
+        logo VARCHAR(255) DEFAULT NULL,
+        status ENUM('Active', 'Inactive') NOT NULL DEFAULT 'Active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    $columns = ['registration_number', 'country', 'timezone', 'currency', 'address', 'city', 'province', 'zipcode', 'phone', 'email', 'logo'];
+    foreach ($columns as $column) {
+        $check = $conn->prepare("SHOW COLUMNS FROM companies LIKE ?");
+        $check->execute([$column]);
+        if (!$check->fetch()) {
+            $conn->exec("ALTER TABLE companies ADD COLUMN `{$column}` VARCHAR(255) DEFAULT NULL");
+        }
+    }
+
+    $check = $conn->prepare("SHOW COLUMNS FROM companies LIKE 'name'");
+    $check->execute();
+    if (!$check->fetch()) {
+        $conn->exec("ALTER TABLE companies ADD COLUMN `name` VARCHAR(255) NOT NULL DEFAULT ''");
+    }
+}
+
+function getCompanies() {
+    ensureCompanyTableExists();
+    $conn = db_connect();
+    $stmt = $conn->query("SELECT * FROM companies ORDER BY id DESC");
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function getCompanyById($id) {
+    ensureCompanyTableExists();
+    $conn = db_connect();
+    $stmt = $conn->prepare("SELECT * FROM companies WHERE id = ? LIMIT 1");
+    $stmt->execute([(int) $id]);
+    return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+}
+
+function saveCompany($company) {
+    ensureCompanyTableExists();
+    $conn = db_connect();
+
+    $companyName = trim((string) ($company['name'] ?? $company['company_name'] ?? ''));
+    $registrationNumber = trim((string) ($company['registration_number'] ?? ''));
+    $country = trim((string) ($company['country'] ?? ''));
+    $timezone = trim((string) ($company['timezone'] ?? ''));
+    $currency = trim((string) ($company['currency'] ?? ''));
+    $address = trim((string) ($company['address'] ?? ''));
+    $city = trim((string) ($company['city'] ?? ''));
+    $province = trim((string) ($company['province'] ?? ''));
+    $zipcode = trim((string) ($company['zipcode'] ?? ''));
+    $phone = trim((string) ($company['phone'] ?? ''));
+    $email = trim((string) ($company['email'] ?? ''));
+    $logo = trim((string) ($company['logo'] ?? ''));
+    $status = in_array(($company['status'] ?? 'Active'), ['Active', 'Inactive'], true) ? $company['status'] : 'Active';
+    $companyId = isset($company['id']) && $company['id'] !== '' ? (int) $company['id'] : null;
+
+    if ($companyName === '') {
+        return false;
+    }
+
+    if ($companyId) {
+        $stmt = $conn->prepare("
+            UPDATE companies SET
+                name = ?, registration_number = ?, country = ?, timezone = ?, currency = ?, address = ?, city = ?, province = ?, zipcode = ?, phone = ?, email = ?, logo = ?, status = ?
+            WHERE id = ?
+        ");
+        return $stmt->execute([$companyName, $registrationNumber, $country, $timezone, $currency, $address, $city, $province, $zipcode, $phone, $email, $logo, $status, $companyId]);
+    }
+
+    $stmt = $conn->prepare("
+        INSERT INTO companies (name, registration_number, country, timezone, currency, address, city, province, zipcode, phone, email, logo, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ");
+    $result = $stmt->execute([$companyName, $registrationNumber, $country, $timezone, $currency, $address, $city, $province, $zipcode, $phone, $email, $logo, $status]);
+    return $result ? $conn->lastInsertId() : false;
+}
+
 // User management functions
 function ensureUserSalaryColumnExists() {
     $conn = db_connect();
@@ -371,6 +463,49 @@ function getEmailAccount() {
         }
     }
     return $account;
+}
+
+function ensurePayrollEmailSettingsTable() {
+    $conn = db_connect();
+    $conn->exec("CREATE TABLE IF NOT EXISTS payroll_email_settings (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        sender_email VARCHAR(255) NOT NULL,
+        sender_app_password VARCHAR(255) NOT NULL,
+        admin_email VARCHAR(255) DEFAULT NULL,
+        admin_app_password VARCHAR(255) DEFAULT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function getPayrollEmailAccount() {
+    ensurePayrollEmailSettingsTable();
+    $conn = db_connect();
+    $stmt = $conn->query("SELECT * FROM payroll_email_settings ORDER BY id ASC LIMIT 1");
+    $account = $stmt->fetch();
+    if ($account) {
+        $account['sender_app_password'] = normalizeEmailAppPassword($account['sender_app_password'] ?? '');
+        $account['admin_app_password'] = normalizeEmailAppPassword($account['admin_app_password'] ?? '');
+    }
+    return $account;
+}
+
+function getPayrollSmtpSettings($email) {
+    $domain = strtolower((string) substr(strrchr((string) $email, '@'), 1));
+    $settings = [
+        'host' => 'smtp.gmail.com',
+        'port' => 587,
+        'encryption' => 'tls',
+    ];
+
+    if (in_array($domain, ['yahoo.com', 'yahoo.co.uk', 'yahoo.co.in'], true)) {
+        $settings = ['host' => 'smtp.mail.yahoo.com', 'port' => 587, 'encryption' => 'tls'];
+    } elseif (in_array($domain, ['outlook.com', 'hotmail.com', 'live.com'], true)) {
+        $settings = ['host' => 'smtp-mail.outlook.com', 'port' => 587, 'encryption' => 'tls'];
+    } elseif (in_array($domain, ['icloud.com', 'me.com', 'mac.com'], true)) {
+        $settings = ['host' => 'smtp.mail.me.com', 'port' => 587, 'encryption' => 'tls'];
+    }
+
+    return $settings;
 }
 
 function ensureAdminPHPMailerLoaded() {
