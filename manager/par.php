@@ -734,9 +734,13 @@ foreach ($officerOptions as $officer) {
                             <option value="principal">Principal Amount (KES)</option>
                             <option value="customers">No. of Customers</option>
                             <option value="customersInArrears">No. of Customers in Arrears</option>
+                            <option value="interest">Interest (KES)</option>
+                            <option value="processingFee">Processing Fee (KES)</option>
+                            <option value="registrationFee">Registration Fee (KES)</option>
                             <option value="income">Income (KES)</option>
                             <option value="netIncome">Net Income (KES)</option>
                             <option value="recruitedCustomers">New Customers Recruited</option>
+                            <option value="fundedCustomers">Funded Customers</option>
                             <option value="disbursementValue">Disbursed Value (KES)</option>
                         </select>
                     </div>
@@ -839,11 +843,29 @@ foreach ($officerOptions as $officer) {
                 principal: { label: 'Principal Amount (KES)', higherIsWorse: false, format: val => `KES ${val.toLocaleString()}` },
                 customers: { label: 'No. of Customers', higherIsWorse: false, format: val => val },
                 customersInArrears: { label: 'No. of Customers in Arrears', higherIsWorse: true, format: val => val },
+                interest: { label: 'Interest (KES)', higherIsWorse: false, format: val => `KES ${val.toLocaleString()}` },
+                processingFee: { label: 'Processing Fee (KES)', higherIsWorse: false, format: val => `KES ${val.toLocaleString()}` },
+                registrationFee: { label: 'Registration Fee (KES)', higherIsWorse: false, format: val => `KES ${val.toLocaleString()}` },
                 income: { label: 'Income (KES)', higherIsWorse: false, format: val => `KES ${val.toLocaleString()}` },
                 netIncome: { label: 'Net Income (KES)', higherIsWorse: false, format: val => `KES ${val.toLocaleString()}` },
                 recruitedCustomers: { label: 'New Customers Recruited', higherIsWorse: false, format: val => val },
+                fundedCustomers: { label: 'Funded Customers', higherIsWorse: false, format: val => val },
                 disbursementValue: { label: 'Disbursed Value (KES)', higherIsWorse: false, format: val => `KES ${val.toLocaleString()}` },
             };
+
+            function hasPerformanceData(officer) {
+                return Number(officer.principal) > 0 ||
+                    Number(officer.loanBook) > 0 ||
+                    Number(officer.customers) > 0 ||
+                    Number(officer.disbursementValue) > 0;
+            }
+
+            function compareByRank(a, b) {
+                const aHasData = hasPerformanceData(a);
+                const bHasData = hasPerformanceData(b);
+                if (aHasData !== bHasData) return aHasData ? -1 : 1;
+                return b.compositeScore - a.compositeScore;
+            }
 
             // Update adviceData if needed (optional, keep as is or adjust for new tiers)
             const adviceData = {
@@ -863,53 +885,66 @@ foreach ($officerOptions as $officer) {
             // Sort officers by composite performance (sum of normalized metrics)
             function getCompositeScore(officer) {
                 // Normalize metrics to [0,1] and sum (higher is better for income, lower is better for arrears/par)
-                const maxLoanBook = Math.max(...officerData.map(o => o.loanBook));
-                const maxIncome = Math.max(...officerData.map(o => o.income));
-                const maxNetIncome = Math.max(...officerData.map(o => o.netIncome));
-                const maxCustomers = Math.max(...officerData.map(o => o.customers));
-                const maxPerformingBook = Math.max(...officerData.map(o => o.performingBook));
-                const maxPrincipal = Math.max(...officerData.map(o => o.principal));
-                const maxInterest = Math.max(...officerData.map(o => o.income)); 
-                const maxRecruited = Math.max(...officerData.map(o => o.recruitedCustomers));
-                const maxDisbursement = Math.max(...officerData.map(o => o.disbursementValue));
-                const maxcustomersinArrears = Math.max(...officerData.map(o => o.customersInArrears));
+                // Use percentile bounds so one unusually large or risky portfolio cannot distort every score.
+                function robustBounds(metric) {
+                    const values = officerData
+                        .map(o => Number(o[metric]) || 0)
+                        .sort((a, b) => a - b);
+                    if (values.length < 3) {
+                        return { min: values[0] ?? 0, max: values[values.length - 1] ?? 0 };
+                    }
 
-                // For metrics where lower is better, invert the value
-                const minArrears = Math.min(...officerData.map(o => o.arrearsValue));
-                const maxArrears = Math.max(...officerData.map(o => o.arrearsValue));
-                const minPAR = Math.min(...officerData.map(o => o.par));
-                const maxPAR = Math.max(...officerData.map(o => o.par));
+                    const percentile = (rank) => {
+                        const index = (values.length - 1) * rank;
+                        const lower = Math.floor(index);
+                        const upper = Math.ceil(index);
+                        const fraction = index - lower;
+                        return values[lower] + ((values[upper] - values[lower]) * fraction);
+                    };
 
-                // Avoid division by zero
-                function norm(val, min, max) {
-                    return max === min ? 1 : (val - min) / (max - min);
-                }
-                function normInv(val, min, max) {
-                    return max === min ? 1 : 1 - ((val - min) / (max - min));
+                    return { min: percentile(0.10), max: percentile(0.90) };
                 }
 
-                // Composite score: adjust weights as needed
+                const bounds = {};
+                ['loanBook', 'income', 'netIncome', 'customers', 'performingBook', 'principal', 'arrearsValue', 'par', 'interest', 'processingFee', 'registrationFee', 'recruitedCustomers', 'disbursementValue', 'customersInArrears', 'customersInArrearsPercentage', 'fundedCustomers'].forEach(metric => {
+                    bounds[metric] = robustBounds(metric);
+                });
+
+                function norm(val, range) {
+                    const boundedValue = Math.min(range.max, Math.max(range.min, Number(val) || 0));
+                    return range.max === range.min ? 1 : (boundedValue - range.min) / (range.max - range.min);
+                }
+                function normInv(val, range) {
+                    return 1 - norm(val, range);
+                }
+
+                // Composite score: risk and portfolio quality lead, with productivity and growth supporting.
                 return (
-                    0.30 * norm(officer.loanBook, 0, maxLoanBook) +
-                    0.00 * norm(officer.income, 0, maxIncome) +
-                    0.20 * norm(officer.netIncome, 0, maxNetIncome) +
-                    0.20 * norm(officer.customers, 0, maxCustomers) +
-                    0.00 * norm(officer.performingBook, 0, maxPerformingBook) +
-                    0.00 * norm(officer.principal, 0, maxPrincipal) +
-                    0.00 * normInv(officer.arrearsValue, minArrears, maxArrears) +
-                    0.20 * normInv(officer.par, minPAR, maxPAR) +
-                    0.00 * norm(officer.recruitedCustomers, 0, maxRecruited) +
-                    0.00 * norm(officer.disbursementValue, 0, maxDisbursement)+
-                    0.10 * normInv(officer.customersInArrears, 0, maxcustomersinArrears)
-                );
+                    0.25 * norm(officer.loanBook, bounds.loanBook) +
+                    0.00 * norm(officer.income, bounds.income) +
+                    0.05 * norm(officer.netIncome, bounds.netIncome) +
+                    0.00 * norm(officer.customers, bounds.customers) +
+                    0.00 * norm(officer.performingBook, bounds.performingBook) +
+                    0.00 * norm(officer.principal, bounds.principal) +
+                    0.00 * normInv(officer.arrearsValue, bounds.arrearsValue) +
+                    0.30 * normInv(officer.par, bounds.par) +
+                    0.00 * norm(officer.recruitedCustomers, bounds.recruitedCustomers) +
+                    0.00 * norm(officer.disbursementValue, robustBounds('disbursementValue')) +
+                    0.05 * normInv(officer.customersInArrears, bounds.customersInArrears) +
+                    0.10 * norm(officer.interest, bounds.interest) +
+                    0.05 * norm(officer.processingFee, bounds.processingFee) +
+                    0.05 * norm(officer.registrationFee, bounds.registrationFee) +
+                    0.00 * normInv(officer.customersInArrearsPercentage, bounds.customersInArrearsPercentage) +
+                    0.00 * norm(officer.fundedCustomers, bounds.fundedCustomers)
+                ) / 0.85;
             }
 
             // Sort officers by composite score descending
             officerData.forEach(o => { o.compositeScore = getCompositeScore(o); });
-            officerData.sort((a, b) => b.compositeScore - a.compositeScore);
+            officerData.sort(compareByRank);
 
             // Dynamically assign tiers based on composite score ranking
-            officerData.sort((a, b) => b.compositeScore - a.compositeScore);
+            officerData.sort(compareByRank);
             officerData.forEach((officer, idx) => {
                 if (idx < 3) officer.tier = 1;
                 else if (idx < 5) officer.tier = 2;
@@ -1686,6 +1721,9 @@ foreach ($officerOptions as $officer) {
 
                     // Sort officer data based on the selected metric
                     officerData.sort((a, b) => {
+                        const aHasData = hasPerformanceData(a);
+                        const bHasData = hasPerformanceData(b);
+                        if (aHasData !== bHasData) return aHasData ? -1 : 1;
                         const valA = a[selectedMetric];
                         const valB = b[selectedMetric];
                         // Sort descending for better performance (higher is better), ascending otherwise
