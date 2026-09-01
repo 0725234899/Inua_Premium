@@ -93,11 +93,15 @@ $sql_interest_details = "SELECT
     l.id,
     b.full_name AS borrower_name,
     l.principal,
+    l.loan_duration,
     l.total_amount,
     (l.total_amount - l.principal) AS interest,
     COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0) AS total_paid,
     (l.total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)) AS loan_balance,
-    GREATEST(0, (l.total_amount - ((0.06 * l.loan_duration * l.principal) + l.principal))) AS penalty_amount,
+    GREATEST(0, (
+        COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)
+        - (l.principal + (l.principal * 0.06 * l.loan_duration))
+    )) AS penalty_amount,
     l.loan_status
 FROM loan_applications l
 INNER JOIN borrowers b ON l.borrower = b.id
@@ -469,9 +473,6 @@ if (session_status() === PHP_SESSION_NONE) {
                                 $isRolledOver = preg_match('/roll/i', trim($row['loan_status'] ?? ''));
                                 $isCleared = !$isRolledOver && floatval($row['loan_balance']) <= 0;
                                 $penalty = floatval($row['penalty_amount'] ?? 0);
-                                if (!$isCleared) {
-                                    $penalty = 0;
-                                }
                                 $rowClass = $isRolledOver ? 'rolled-over-loan' : ($isCleared ? 'cleared-loan' : '');
                             ?>
                             <tr class="<?php echo $rowClass; ?>">

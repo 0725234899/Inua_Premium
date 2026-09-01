@@ -18,16 +18,24 @@ function calculate_due_loans_totals($rows) {
     $totals = [
         'total_loan_book' => 0.0,
         'total_performing_book' => 0.0,
+        'total_arrears' => 0.0,
         'total_active_customers' => 0,
+        'total_customers_in_arrears' => 0,
+        'total_par_percentage' => 0.0,
+        'customer_arrears_percentage' => 0.0,
     ];
 
     $unique_customers = [];
+    $customers_in_arrears = [];
     foreach ($rows as $row) {
         $loan_balance = (float) $row['loan_balance'];
         $totals['total_loan_book'] += $loan_balance;
 
         if (empty($row['is_past_due'])) {
             $totals['total_performing_book'] += $loan_balance;
+        } else {
+            $totals['total_arrears'] += (float) $row['due_amount'];
+            $customers_in_arrears[trim($row['borrower_name']) . '|' . trim($row['phone_number'])] = true;
         }
 
         $customer_key = trim($row['borrower_name']) . '|' . trim($row['phone_number']);
@@ -35,15 +43,21 @@ function calculate_due_loans_totals($rows) {
     }
 
     $totals['total_active_customers'] = count($unique_customers);
+    $totals['total_customers_in_arrears'] = count($customers_in_arrears);
+    $totals['total_par_percentage'] = $totals['total_loan_book'] > 0 ? (($totals['total_arrears'] / $totals['total_loan_book']) * 100) : 0;
+    $totals['customer_arrears_percentage'] = $totals['total_active_customers'] > 0 ? (($totals['total_customers_in_arrears'] / $totals['total_active_customers']) * 100) : 0;
+
     return $totals;
 }
 
-function generate_due_loans_pdf($rows, $officer_display_name, $day_label) {
+function generate_due_loans_pdf($rows, $officer_display_name, $day_label, $portfolio_metrics = []) {
     // Use landscape to fit all UI columns comfortably
     $pdf = new TCPDF('L', 'mm', 'A4', true, 'UTF-8', false);
     $pdf->SetCreator('Inua Premium Services');
     $pdf->SetAuthor('Inua Premium Services');
     $pdf->SetTitle('Due Loans Report');
+    $pdf->setPrintHeader(false);
+    $pdf->setPrintFooter(false);
     $leftMargin = 12;
     $rightMargin = 12;
     $topMargin = 15;
@@ -53,30 +67,78 @@ function generate_due_loans_pdf($rows, $officer_display_name, $day_label) {
 
     $pageWidth = $pdf->getPageWidth();
     $contentWidth = $pageWidth - ($leftMargin + $rightMargin);
+    $logoPath = __DIR__ . '/../assets/img/logo.png';
+    if (file_exists($logoPath)) {
+        $pdf->Image($logoPath, $leftMargin, 10, 22, 0, 'PNG', '', 'T', false, 300, '', false, false, 0, false, false, false);
+    }
 
-    $pdf->SetTextColor(56, 152, 219);
-    $pdf->SetFont('helvetica', 'B', 16);
-    $pdf->Cell(0, 8, 'Inua Premium Services', 0, 1, 'C');
-    $pdf->SetFont('helvetica', 'B', 14);
-    $pdf->Cell(0, 8, 'Due Loans Report', 0, 1, 'C');
+    $pdf->SetTextColor(15, 76, 129);
+    $pdf->SetFont('helvetica', 'B', 18);
+    $pdf->SetXY($leftMargin + 28, 10);
+    $pdf->Cell(0, 8, 'Inua Premium Services', 0, 1, 'L');
+    $pdf->SetFont('helvetica', 'I', 9);
+    $pdf->SetXY($leftMargin + 28, 18);
+    $pdf->Cell(0, 6, 'Due Loans Report', 0, 1, 'L');
 
-    // top divider aligned to content margins
-    $pdf->SetDrawColor(56, 152, 219);
-    $pdf->SetLineWidth(0.35);
-    $yLine = $pdf->GetY() + 2;
-    $pdf->Line($leftMargin, $yLine, $leftMargin + $contentWidth, $yLine);
-    $pdf->Ln(4);
-
-    $totals = calculate_due_loans_totals($rows);
-
-    $pdf->SetFont('helvetica', '', 10);
     $pdf->SetTextColor(33, 37, 41);
-    $pdf->Cell(0, 6, 'Loan Officer: ' . $officer_display_name, 0, 1, 'L');
-    $pdf->Cell(0, 6, 'Day Filter: ' . $day_label, 0, 1, 'L');
-    $pdf->Cell(0, 6, 'Total Loan Book: KSH ' . number_format($totals['total_loan_book'], 2), 0, 1, 'L');
-    $pdf->Cell(0, 6, 'Performing Book: KSH ' . number_format($totals['total_performing_book'], 2), 0, 1, 'L');
-    $pdf->Cell(0, 6, 'Active Customers: ' . $totals['total_active_customers'], 0, 1, 'L');
+    $pdf->SetFont('helvetica', '', 9);
+    $pdf->SetXY($leftMargin, 30);
+    $pdf->Cell(0, 5, 'Loan Officer: ' . $officer_display_name, 0, 1, 'L');
+    $pdf->SetXY($leftMargin, 35);
+    $pdf->Cell(0, 5, 'Day Filter: ' . $day_label, 0, 1, 'L');
+
+    $pdf->SetDrawColor(15, 76, 129);
+    $pdf->SetLineWidth(0.35);
+    $yLine = 42;
+    $pdf->Line($leftMargin, $yLine, $leftMargin + $contentWidth, $yLine);
     $pdf->Ln(2);
+
+    $totals = array_merge([
+        'total_loan_book' => 0.0,
+        'total_performing_book' => 0.0,
+        'total_arrears' => 0.0,
+        'total_active_customers' => 0,
+        'total_customers_in_arrears' => 0,
+        'total_par_percentage' => 0.0,
+        'customer_arrears_percentage' => 0.0,
+    ], (array) $portfolio_metrics);
+
+    $totals['total_loan_book'] = (float) ($totals['total_loan_book'] ?? 0.0);
+    $totals['total_performing_book'] = (float) ($totals['total_performing_book'] ?? 0.0);
+    $totals['total_arrears'] = (float) ($totals['total_arrears'] ?? 0.0);
+    $totals['total_active_customers'] = (int) ($totals['total_active_customers'] ?? 0);
+    $totals['total_customers_in_arrears'] = (int) ($totals['total_customers_in_arrears'] ?? 0);
+    $totals['total_par_percentage'] = (float) ($totals['total_par_percentage'] ?? 0.0);
+    $totals['customer_arrears_percentage'] = (float) ($totals['customer_arrears_percentage'] ?? 0.0);
+
+    $metricWidth = ($contentWidth - 20) / 3;
+    $metricLabels = [
+        ['Total Loan Book', 'KSH ' . number_format($totals['total_loan_book'], 2)],
+        ['Total PAR', number_format($totals['total_par_percentage'], 2) . '%'],
+        ['Total Arrears', 'KSH ' . number_format($totals['total_arrears'], 2)],
+        ['Active Customers', (string) $totals['total_active_customers']],
+        ['Customers in Arrears', (string) $totals['total_customers_in_arrears']],
+        ['% Customers in Arrears', number_format($totals['customer_arrears_percentage'], 2) . '%'],
+    ];
+
+    $pdf->SetFillColor(239, 246, 255);
+    $pdf->SetTextColor(15, 76, 129);
+    $pdf->SetFont('helvetica', 'B', 8);
+    $startY = 48;
+    foreach ($metricLabels as $index => $metric) {
+        $col = $index % 3;
+        $row = intdiv($index, 3);
+        $x = $leftMargin + ($col * ($metricWidth + 10));
+        $y = $startY + ($row * 16);
+        $pdf->SetXY($x, $y);
+        $pdf->MultiCell($metricWidth, 6, $metric[0] . "\n" . $metric[1], 1, 'C', true, 0);
+    }
+
+    $pdf->SetY($startY + 34);
+    $pdf->SetTextColor(33, 37, 41);
+    $pdf->SetFont('helvetica', '', 9);
+    $pdf->Cell(0, 6, 'Performing Book: KSH ' . number_format((float) $totals['total_performing_book'], 2), 0, 1, 'L');
+    $pdf->Ln(1);
 
     // Define column widths proportional to content width
     // Columns: Borrower, Phone Number, Loan ID, Total Loan Amount, Total Paid, Loan Balance, Due Amount, Due Date
@@ -194,6 +256,100 @@ $result_officers->data_seek(0);
 // Get selected loan officer (if any)
 $selected_officer = isset($_GET['officer_id']) ? $_GET['officer_id'] : 'all';
 $officer_filter = ($selected_officer !== 'all') ? "AND borrowers.loan_officer = (SELECT email FROM users WHERE id = ?)" : "";
+$portfolio_metrics = [
+    'total_loan_book' => 0.0,
+    'total_par_percentage' => 0.0,
+    'total_arrears' => 0.0,
+    'total_active_customers' => 0,
+    'total_customers_in_arrears' => 0,
+    'customer_arrears_percentage' => 0.0,
+];
+
+$portfolio_metrics_sql = "SELECT
+    COALESCE(SUM(CASE WHEN loan_outstanding > 0 THEN loan_outstanding ELSE 0 END), 0) AS total_loan_book,
+    COALESCE(SUM(CASE WHEN overdue_total > 0 THEN overdue_total ELSE 0 END), 0) AS total_arrears,
+    COUNT(DISTINCT CASE WHEN loan_outstanding > 0 THEN borrower_id END) AS total_active_customers,
+    COUNT(DISTINCT CASE WHEN loan_outstanding > 0 AND overdue_total > 0 THEN borrower_id END) AS total_customers_in_arrears
+FROM (
+    SELECT
+        la.borrower AS borrower_id,
+        SUM(GREATEST(0, la.total_amount - COALESCE((SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = la.id), 0))) AS loan_outstanding,
+        SUM(
+            GREATEST(
+                0,
+                COALESCE((SELECT SUM(CASE WHEN r3.repayment_date < CURDATE() THEN COALESCE(r3.amount, 0) ELSE 0 END) FROM repayments r3 WHERE r3.loan_id = la.id), 0)
+                - COALESCE((SELECT SUM(CASE WHEN r3.repayment_date < CURDATE() THEN COALESCE(r3.paid, 0) ELSE 0 END) FROM repayments r3 WHERE r3.loan_id = la.id), 0)
+            )
+        ) AS overdue_total
+    FROM loan_applications la
+    INNER JOIN borrowers b ON b.id = la.borrower
+    WHERE (la.loan_status IS NULL OR la.loan_status != 'rolled_over')
+      AND b.loan_officer = (SELECT email FROM users WHERE id = ?)
+    GROUP BY la.borrower
+) portfolio";
+
+if ($selected_officer === 'all') {
+    $portfolio_metrics_sql = "SELECT
+        COALESCE(SUM(CASE WHEN loan_outstanding > 0 THEN loan_outstanding ELSE 0 END), 0) AS total_loan_book,
+        COALESCE(SUM(CASE WHEN overdue_total > 0 THEN overdue_total ELSE 0 END), 0) AS total_arrears,
+        COUNT(DISTINCT CASE WHEN loan_outstanding > 0 THEN borrower_id END) AS total_active_customers,
+        COUNT(DISTINCT CASE WHEN loan_outstanding > 0 AND overdue_total > 0 THEN borrower_id END) AS total_customers_in_arrears
+    FROM (
+        SELECT
+            la.borrower AS borrower_id,
+            SUM(GREATEST(0, la.total_amount - COALESCE((SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = la.id), 0))) AS loan_outstanding,
+            SUM(
+                GREATEST(
+                    0,
+                    COALESCE((SELECT SUM(CASE WHEN r3.repayment_date < CURDATE() THEN COALESCE(r3.amount, 0) ELSE 0 END) FROM repayments r3 WHERE r3.loan_id = la.id), 0)
+                    - COALESCE((SELECT SUM(CASE WHEN r3.repayment_date < CURDATE() THEN COALESCE(r3.paid, 0) ELSE 0 END) FROM repayments r3 WHERE r3.loan_id = la.id), 0)
+                )
+            ) AS overdue_total
+        FROM loan_applications la
+        INNER JOIN borrowers b ON b.id = la.borrower
+        WHERE (la.loan_status IS NULL OR la.loan_status != 'rolled_over')
+        GROUP BY la.borrower
+    ) portfolio";
+    $portfolio_metrics_stmt = $conn->prepare($portfolio_metrics_sql);
+    if ($portfolio_metrics_stmt) {
+        $portfolio_metrics_stmt->execute();
+        $portfolio_metrics_row = $portfolio_metrics_stmt->get_result()->fetch_assoc();
+        $portfolio_metrics_stmt->close();
+    }
+} else {
+    $portfolio_metrics_stmt = $conn->prepare($portfolio_metrics_sql);
+    if ($portfolio_metrics_stmt) {
+        $portfolio_metrics_stmt->bind_param('i', $selected_officer);
+        $portfolio_metrics_stmt->execute();
+        $portfolio_metrics_row = $portfolio_metrics_stmt->get_result()->fetch_assoc();
+        $portfolio_metrics_stmt->close();
+    }
+}
+
+if (!empty($portfolio_metrics_row)) {
+    $portfolio_metrics['total_loan_book'] = (float) ($portfolio_metrics_row['total_loan_book'] ?? 0);
+    $portfolio_metrics['total_arrears'] = (float) ($portfolio_metrics_row['total_arrears'] ?? 0);
+    $portfolio_metrics['total_active_customers'] = (int) ($portfolio_metrics_row['total_active_customers'] ?? 0);
+    $portfolio_metrics['total_customers_in_arrears'] = (int) ($portfolio_metrics_row['total_customers_in_arrears'] ?? 0);
+    $portfolio_metrics['total_par_percentage'] = $portfolio_metrics['total_loan_book'] > 0 ? (($portfolio_metrics['total_arrears'] / $portfolio_metrics['total_loan_book']) * 100) : 0;
+    $portfolio_metrics['customer_arrears_percentage'] = $portfolio_metrics['total_active_customers'] > 0 ? (($portfolio_metrics['total_customers_in_arrears'] / $portfolio_metrics['total_active_customers']) * 100) : 0;
+}
+
+$cleared_loan_filter = "AND NOT EXISTS (
+                        SELECT 1
+                        FROM (
+                            SELECT loan_id, SUM(Amount) AS total_paid
+                            FROM payment_date_records
+                            GROUP BY loan_id
+                        ) paid_totals
+                        INNER JOIN (
+                            SELECT loan_id, SUM(amount) AS total_due
+                            FROM repayments
+                            GROUP BY loan_id
+                        ) due_totals ON due_totals.loan_id = paid_totals.loan_id
+                        WHERE paid_totals.loan_id = loan_applications.id
+                          AND paid_totals.total_paid >= due_totals.total_due
+                    )";
 
 // Query to fetch all clients with due loans
 $sql_due_loans = "SELECT 
@@ -215,6 +371,7 @@ $sql_due_loans = "SELECT
                   WHERE 
                     repayments.repayment_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
                                         AND (loan_applications.loan_status IS NULL OR loan_applications.loan_status != 'rolled_over')
+                                        $cleared_loan_filter
                                         $day_filter
                                         $officer_filter
                   ORDER BY repayments.repayment_date ASC, loan_applications.id ASC, repayments.id ASC";
@@ -322,7 +479,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
     $body = '<p>Dear ' . htmlspecialchars($greetName) . ',</p><p>Please find the attached due loans report for <strong>' . htmlspecialchars($officer_display_name) . '</strong> and <strong>' . htmlspecialchars($day_label) . '</strong>.</p><p>This report was generated automatically by Inua Premium Services.</p>';
 
     try {
-        $pdf_content = generate_due_loans_pdf($processed_due_loans, $officer_display_name, $day_label);
+        $pdf_content = generate_due_loans_pdf($processed_due_loans, $officer_display_name, $day_label, $portfolio_metrics);
         $filename = 'due_loans_report_' . date('Ymd_His') . '.pdf';
         send_pdf_email($recipient_email, $subject, $body, $pdf_content, $filename);
         $email_status = 'success';
@@ -481,7 +638,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
                             <td><?php echo number_format($row['total_disbursed'], 2); ?></td>
                             <td><?php echo number_format($row['total_paid'], 2); ?></td>
                             <td><?php echo number_format($row['loan_balance'], 2); ?></td>
-                            <td style="background-color: <?php echo !empty($row['is_past_due']) ? '#f700ea' : 'transparent'; ?>;"><?php echo number_format($row['due_amount'], 2); ?></td>
+                            <td style="background-color: <?php echo !empty($row['is_past_due']) ? '#f72500' : 'transparent'; ?>;"><?php echo number_format($row['due_amount'], 2); ?></td>
                             <td><?php echo htmlspecialchars($row['due_date']); ?></td>
                         </tr>
                     <?php endforeach; ?>

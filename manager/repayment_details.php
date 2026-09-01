@@ -709,25 +709,35 @@ while ($guarantorRow = $guarantorResult->fetch_assoc()) {
 }
 $guarantorStmt->close();
 
-$overdueStmt = $conn->prepare("SELECT repayment_date, amount, paid FROM repayments WHERE loan_id = ? ORDER BY repayment_date ASC");
+$overdueStmt = $conn->prepare("SELECT repayment_date, amount, paid, repaid_date FROM repayments WHERE loan_id = ? ORDER BY repayment_date ASC");
 $overdueStmt->bind_param("i", $loanId);
 $overdueStmt->execute();
 $overdueResult = $overdueStmt->get_result();
 $daysInArrears = 0;
 $overdueAmount = 0;
+$today = new DateTime('today');
 while ($overdueRow = $overdueResult->fetch_assoc()) {
     $repaymentDate = $overdueRow['repayment_date'];
     $amount = (float) ($overdueRow['amount'] ?? 0);
     $paid = (float) ($overdueRow['paid'] ?? 0);
-    $amountOutstanding = max(0, $amount - $paid);
 
-    if (!empty($repaymentDate) && $repaymentDate < date('Y-m-d') && $amountOutstanding > 0) {
-        $overdueAmount += $amountOutstanding;
-        $today = new DateTime('today');
-        $dueDate = new DateTime($repaymentDate);
-        if ($dueDate < $today && $daysInArrears < (int) $dueDate->diff($today)->days) {
-            $daysInArrears = (int) $dueDate->diff($today)->days;
-        }
+    if (empty($repaymentDate) || $amount <= 0) {
+        continue;
+    }
+
+    $dueDate = new DateTime($repaymentDate);
+    $amountOutstanding = max(0, $amount - $paid);
+    $overdueAmount += $amountOutstanding;
+
+    $clearDate = null;
+    if (!empty($overdueRow['repaid_date'])) {
+        $clearDate = new DateTime($overdueRow['repaid_date']);
+    } elseif ($amountOutstanding > 0) {
+        $clearDate = $today;
+    }
+
+    if ($clearDate !== null && $dueDate < $clearDate) {
+        $daysInArrears += max(0, (int) $dueDate->diff($clearDate)->days);
     }
 }
 $overdueStmt->close();
