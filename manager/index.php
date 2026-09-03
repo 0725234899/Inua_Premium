@@ -67,6 +67,17 @@ $stmt_total_interest = $conn->prepare($sql_total_interest);
 $stmt_total_interest->execute();
 $total_interest_amount = $stmt_total_interest->get_result()->fetch_assoc()['total_interest'] ?? 0;
 
+$sql_total_penalties = "SELECT COALESCE(SUM(GREATEST(0, (
+                            COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)
+                            - (l.principal + (l.principal * 0.06 * l.loan_duration))
+                        ))), 0) AS total_penalties
+                        FROM loan_applications l
+                        WHERE l.loan_status IN ('approved', 'rolled_over')
+                           OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%'";
+$stmt_total_penalties = $conn->prepare($sql_total_penalties);
+$stmt_total_penalties->execute();
+$total_penalty_amount = $stmt_total_penalties->get_result()->fetch_assoc()['total_penalties'] ?? 0;
+
 $sql_total_fees = "SELECT CEIL(COALESCE(SUM(processing_fee + registration_fee), 0)) AS total_fees
                    FROM loan_applications
                    WHERE loan_status = 'approved'";
@@ -87,34 +98,6 @@ $sql_total_loans = "SELECT CEIL(SUM(loan_applications.total_amount)) AS total_lo
 $stmt_total_loans = $conn->prepare($sql_total_loans);
 $stmt_total_loans->execute();
 $total_loan_amount = $stmt_total_loans->get_result()->fetch_assoc()['total_loans'] ?? 0;
-
-// Fetch detailed loan breakdown for interest view (principal, total, interest, total_paid, balance, status)
-$sql_interest_details = "SELECT 
-    l.id,
-    b.full_name AS borrower_name,
-    l.principal,
-    l.loan_duration,
-    l.total_amount,
-    (l.total_amount - l.principal) AS interest,
-    COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0) AS total_paid,
-    (l.total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)) AS loan_balance,
-    GREATEST(0, (
-        COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)
-        - (l.principal + (l.principal * 0.06 * l.loan_duration))
-    )) AS penalty_amount,
-    l.loan_status
-FROM loan_applications l
-INNER JOIN borrowers b ON l.borrower = b.id
-WHERE l.loan_status IN ('approved', 'rolled_over')
-   OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%'
-ORDER BY
-    CASE
-        WHEN LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%' THEN 0
-        WHEN (l.total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)) <= 0 THEN 1
-        ELSE 2
-    END,
-    l.loan_release_date DESC";
-$result_interest_details = $conn->query($sql_interest_details);
 
 // Calculate Performing Book
 $performing_book = max(0, $total_loan_amount - $total_arrears - $total_paid_amount);
@@ -244,136 +227,215 @@ if (session_status() === PHP_SESSION_NONE) {
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
+        :root {
+            --ink: #172331;
+            --muted: #687582;
+            --line: #dbe3e8;
+            --paper: #ffffff;
+            --canvas: #f2f5f6;
+            --teal: #147d78;
+            --gold: #c7973e;
+        }
+
         body {
-            font-family: 'Poppins', sans-serif;
-            background-color: #e3f2fd; /* Sky-blue background */
-            margin: 0;
+            background: var(--canvas);
+            color: var(--ink);
+            font-family: "Trebuchet MS", Arial, sans-serif;
+        }
+
+        .main {
+            margin-left: 250px;
+            padding: 34px 22px 60px;
+            transition: margin-left 0.3s ease;
+        }
+
+        .main > .header {
+            background: var(--ink);
+            border-top: 4px solid var(--gold);
+            color: white;
+            margin: 0 auto;
+            max-width: 1280px;
+            padding: 26px 34px;
+        }
+
+        .main > .header h1 {
+            color: white;
+            font-family: Georgia, serif;
+            font-size: clamp(1.8rem, 3vw, 2.6rem);
+            font-weight: normal;
+            letter-spacing: .02em;
+        }
+
+        .sidebar-toggle-btn {
+            background: transparent;
+            border: 1px solid #82939c;
+            border-radius: 0;
+            color: white;
+            margin-right: 14px;
+            padding: 8px 12px;
+        }
+
+        .sidebar-toggle-btn:hover {
+            background: var(--teal);
+            border-color: var(--teal);
+            color: white;
+        }
+
+        .main > .header .btn-primary {
+            background: transparent;
+            border: 1px solid #82939c;
+            border-radius: 0;
+            color: white;
+            margin-right: 0 !important;
+            padding: 8px 14px;
+        }
+
+        .main > .header .btn-primary:hover {
+            background: var(--teal);
+            border-color: var(--teal);
+        }
+
+        .dashboard-client-search {
+            display: flex;
+            gap: 8px;
+            margin-left: auto;
+            margin-right: 18px;
+            max-width: 390px;
+            width: 100%;
+        }
+
+        .dashboard-client-search input {
+            border: 1px solid #82939c;
+            border-radius: 0;
+            min-width: 0;
+        }
+
+        .dashboard-client-search .btn {
+            background: var(--teal);
+            border: 1px solid var(--teal);
+            border-radius: 0;
+            color: white;
+            white-space: nowrap;
+        }
+
+        .dashboard-client-search .btn:hover { background: #0f625e; }
+        .client-search-error { color: #a95d55; display: none; font-size: .85rem; margin-top: 10px; }
+        .client-summary { background: #f7faf9; border-left: 4px solid var(--teal); padding: 16px 18px; }
+        .client-summary h3 { font-family: Georgia, serif; font-size: 1.35rem; margin: 0 0 8px; }
+        .client-summary p { color: var(--muted); margin: 3px 0; }
+        .client-loans-title { color: var(--ink); font-family: Georgia, serif; font-size: 1.2rem; margin: 22px 0 10px; }
+        .client-loans-table { font-size: .9rem; }
+        .client-loans-table th { white-space: nowrap; }
+
+        .main > .container {
+            margin: 18px auto 0;
+            max-width: 1280px;
             padding: 0;
         }
+
         .dashboard-metrics {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: flex-end; /* Align metrics to the right edge */
-            gap: 15px; /* Gap between metrics */
-            margin-top: 20px;
-            margin-right: 20px; /* Slightly touch the right edge */
-        }
-        .metric {
-            background-color: #ffffff;
-            border: 1px solid #90caf9;
-            border-radius: 10px;
-            padding: 10px; /* Reduced padding */
-            text-align: center;
-            width: 180px; /* Reduced width for uniformity */
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-            transition: transform 0.3s ease-in-out;
-        }
-        .metric.loan-book {
-            width: 150px; /* Further reduced size for Loan Book metric */
-        }
-        .metric:hover {
-            transform: scale(1.05);
-        }
-        .metric h2 {
-            font-size: 18px; /* Reduced font size */
-            font-weight: bold;
-            color: #1976d2;
-        }
-        .metric p {
-            font-size: 14px; /* Reduced font size */
-            color: #424242;
-        }
-        .chart-container {
-            width: 100%;
-            max-width: 700px; /* Reduced max width */
-            margin: 20px auto; /* Reduced margin */
-            background-color: #ffffff;
-            padding: 15px; /* Reduced padding */
-            border-radius: 10px;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-        }
-        .header {
-            padding: 10px 0;
-            text-align: center;
-        }
-        .header h1 {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 14px;
             margin: 0;
-            font-size: 24px; /* Reduced font size */
-            color: #000; /* Removed theme color */
         }
-        .container {
-            margin-top: 30px;
+
+        .dashboard-metrics a {
+            color: inherit;
+            text-decoration: none;
         }
+
+        .metric {
+            background: var(--paper);
+            border: 1px solid var(--line);
+            border-left: 4px solid var(--teal);
+            border-radius: 0;
+            box-shadow: none;
+            padding: 18px 20px;
+            text-align: left;
+            transition: border-color 0.2s ease, transform 0.2s ease;
+            width: auto;
+        }
+
+        .metric:nth-child(2), .metric:nth-child(6) { border-left-color: var(--gold); }
+        .metric:nth-child(3), .metric:nth-child(7) { border-left-color: #5b7180; }
+        .metric:nth-child(4), .metric:nth-child(8) { border-left-color: #a95d55; }
+        .metric:hover { box-shadow: 0 3px 10px rgba(23, 35, 49, .08); transform: translateY(-2px); }
+        .metric.loan-book { width: auto; }
+        .metric h2 { color: var(--ink); font-family: Georgia, serif; font-size: 1.45rem; margin: 8px 0 0; }
+        .metric p { color: var(--muted); font-size: .74rem; letter-spacing: .1em; margin: 0; text-transform: uppercase; }
+
+        .chart-container {
+            background: var(--paper);
+            border: 1px solid var(--line);
+            border-radius: 0;
+            box-shadow: none;
+            margin: 18px 0 !important;
+            max-width: none;
+            padding: 24px 18px;
+            width: auto;
+        }
+
+        .main > .container > .container {
+            margin: 18px 0 0;
+            max-width: none;
+            padding: 0;
+        }
+
+        .section-title {
+            background: var(--ink);
+            border-top: 4px solid var(--gold);
+            color: white;
+            font-family: Georgia, serif;
+            font-size: 1.25rem;
+            font-weight: normal;
+            margin: 0;
+            padding: 18px 22px;
+        }
+
         .table-container {
+            background: var(--paper);
+            border: 1px solid var(--line);
+            border-top: 0;
             overflow-x: auto;
+            padding: 18px 22px 0;
         }
-        .table thead th {
-            background-color: #007bff;
-            color: #ffffff;
+
+        #interestSearch { border-color: var(--line); border-radius: 0; color: var(--ink); }
+        #interestSearch:focus { border-color: var(--teal); box-shadow: 0 0 0 .2rem rgba(20, 125, 120, .12); }
+        .table { margin: 0; }
+        .table thead th { background: #edf2f3; border-bottom: 2px solid var(--teal); color: #425460; font-size: .72rem; letter-spacing: .08em; padding: 14px 18px; text-transform: uppercase; white-space: nowrap; }
+        .table tbody td { border-color: #e6ecef; padding: 15px 18px; vertical-align: middle; }
+        .table tbody tr:nth-child(odd), .table tbody tr.cleared-loan, .table tbody tr.rolled-over-loan { background: transparent; }
+        .table tbody tr:hover { background: #f7faf9; }
+        .table a { color: var(--teal); font-weight: bold; text-decoration: none; }
+        .table a:hover { color: var(--ink); text-decoration: underline; }
+        .cleared-loan-badge, .rolled-over-badge { border-radius: 20px; display: inline-block; font-size: .72rem; font-weight: bold; letter-spacing: .05em; padding: 5px 10px; text-transform: uppercase; }
+        .cleared-loan-badge { background: #edf0f2; color: #53636d; }
+        .rolled-over-badge { background: #e6f3f1; color: #146b67; }
+
+        .sidebar { transition: all 0.3s ease; }
+        .sidebar.collapsed { display: none; }
+        .main.sidebar-collapsed { margin-left: 0; }
+
+        @media (max-width: 850px) {
+            .main > .header { padding: 24px; }
+            .dashboard-metrics { grid-template-columns: repeat(2, 1fr); }
+            .dashboard-client-search { margin: 16px 0 0; max-width: none; order: 3; }
+            .main > .header { flex-wrap: wrap; }
         }
-        .table tbody tr:nth-child(odd) {
-            background-color: #f9f9f9;
-        }
-        .table tbody tr:hover {
-            background-color: #f1f1f1;
-        }
-        .table tbody tr.cleared-loan {
-            background-color: #e6f4ea;
-        }
-        .table tbody tr.rolled-over-loan {
-            background-color: #fff3cd;
-        }
-        .cleared-loan-badge {
-            background-color: #d4edda;
-            color: #155724;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-weight: 600;
-            display: inline-block;
-        }
-        .rolled-over-badge {
-            background-color: #fff3cd;
-            color: #856404;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-weight: 700;
-            display: inline-block;
-        }
-        .sidebar-toggle-btn {
-            border: 1px solid #1976d2;
-            color: #1976d2;
-            background: #fff;
-            border-radius: 6px;
-            padding: 6px 10px;
-            margin-right: 10px;
-        }
-        .sidebar-toggle-btn:hover {
-            background: #1976d2;
-            color: #fff;
-        }
-        .sidebar {
-            transition: all 0.3s ease;
-        }
-        .sidebar.collapsed {
-            display: none;
-        }
-        .main {
-            transition: margin-left 0.3s ease;
-            margin-left: 250px;
-        }
-        .main.sidebar-collapsed {
-            margin-left: 0;
-        }
+
         @media (max-width: 768px) {
-            .metric {
-                flex: 1 1 100%; /* Stack metrics vertically on smaller screens */
-            }
-            .main {
-                margin-left: 0;
-            }
-            .main.sidebar-collapsed {
-                margin-left: 0;
-            }
+            .main { margin-left: 0; padding: 20px 12px 40px; }
+            .main.sidebar-collapsed { margin-left: 0; }
+        }
+
+        @media (max-width: 520px) {
+            .dashboard-metrics { grid-template-columns: 1fr; }
+            .main > .header { padding: 20px; }
+            .main > .header h1 { font-size: 1.8rem; }
+            .table-container { padding-left: 12px; padding-right: 12px; }
+            .dashboard-client-search { flex-direction: column; }
         }
     </style>
 </head>
@@ -390,6 +452,10 @@ if (session_status() === PHP_SESSION_NONE) {
             </button>
             <h1 class="mb-0">Manager Dashboard</h1>
         </div>
+        <form class="dashboard-client-search" id="clientSearchForm" novalidate>
+            <input type="search" class="form-control" id="clientSearchInput" placeholder="Search client name or phone" aria-label="Search client name or phone">
+            <button type="submit" class="btn" id="clientSearchButton"><i class="bi bi-search"></i> Search</button>
+        </form>
         <a href="add_repayments.php" class="btn btn-primary" style="margin-right:20px;">Add Repayments</a>
     </div>
     <div class="container mt-4">
@@ -415,9 +481,17 @@ if (session_status() === PHP_SESSION_NONE) {
                 <h2><?php echo number_format($par, 2); ?>%</h2>
                 <p>Portfolio At Risk</p>
             </div>
-            <a href="#interestTable"><div class="metric">
+            <a href="interest_breakdown.php"><div class="metric">
                 <h2>KSH <?php echo number_format(ceil($total_interest_amount)); ?></h2>
                 <p>Total Interest</p>
+            </div></a>
+            <a href="interest_breakdown.php"><div class="metric">
+                <h2>KSH <?php echo number_format(ceil($total_interest_amount)); ?></h2>
+                <p>Interest Breakdown</p>
+            </div></a>
+            <a href="penalty_breakdown.php"><div class="metric">
+                <h2>KSH <?php echo number_format(ceil($total_penalty_amount)); ?></h2>
+                <p>Penalties</p>
             </div></a>
             <div class="metric">
                 <h2>KSH <?php echo number_format(ceil($total_fee_amount)); ?></h2>
@@ -436,74 +510,22 @@ if (session_status() === PHP_SESSION_NONE) {
                 <p>Due Loans</p>
             </div></a>
         </div>
-
-        <div class="chart-container mt-5 d-flex flex-wrap justify-content-center">
-            <!-- Pie Chart for PAR -->
-            <div style="flex: 1; min-width: 300px; max-width: 400px;">
-                <canvas id="parPieChart" style="width: 100%; height: 300px;"></canvas>
-            </div>
-            <!-- Bar Chart for Loan Metrics -->
-            <div style="flex: 1; min-width: 300px; max-width: 400px;">
-                <canvas id="loanChart" style="width: 100%; height: 300px;"></canvas>
             </div>
         </div>
-    
-    <div class="container mt-4">
-        <h3 id="interestTable" class="section-title">Interest Breakdown (Clients)</h3>
-        <div class="table-container mt-2">
-            <input type="text" id="interestSearch" placeholder="Search by borrower or phone..." class="form-control mb-3" style="max-width:400px;">
-            <table id="interestBreakdownTable" class="table table-bordered">
-                <thead>
-                    <tr>
-                        <th>Borrower</th>
-                        <th>Loan ID</th>
-                        <th>Principal (KSH)</th>
-                        <th>Total Amount (KSH)</th>
-                        <th>Interest (KSH)</th>
-                        <th>Total Paid (KSH)</th>
-                        <th>Loan Balance (KSH)</th>
-                        <th>Penalties (KSH)</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php if ($result_interest_details && $result_interest_details->num_rows > 0): ?>
-                        <?php while ($row = $result_interest_details->fetch_assoc()): ?>
-                            <?php
-                                $isRolledOver = preg_match('/roll/i', trim($row['loan_status'] ?? ''));
-                                $isCleared = !$isRolledOver && floatval($row['loan_balance']) <= 0;
-                                $penalty = floatval($row['penalty_amount'] ?? 0);
-                                $rowClass = $isRolledOver ? 'rolled-over-loan' : ($isCleared ? 'cleared-loan' : '');
-                            ?>
-                            <tr class="<?php echo $rowClass; ?>">
-                                <td><?php echo htmlspecialchars($row['borrower_name']); ?></td>
-                                <td><a href="repayment_details.php?loanId=<?php echo $row['id']; ?>"><?php echo htmlspecialchars($row['id']); ?></a></td>
-                                <td><?php echo number_format($row['principal'], 2); ?></td>
-                                <td><?php echo number_format($row['total_amount'], 2); ?></td>
-                                <td><?php echo number_format($row['interest'], 2); ?></td>
-                                <td><?php echo number_format($row['total_paid'], 2); ?></td>
-                                <td><?php echo number_format($row['loan_balance'], 2); ?></td>
-                                <td><?php echo number_format($penalty, 2); ?></td>
-                                <td>
-                                    <?php if ($isRolledOver): ?>
-                                        <span class="rolled-over-badge">Rolled Over</span>
-                                    <?php elseif ($isCleared): ?>
-                                        <span class="cleared-loan-badge">Cleared</span>
-                                    <?php else: ?>
-                                        Not Cleared
-                                    <?php endif; ?>
-                                </td>
-                            </tr>
-                        <?php endwhile; ?>
-                    <?php else: ?>
-                        <tr><td colspan="9" class="text-center">No loans found.</td></tr>
-                    <?php endif; ?>
-                </tbody>
-            </table>
-        </div>
-    </div>
     </div>
 </main>
+
+<div class="modal fade" id="clientSearchModal" tabindex="-1" aria-labelledby="clientSearchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title fs-5" id="clientSearchModalLabel">Client Information</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="clientSearchResults"></div>
+        </div>
+    </div>
+</div>
 
 <script>
     document.addEventListener('DOMContentLoaded', function () {
@@ -516,6 +538,74 @@ if (session_status() === PHP_SESSION_NONE) {
                 sidebarWrapper.classList.toggle('collapsed');
                 mainContent.classList.toggle('sidebar-collapsed');
             });
+        }
+
+        const clientSearchForm = document.getElementById('clientSearchForm');
+        const clientSearchInput = document.getElementById('clientSearchInput');
+        const clientSearchButton = document.getElementById('clientSearchButton');
+        const clientSearchModal = document.getElementById('clientSearchModal');
+        const clientSearchResults = document.getElementById('clientSearchResults');
+
+        if (clientSearchForm) {
+            clientSearchForm.addEventListener('submit', async function (event) {
+                event.preventDefault();
+                const query = clientSearchInput.value.trim();
+                if (!query) {
+                    clientSearchResults.innerHTML = '<p class="client-search-error" style="display:block;">Enter a client name or phone number.</p>';
+                    bootstrap.Modal.getOrCreateInstance(clientSearchModal).show();
+                    return;
+                }
+
+                clientSearchButton.disabled = true;
+                clientSearchButton.innerHTML = '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Searching';
+                try {
+                    const response = await fetch('search_client_details.php?query=' + encodeURIComponent(query), { headers: { 'Accept': 'application/json' } });
+                    const clients = await response.json();
+                    if (!response.ok || clients.error) throw new Error(clients.error || 'Unable to search clients.');
+                    clientSearchResults.innerHTML = renderClientSearchResults(clients);
+                    bootstrap.Modal.getOrCreateInstance(clientSearchModal).show();
+                } catch (error) {
+                    clientSearchResults.innerHTML = '<p class="client-search-error" style="display:block;">' + escapeClientSearchText(error.message) + '</p>';
+                    bootstrap.Modal.getOrCreateInstance(clientSearchModal).show();
+                } finally {
+                    clientSearchButton.disabled = false;
+                    clientSearchButton.innerHTML = '<i class="bi bi-search"></i> Search';
+                }
+            });
+        }
+
+        function escapeClientSearchText(value) {
+            const element = document.createElement('div');
+            element.textContent = value;
+            return element.innerHTML;
+        }
+
+        function renderClientSearchResults(clients) {
+            if (!clients.length) return '<p class="client-search-error" style="display:block;">No client found with that name or phone number.</p>';
+            return clients.map(client => {
+                const loans = client.loans.length ? client.loans.map(loan => `
+                    <tr>
+                        <td><a href="repayment_details.php?loanId=${encodeURIComponent(loan.id)}">${escapeClientSearchText(loan.id)}</a></td>
+                        <td>KSH ${Number(loan.principal || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                        <td>KSH ${Number(loan.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                        <td>${escapeClientSearchText(loan.loan_duration || '')}</td>
+                        <td>KSH ${Number(loan.total_paid || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                        <td>KSH ${Number(loan.dues_arrears || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                        <td>${escapeClientSearchText(loan.loan_release_date || 'Not specified')}</td>
+                        <td><span class="status ${loan.loan_status === 'Cleared' ? 'status-cleared' : 'status-not-cleared'}">${escapeClientSearchText(loan.loan_status || 'Not Cleared')}</span></td>
+                    </tr>`).join('') : '<tr><td colspan="7" class="text-center">No loans found.</td></tr>';
+                return `<div class="client-summary mb-3">
+                    <h3>${escapeClientSearchText(client.full_name)}</h3>
+                    <p><strong>Phone:</strong> ${escapeClientSearchText(client.mobile || 'Not specified')}</p>
+                    <p><strong>Client number:</strong> ${escapeClientSearchText(client.unique_number || 'Not specified')}</p>
+                    <p><strong>Loan officer:</strong> ${escapeClientSearchText(client.loan_officer_name || 'Not specified')}</p>
+                </div>
+                <h3 class="client-loans-title">Loan Terms and IDs</h3>
+                <div class="table-responsive"><table class="table table-bordered client-loans-table">
+                    <thead><tr><th>Loan ID</th><th>Principal</th><th>Total Amount</th><th>Duration</th><th>Total Paid</th><th>Dues/Arrears</th><th>Release Date</th><th>Status</th></tr></thead>
+                    <tbody>${loans}</tbody>
+                </table></div>`;
+            }).join('<hr>');
         }
     });
 
@@ -560,27 +650,6 @@ if (session_status() === PHP_SESSION_NONE) {
                 y: { title: { display: true, text: 'Amount (KSH)' } },
                 x: { title: { display: true, text: 'Metrics' } }
             }
-        }
-    });
-</script>
-<script>
-    document.addEventListener('DOMContentLoaded', function () {
-        const interestSearch = document.getElementById('interestSearch');
-        if (interestSearch) {
-            function normalizeSearchText(text) {
-                return text.toLowerCase().replace(/[^a-z0-9]/g, '');
-            }
-
-            interestSearch.addEventListener('input', function () {
-                const filter = normalizeSearchText(this.value);
-                const rows = document.querySelectorAll('#interestBreakdownTable tbody tr');
-
-                rows.forEach(row => {
-                    const cells = Array.from(row.cells).map(cell => normalizeSearchText(cell.textContent));
-                    const match = cells.some(text => text.includes(filter));
-                    row.style.display = match ? '' : 'none';
-                });
-            });
         }
     });
 </script>

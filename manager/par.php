@@ -356,9 +356,15 @@ foreach ($officerOptions as $officer) {
                 <h1 class="text-3xl md:text-4xl font-bold text-gray-900">Inua Premium Loan Officer Portfolio Analysis</h1>
                 <p class="mt-2 text-lg text-gray-600">Interactive Performance & Risk Assessment Dashboard</p>
             </div>
-            <a href="index.php" class="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white font-semibold px-4 py-2 rounded-lg shadow-sm">
-                ← Back to Dashboard
-            </a>
+            <div class="flex flex-wrap items-center justify-center md:justify-end gap-3">
+                <a href="report_analytics.php<?php echo isset($_SERVER['QUERY_STRING']) && $_SERVER['QUERY_STRING'] ? '?' . $_SERVER['QUERY_STRING'] : ''; ?>" class="inline-flex items-center gap-2 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white font-semibold px-5 py-3 rounded-xl shadow-lg shadow-violet-200 transition-all duration-200">
+                    <span>📊</span>
+                    <span>Analytical Tool</span>
+                </a>
+                <a href="index.php" class="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white font-semibold px-4 py-2 rounded-lg shadow-sm">
+                    ← Back to Dashboard
+                </a>
+            </div>
         </header>
 
         <div class="bg-white p-4 rounded-xl shadow-sm mb-4">

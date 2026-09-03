@@ -1,5 +1,16 @@
 <?php
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
 include 'db.php';
+require_once __DIR__ . '/../includes/functions.php';
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+if (empty($_SESSION['email'])) {
+    header('Location: ../index.html');
+    exit();
+}
 
 // Fetch approved loans (basic list)
 $sql_loans = "SELECT 
@@ -48,58 +59,200 @@ if ($res_total_interest) {
     <link href="assets/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
     <link href="../assets/css/style.css" rel="stylesheet">
     <style>
+        :root {
+            --ink: #172331;
+            --muted: #687582;
+            --line: #dbe3e8;
+            --paper: #ffffff;
+            --canvas: #f2f5f6;
+            --teal: #147d78;
+            --gold: #c7973e;
+        }
+
         body {
-            font-family: 'Open Sans', sans-serif;
-            background-color: #f8f9fa;
-            color: #212529;
+            background: var(--canvas);
+            color: var(--ink);
+            font-family: "Trebuchet MS", Arial, sans-serif;
         }
+
+        .sidebar {
+            transition: all 0.3s ease;
+        }
+
+        .sidebar.collapsed {
+            display: none;
+        }
+
+        .main {
+            margin-left: 250px;
+            padding: 34px 22px 60px;
+            transition: margin-left 0.3s ease;
+        }
+
+        .main.sidebar-collapsed {
+            margin-left: 0;
+        }
+
         .header {
-            background-color: #e84545;
-            color: #ffffff;
-            padding: 15px 0;
-            text-align: center;
+            background: var(--ink);
+            border-top: 4px solid var(--gold);
+            color: white;
+            margin: 0 auto;
+            max-width: 1280px;
+            padding: 30px 34px 27px;
+            text-align: left;
         }
+
         .header h1 {
-            font-size: 2rem;
-            font-weight: 600;
+            font-family: Georgia, serif;
+            font-size: clamp(1.8rem, 3vw, 2.6rem);
+            font-weight: normal;
+            letter-spacing: .02em;
             margin: 0;
         }
-        .table {
-            margin-top: 20px;
-            background-color: #ffffff;
-            border-radius: 10px;
-            overflow: hidden;
+
+        .sidebar-toggle-btn {
+            background: transparent;
+            border: 1px solid #82939c;
+            border-radius: 0;
+            color: white;
+            margin-right: 14px;
+            padding: 8px 12px;
         }
-        .table th {
-            background-color: #e84545;
-            color: #ffffff;
-            text-align: center;
+
+        .sidebar-toggle-btn:hover {
+            background: var(--teal);
+            border-color: var(--teal);
+            color: white;
         }
-        .table td {
-            text-align: center;
+
+        .container {
+            max-width: 1280px;
         }
-        .btn-primary {
-            background-color: #e84545;
-            border: none;
-            transition: all 0.3s ease-in-out;
+
+        .container.mt-5 {
+            background: var(--paper);
+            border: 1px solid var(--line);
+            margin-top: 18px !important;
+            overflow-x: auto;
+            padding: 22px;
         }
-        .btn-primary:hover {
-            background-color: #d43d3d;
-        }
+
         .section-title {
-            font-size: 1.8rem;
-            font-weight: 600;
-            color: #e84545;
-            margin-bottom: 20px;
-            text-align: center;
+            color: var(--ink);
+            font-family: Georgia, serif;
+            font-size: 1.45rem;
+            font-weight: normal;
+            margin: 0;
+            text-align: left;
+        }
+
+        .table {
+            background: var(--paper);
+            margin-top: 20px;
+            min-width: 1150px;
+        }
+
+        .table th {
+            background: #edf2f3;
+            border-bottom: 2px solid var(--teal);
+            color: #425460;
+            font-size: .72rem;
+            letter-spacing: .08em;
+            padding: 14px 12px;
+            text-align: left;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .table td {
+            border-color: #e6ecef;
+            padding: 15px 12px;
+            text-align: left;
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+
+        .table tbody tr:hover {
+            background: #f7faf9;
+        }
+
+        .table a {
+            color: var(--teal);
+            font-weight: bold;
+            text-decoration: none;
+        }
+
+        .table a:hover {
+            color: var(--ink);
+            text-decoration: underline;
+        }
+
+        .btn-primary {
+            background: transparent;
+            border: 1px solid var(--teal);
+            border-radius: 0;
+            color: var(--teal);
+            padding: 8px 14px;
+        }
+
+        .btn-primary:hover {
+            background: var(--teal);
+            border-color: var(--teal);
+            color: white;
+        }
+
+        .btn-outline-primary {
+            border-color: var(--teal);
+            border-radius: 0;
+            color: var(--teal);
+        }
+
+        .btn-outline-primary:hover {
+            background: var(--teal);
+            border-color: var(--teal);
+            color: white;
+        }
+
+        footer {
+            color: var(--muted);
+            font-size: .78rem;
+        }
+
+        @media (max-width: 768px) {
+            .main {
+                margin-left: 0;
+                padding: 20px 12px 40px;
+            }
+
+            .header {
+                padding: 24px;
+            }
+
+            .container.mt-5 {
+                padding: 16px 12px;
+            }
+
+            .container.mt-5 > .d-flex {
+                align-items: flex-start !important;
+                flex-direction: column;
+                gap: 14px;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>Approved Loans</h1>
+    <div class="sidebar" id="sidebarWrapper">
+        <?php include '../includes/sidebar.php'; ?>
     </div>
-    <div class="container mt-5">
+    <main class="main" id="mainContent">
+        <div class="header d-flex align-items-center">
+            <button type="button" class="sidebar-toggle-btn" id="sidebarToggleMain" aria-label="Toggle navigation">
+                <i class="bi bi-list"></i>
+            </button>
+            <h1>Approved Loans</h1>
+        </div>
+        <div class="container mt-5">
         <div class="d-flex justify-content-between align-items-center mb-3">
             <h3 class="section-title">Loan Applications</h3>
             <a href="index.php#interestTable" class="btn btn-outline-primary">
@@ -151,10 +304,25 @@ if ($res_total_interest) {
         </table>
         
         <!-- Interest breakdown moved to Manager Dashboard (index.php) -->
-    </div>
-    <footer class="text-center mt-5">
-        <p><em>Powered by AntonTech</em></p>
-    </footer>
+        </div>
+        <footer class="text-center mt-5">
+            <p><em>Powered by AntonTech</em></p>
+        </footer>
+    </main>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const toggleButton = document.getElementById('sidebarToggleMain');
+            const sidebarWrapper = document.getElementById('sidebarWrapper');
+            const mainContent = document.getElementById('mainContent');
+
+            if (toggleButton && sidebarWrapper && mainContent) {
+                toggleButton.addEventListener('click', function () {
+                    sidebarWrapper.classList.toggle('collapsed');
+                    mainContent.classList.toggle('sidebar-collapsed');
+                });
+            }
+        });
+    </script>
     <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
