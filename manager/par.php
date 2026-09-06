@@ -1,6 +1,20 @@
 <?php
 include 'db.php';
 
+$conn->query("CREATE TABLE IF NOT EXISTS penalty_actions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    loan_id INT NOT NULL,
+    borrower_id INT NOT NULL,
+    officer_email VARCHAR(255) NOT NULL,
+    officer_name VARCHAR(255) NOT NULL,
+    amount DECIMAL(15, 2) NOT NULL,
+    note VARCHAR(500) DEFAULT NULL,
+    acted_by VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_penalty_actions_loan (loan_id),
+    INDEX idx_penalty_actions_officer (officer_email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
 function getBorrowerLoans($conn, $borrowerId, $startDate = null, $endDate = null, $processingFeeColumn = null, $registrationFeeColumn = null) {
     $processingFeeSelect = $processingFeeColumn ? "COALESCE(la.$processingFeeColumn, 0) AS processing_fee" : '0 AS processing_fee';
     $registrationFeeSelect = $registrationFeeColumn ? "COALESCE(la.$registrationFeeColumn, 0) AS registration_fee" : '0 AS registration_fee';
@@ -9,7 +23,7 @@ function getBorrowerLoans($conn, $borrowerId, $startDate = null, $endDate = null
                    (la.total_amount - la.principal) AS interest,
                    $processingFeeSelect,
                    $registrationFeeSelect,
-                   COALESCE(SUM(r.paid), 0) AS total_paid
+                   COALESCE(SUM(r.paid), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = la.id), 0) AS total_paid
             FROM loan_applications la
             LEFT JOIN repayments r ON r.loan_id = la.id
             WHERE la.borrower = ? AND la.loan_status = 'approved'";
@@ -43,7 +57,8 @@ function getBorrowerOverdue($conn, $borrowerId, $startDate = null, $endDate = nu
                 WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0)
                 ELSE 0
             END), 0)
-            - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0),
+            - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0)
+            - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0),
             0
         ) AS total_overdue
         FROM borrowers

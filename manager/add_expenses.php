@@ -1,5 +1,6 @@
 <?php
 session_start();
+require_once __DIR__ . '/../includes/functions.php';
 require_once 'db.php';
 
 $conn->query("CREATE TABLE IF NOT EXISTS expense_templates (
@@ -29,6 +30,12 @@ $conn->query("CREATE TABLE IF NOT EXISTS loan_officer_expenses (
 
 $message = '';
 $error = '';
+$savedMessage = $_GET['saved'] ?? '';
+if ($savedMessage === '1') {
+    $message = 'Expense entry saved successfully.';
+} elseif ($savedMessage === 'updated') {
+    $message = 'Expense entry updated successfully.';
+}
 $editing = false;
 $editExpenseId = 0;
 $expenseType = '';
@@ -110,14 +117,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $updateStmt = $conn->prepare("UPDATE loan_officer_expenses SET template_id = ?, template_name = ?, expense_type = ?, amount = ?, expense_date = ?, loan_officer_id = ?, loan_officer_name = ?, payment_method = ?, recorded_by = ? WHERE id = ?");
                     $updateStmt->bind_param('issdsisssi', $templateId, $templateName, $expenseType, $amountValue, $expenseDate, $loanOfficerId, $officer['name'], $paymentMethod, $recordedBy, $expenseId);
                     $updateStmt->execute();
-                    $message = 'Expense entry updated successfully.';
-                    $editing = false;
-                    $editExpenseId = 0;
+                    header('Location: add_expenses.php?saved=updated');
+                    exit;
                 } else {
                     $expenseStmt = $conn->prepare("INSERT INTO loan_officer_expenses (template_id, template_name, expense_type, amount, expense_date, loan_officer_id, loan_officer_name, payment_method, recorded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())");
                     $expenseStmt->bind_param('issdsissi', $templateId, $templateName, $expenseType, $amountValue, $expenseDate, $loanOfficerId, $officer['name'], $paymentMethod, $recordedBy);
                     $expenseStmt->execute();
-                    $message = 'Expense template and spending entry were saved successfully.';
+                    header('Location: add_expenses.php?saved=1');
+                    exit;
                 }
             }
         }
@@ -138,21 +145,46 @@ $expenses = $expensesResult ? $expensesResult->fetch_all(MYSQLI_ASSOC) : [];
     <title>Expense Template</title>
     <link href="assets/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { background: #f7f9fc; font-family: Arial, sans-serif; }
-        .page-wrap { max-width: 1100px; margin: 30px auto; padding: 20px; }
-        .card { border: 0; border-radius: 12px; box-shadow: 0 6px 18px rgba(0,0,0,0.08); }
-        .card-header { background: #0d6efd; color: #fff; }
-        .table td, .table th { vertical-align: middle; }
+        :root { --ink: #172331; --muted: #687582; --line: #dbe3e8; --paper: #ffffff; --canvas: #f2f5f6; --teal: #147d78; --gold: #c7973e; }
+        body { background: var(--canvas); color: var(--ink); font-family: "Trebuchet MS", Arial, sans-serif; }
+        .sidebar { transition: all .3s ease; }
+        .sidebar.collapsed { display: none; }
+        .main { margin-left: 250px; padding: 34px 22px 60px; transition: margin-left .3s ease; }
+        .main.sidebar-collapsed { margin-left: 0; }
+        .report-shell { background: var(--paper); border: 1px solid var(--line); margin: 0 auto; max-width: 1280px; padding: 22px; }
+        .report-header { align-items: center; background: var(--ink); border-top: 4px solid var(--gold); color: white; display: flex; justify-content: space-between; margin: -22px -22px 22px; padding: 26px 34px; }
+        .report-header h1 { font-family: Georgia, serif; font-size: clamp(1.8rem, 3vw, 2.6rem); font-weight: normal; margin: 0; }
+        .sidebar-toggle-btn { background: transparent; border: 1px solid #82939c; border-radius: 0; color: white; margin-right: 4px; padding: 8px 12px; }
+        .sidebar-toggle-btn:hover { background: var(--teal); border-color: var(--teal); }
+        .report-header .btn { background: transparent; border: 1px solid #82939c; border-radius: 0; color: white; }
+        .report-header .btn:hover { background: var(--teal); border-color: var(--teal); }
+        .panel { background: var(--paper); border: 1px solid var(--line); margin-top: 18px; padding: 22px; }
+        .panel h2 { background: var(--ink); border-top: 4px solid var(--gold); color: white; font-family: Georgia, serif; font-size: 1.25rem; font-weight: normal; margin: -22px -22px 22px; padding: 18px 22px; }
+        .form-control, .form-select { border-color: var(--line); border-radius: 0; }
+        .form-control:focus, .form-select:focus { border-color: var(--teal); box-shadow: 0 0 0 .2rem rgba(20,125,120,.12); }
+        .btn-primary { background: var(--teal); border: 1px solid var(--teal); border-radius: 0; color: white; }
+        .btn-primary:hover { background: #0f625e; color: white; }
+        .report-tabs { border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; padding: 16px 0 0; }
+        .report-tabs .nav-link { background: transparent; border: 1px solid var(--line); border-bottom: 0; border-radius: 0; color: var(--muted); padding: 9px 14px; }
+        .report-tabs .nav-link.active { background: var(--teal); border-color: var(--teal); color: white; }
+        .report-tabs .nav-link:hover { background: #f7faf9; border-color: var(--teal); color: var(--teal); }
+        .table { margin: 0; }
+        .table thead th { background: #edf2f3; border-bottom: 2px solid var(--teal); color: #425460; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+        .table td { border-color: #e6ecef; vertical-align: middle; }
+        .table tbody tr:hover { background: #f7faf9; }
+        @media (max-width: 768px) { .main { margin-left: 0; padding: 20px 12px 40px; } .report-shell { padding: 16px 12px; } .report-header { align-items: flex-start; flex-direction: column; gap: 12px; margin: -16px -12px 16px; padding: 20px; } .panel { padding: 16px 12px; } .panel h2 { margin: -16px -12px 16px; } }
     </style>
 </head>
 <body>
-<div class="page-wrap">
-    <div class="card mb-4">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <h4 class="mb-0">EXPENSE TEMPLATE</h4>
-            <a href="index.php" class="btn btn-light btn-sm">Back to Dashboard</a>
+<div class="sidebar" id="sidebarWrapper"><?php include '../includes/sidebar.php'; ?></div>
+<main class="main" id="mainContent">
+<div class="report-shell">
+    <div class="report-header">
+            <div class="d-flex align-items-center"><button type="button" class="sidebar-toggle-btn" id="sidebarToggleMain" aria-label="Toggle navigation"><i class="bi bi-list"></i></button><h1>Expense Template</h1></div>
+            <div class="d-flex gap-2"><a href="expense_more_information.php" class="btn">More Info</a><a href="index.php" class="btn">Back to Dashboard</a></div>
         </div>
-        <div class="card-body">
+    <div class="panel mb-4">
+        <h2>Expense Entry</h2>
             <?php if ($message !== ''): ?>
                 <div class="alert alert-success"><?php echo htmlspecialchars($message, ENT_QUOTES); ?></div>
             <?php endif; ?>
@@ -209,49 +241,25 @@ $expenses = $expensesResult ? $expensesResult->fetch_all(MYSQLI_ASSOC) : [];
         </div>
     </div>
 
-    <div class="card">
-        <div class="card-header">
-            <h5 class="mb-0">Recent Spendings</h5>
-        </div>
-        <div class="card-body">
-            <?php if (empty($expenses)): ?>
-                <p class="text-muted mb-0">No spending records yet.</p>
-            <?php else: ?>
-                <table class="table table-bordered table-striped">
-                    <thead>
-                        <tr>
-                            <th>Person</th>
-                            <th>Template</th>
-                            <th>Category</th>
-                            <th>Amount</th>
-                            <th>Date Booked</th>
-                            <th>Method</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($expenses as $expense): ?>
-                            <tr>
-                                <td><?php echo htmlspecialchars($expense['loan_officer_name'], ENT_QUOTES); ?></td>
-                                <td><?php echo htmlspecialchars($expense['template_name'], ENT_QUOTES); ?></td>
-                                <td><?php echo htmlspecialchars($expense['expense_type'], ENT_QUOTES); ?></td>
-                                <td><?php echo number_format((float)$expense['amount'], 2); ?></td>
-                                <td><?php echo htmlspecialchars(!empty($expense['expense_date']) ? $expense['expense_date'] : '-', ENT_QUOTES); ?></td>
-                                <td><?php echo htmlspecialchars($expense['payment_method'], ENT_QUOTES); ?></td>
-                                <td>
-                                    <a href="add_expenses.php?edit=<?php echo (int)$expense['id']; ?>" class="btn btn-sm btn-secondary">Edit</a>
-                                    <a href="add_expenses.php?delete=<?php echo (int)$expense['id']; ?>" class="btn btn-sm btn-danger" onclick="return confirm('Delete this expense entry?');">Clear</a>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            <?php endif; ?>
-        </div>
     </div>
 </div>
+</div>
+</main>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
+    const toggleButton = document.getElementById('sidebarToggleMain');
+    const sidebarWrapper = document.getElementById('sidebarWrapper');
+    const mainContent = document.getElementById('mainContent');
+    if (toggleButton) toggleButton.addEventListener('click', function () { sidebarWrapper.classList.toggle('collapsed'); mainContent.classList.toggle('sidebar-collapsed'); });
+
+    document.querySelectorAll('[data-expense-filter]').forEach(function (tab) {
+        tab.addEventListener('click', function () {
+            const filter = this.dataset.expenseFilter;
+            document.querySelectorAll('[data-expense-filter]').forEach(function (item) { item.classList.toggle('active', item === tab); });
+            document.querySelectorAll('tbody tr[data-expense-category]').forEach(function (row) { row.style.display = filter === 'all' || row.dataset.expenseCategory === filter ? '' : 'none'; });
+        });
+    });
+
     const categorySelect = document.querySelector('select[name="expense_type"]');
     const officerSelect = document.querySelector('select[name="loan_officer_id"]');
     if (!categorySelect || !officerSelect) {

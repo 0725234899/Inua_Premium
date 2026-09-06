@@ -213,8 +213,8 @@ foreach ($officers as $officer) {
                     borrowers.mobile AS phone_number, 
                     loan_applications.id AS loan_id, 
                     loan_applications.total_amount AS total_disbursed, 
-                    (SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = loan_applications.id) AS total_paid, 
-                    (loan_applications.total_amount - (SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = loan_applications.id)) AS loan_balance, 
+                    (SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = loan_applications.id) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0) AS total_paid,
+                    (loan_applications.total_amount - (SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = loan_applications.id) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0)) AS loan_balance,
                     repayments.amount AS amount_due, 
                     repayments.paid AS paid_amount, 
                     repayments.repayment_date AS repayment_date_raw 

@@ -147,6 +147,11 @@ if ($res_total_interest) {
             text-align: left;
         }
 
+        .report-tabs { border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; padding: 16px 0 0; }
+        .report-tabs .nav-link { background: transparent; border: 1px solid var(--line); border-bottom: 0; border-radius: 0; color: var(--muted); padding: 9px 14px; }
+        .report-tabs .nav-link.active { background: var(--teal); border-color: var(--teal); color: white; }
+        .report-tabs .nav-link:hover { background: #f7faf9; border-color: var(--teal); color: var(--teal); }
+
         .table {
             background: var(--paper);
             margin-top: 20px;
@@ -259,6 +264,10 @@ if ($res_total_interest) {
                 <i class="bi bi-currency-exchange"></i> Total Interest: KSH <?php echo number_format($total_interest_metric); ?>
             </a>
         </div>
+        <ul class="nav nav-tabs report-tabs mb-3">
+            <li class="nav-item"><a class="nav-link active" href="approved-loans.php">Approved Loans</a></li>
+            <li class="nav-item"><a class="nav-link" href="interest_breakdown.php">Interest Breakdown</a></li>
+        </ul>
         <table id="approvedLoansTable" class="table table-bordered">
             <thead>
                 <tr>

@@ -6,6 +6,28 @@ error_reporting(E_ALL);
 include 'db.php';
 include '../includes/functions.php';
 
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+if (empty($_SESSION['email'])) {
+    header('Location: ../index.html');
+    exit();
+}
+
+$conn->query("CREATE TABLE IF NOT EXISTS penalty_actions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    loan_id INT NOT NULL,
+    borrower_id INT NOT NULL,
+    officer_email VARCHAR(255) NOT NULL,
+    officer_name VARCHAR(255) NOT NULL,
+    amount DECIMAL(15, 2) NOT NULL,
+    note VARCHAR(500) DEFAULT NULL,
+    acted_by VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_penalty_actions_loan (loan_id),
+    INDEX idx_penalty_actions_officer (officer_email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
@@ -238,10 +260,22 @@ function send_pdf_email($recipient_email, $subject, $body, $pdf_content, $filena
 // Get the selected day from the request or default to all days
 $selected_day = isset($_GET['day']) ? $_GET['day'] : 'all';
 $day_filter = ($selected_day !== 'all') ? "AND DAYNAME(repayments.repayment_date) = ?" : "";
+$selected_area = isset($_GET['area_id']) ? $_GET['area_id'] : 'all';
+$selected_area = ($selected_area !== 'all' && ctype_digit((string) $selected_area)) ? $selected_area : 'all';
+$area_filter = ($selected_area !== 'all') ? "AND users.area = ?" : "";
 
-// Fetch all loan officers
+$areasResult = $conn->query("SELECT area_id, area_name FROM areas ORDER BY area_name");
+$areas = $areasResult ? $areasResult->fetch_all(MYSQLI_ASSOC) : [];
+
+// Fetch loan officers for the selected region
 $sql_officers = "SELECT id, name AS full_name, email FROM users WHERE role_id = '2'";
+if ($selected_area !== 'all') {
+    $sql_officers .= " AND area = ?";
+}
 $stmt_officers = $conn->prepare($sql_officers);
+if ($selected_area !== 'all') {
+    $stmt_officers->bind_param('i', $selected_area);
+}
 $stmt_officers->execute();
 $result_officers = $stmt_officers->get_result();
 
@@ -273,12 +307,13 @@ $portfolio_metrics_sql = "SELECT
 FROM (
     SELECT
         la.borrower AS borrower_id,
-        SUM(GREATEST(0, la.total_amount - COALESCE((SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = la.id), 0))) AS loan_outstanding,
+        SUM(GREATEST(0, la.total_amount - COALESCE((SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = la.id), 0) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = la.id), 0))) AS loan_outstanding,
         SUM(
             GREATEST(
                 0,
                 COALESCE((SELECT SUM(CASE WHEN r3.repayment_date < CURDATE() THEN COALESCE(r3.amount, 0) ELSE 0 END) FROM repayments r3 WHERE r3.loan_id = la.id), 0)
                 - COALESCE((SELECT SUM(CASE WHEN r3.repayment_date < CURDATE() THEN COALESCE(r3.paid, 0) ELSE 0 END) FROM repayments r3 WHERE r3.loan_id = la.id), 0)
+                - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = la.id), 0)
             )
         ) AS overdue_total
     FROM loan_applications la
@@ -297,12 +332,13 @@ if ($selected_officer === 'all') {
     FROM (
         SELECT
             la.borrower AS borrower_id,
-            SUM(GREATEST(0, la.total_amount - COALESCE((SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = la.id), 0))) AS loan_outstanding,
+            SUM(GREATEST(0, la.total_amount - COALESCE((SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = la.id), 0) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = la.id), 0))) AS loan_outstanding,
             SUM(
                 GREATEST(
                     0,
                     COALESCE((SELECT SUM(CASE WHEN r3.repayment_date < CURDATE() THEN COALESCE(r3.amount, 0) ELSE 0 END) FROM repayments r3 WHERE r3.loan_id = la.id), 0)
                     - COALESCE((SELECT SUM(CASE WHEN r3.repayment_date < CURDATE() THEN COALESCE(r3.paid, 0) ELSE 0 END) FROM repayments r3 WHERE r3.loan_id = la.id), 0)
+                    - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = la.id), 0)
                 )
             ) AS overdue_total
         FROM loan_applications la
@@ -338,7 +374,7 @@ if (!empty($portfolio_metrics_row)) {
 $cleared_loan_filter = "AND NOT EXISTS (
                         SELECT 1
                         FROM (
-                            SELECT loan_id, SUM(Amount) AS total_paid
+                            SELECT loan_id, SUM(Amount) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = payment_date_records.loan_id), 0) AS total_paid
                             FROM payment_date_records
                             GROUP BY loan_id
                         ) paid_totals
@@ -357,8 +393,8 @@ $sql_due_loans = "SELECT
                     borrowers.mobile AS phone_number, 
                     loan_applications.id AS loan_id, 
                     loan_applications.total_amount AS total_disbursed, 
-                    (SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = loan_applications.id) AS total_paid, 
-                    (loan_applications.total_amount - (SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = loan_applications.id)) AS loan_balance, 
+                    (SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = loan_applications.id) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0) AS total_paid,
+                    (loan_applications.total_amount - (SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = loan_applications.id) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0)) AS loan_balance,
                     repayments.amount AS amount_due, 
                     repayments.paid AS paid_amount, 
                     repayments.repayment_date AS repayment_date_raw 
@@ -368,16 +404,27 @@ $sql_due_loans = "SELECT
                     loan_applications ON repayments.loan_id = loan_applications.id
                   INNER JOIN 
                     borrowers ON loan_applications.borrower = borrowers.id
+                                    INNER JOIN
+                                        users ON borrowers.loan_officer = users.email
                   WHERE 
                     repayments.repayment_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
                                         AND (loan_applications.loan_status IS NULL OR loan_applications.loan_status != 'rolled_over')
                                         $cleared_loan_filter
                                         $day_filter
                                         $officer_filter
+                                        $area_filter
                   ORDER BY repayments.repayment_date ASC, loan_applications.id ASC, repayments.id ASC";
 
 $stmt_due_loans = $conn->prepare($sql_due_loans);
-if ($selected_day !== 'all' && $selected_officer !== 'all') {
+if ($selected_day !== 'all' && $selected_officer !== 'all' && $selected_area !== 'all') {
+    $stmt_due_loans->bind_param("sii", $selected_day, $selected_officer, $selected_area);
+} elseif ($selected_day !== 'all' && $selected_area !== 'all') {
+    $stmt_due_loans->bind_param("ssi", $selected_day, $selected_area);
+} elseif ($selected_officer !== 'all' && $selected_area !== 'all') {
+    $stmt_due_loans->bind_param("ii", $selected_officer, $selected_area);
+} elseif ($selected_area !== 'all') {
+    $stmt_due_loans->bind_param("i", $selected_area);
+} elseif ($selected_day !== 'all' && $selected_officer !== 'all') {
     $stmt_due_loans->bind_param("si", $selected_day, $selected_officer);
 } elseif ($selected_day !== 'all') {
     $stmt_due_loans->bind_param("s", $selected_day);
@@ -507,48 +554,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
     <style>
-        body {
-            font-family: 'Poppins', sans-serif;
-            background-color: #f8f9fa;
-        }
-        .container {
-            margin-top: 30px;
-        }
-        .table-container {
-            overflow-x: auto;
-        }
-        .table thead th {
-            background-color: #007bff;
-            color: #ffffff;
-        }
-        .table tbody tr:nth-child(odd) {
-            background-color: #f9f9f9;
-        }
-        .table tbody tr:hover {
-            background-color: #f1f1f1;
-        }
-        .btn-primary {
-            background-color: #007bff;
-            border: none;
-        }
-        .btn-primary:hover {
-            background-color: #008fb3;
-        }
-        .header-actions {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
+        :root { --ink: #172331; --muted: #687582; --line: #dbe3e8; --paper: #ffffff; --canvas: #f2f5f6; --teal: #147d78; --gold: #c7973e; }
+        body { background: var(--canvas); color: var(--ink); font-family: "Trebuchet MS", Arial, sans-serif; }
+        .sidebar { transition: all .3s ease; }
+        .sidebar.collapsed { display: none; }
+        body { padding-top: 70px; }
+        .site-letterhead { align-items: center; background: linear-gradient(90deg, #00c6ff, #0072ff); color: white; display: flex; height: 70px; justify-content: space-between; padding: 0 24px; position: fixed; top: 0; width: 100%; z-index: 1100; }
+        .site-letterhead-brand { align-items: center; display: flex; font-size: 24px; font-weight: bold; }
+        .site-letterhead-brand img { height: 40px; margin-right: 10px; width: auto; }
+        .site-letterhead-logout { color: white; font-size: 18px; text-decoration: none; }
+        .site-letterhead-logout:hover { color: #e8f8ff; }
+        .main { margin-left: 250px; padding: 34px 22px 60px; transition: margin-left .3s ease; }
+        .main.sidebar-collapsed { margin-left: 0; }
+        .report-shell { background: var(--paper); border: 1px solid var(--line); margin: 0 auto; max-width: 1280px; padding: 22px; }
+        .report-header { align-items: center; background: var(--ink); border-top: 4px solid var(--gold); color: white; display: flex; gap: 16px; justify-content: space-between; margin: -22px -22px 22px; padding: 26px 34px; }
+        .report-header h1 { font-family: Georgia, serif; font-size: clamp(1.8rem, 3vw, 2.6rem); font-weight: normal; margin: 0; }
+        .sidebar-toggle-btn { background: transparent; border: 1px solid #82939c; border-radius: 0; color: white; margin-right: 4px; padding: 8px 12px; }
+        .sidebar-toggle-btn:hover { background: var(--teal); border-color: var(--teal); color: white; }
+        .report-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+        .report-actions .form-control { background: white; border-radius: 0; color: var(--ink); max-width: 300px; }
+        .btn-primary, .btn-success, .btn-outline-primary { background: transparent; border: 1px solid #82939c; border-radius: 0; color: white; }
+        .btn-primary:hover, .btn-success:hover, .btn-outline-primary:hover { background: var(--teal); border-color: var(--teal); color: white; }
+        .section-title { background: var(--ink); border-top: 4px solid var(--gold); color: white; font-family: Georgia, serif; font-size: 1.25rem; font-weight: normal; margin: 0 0 18px; padding: 18px 22px; }
+        .filter-summary { border: 1px solid var(--line); color: var(--muted); margin-bottom: 18px; padding: 14px 18px; }
+        .filter-summary .badge { background: #edf2f3 !important; color: #425460 !important; border-radius: 0; }
+        .nav-tabs { border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; margin-top: 0 !important; padding: 16px 22px 0; }
+        .nav-tabs .nav-link { background: transparent; border: 1px solid var(--line); border-bottom: 0; border-radius: 0; color: var(--muted); font-weight: normal; margin: 0; padding: 9px 14px; }
+        .nav-tabs .nav-link.active { background: var(--teal); border-color: var(--teal); color: white; }
+        .nav-tabs .nav-link:hover { background: #f7faf9; border-color: var(--teal); color: var(--teal); }
+        .table-container { overflow-x: auto; margin-top: 18px !important; }
+        .table { background: var(--paper); margin: 0; min-width: 900px; }
+        .table thead th { background: #edf2f3; border-bottom: 2px solid var(--teal); color: #425460; font-size: .72rem; letter-spacing: .08em; padding: 14px 12px; text-transform: uppercase; white-space: nowrap; }
+        .table tbody td { border-color: #e6ecef; padding: 15px 12px; vertical-align: middle; }
+        .table tbody tr:hover { background: #f7faf9; }
+        .table a { color: var(--teal); font-weight: bold; text-decoration: none; }
+        .table a:hover { color: var(--ink); text-decoration: underline; }
+        .table td[style*="f72500"] { background: #f8e8e5 !important; color: #8e4d47; font-weight: bold; }
+        @media (max-width: 768px) { .main { margin-left: 0; padding: 20px 12px 40px; } .report-shell { padding: 16px 12px; } .report-header { align-items: flex-start; flex-direction: column; margin: -16px -12px 16px; padding: 20px; } .report-actions { justify-content: flex-start; width: 100%; } .report-actions .form-control { flex: 1 1 220px; max-width: none; } }
+        @media (max-width: 520px) { .site-letterhead { padding: 0 12px; } .site-letterhead-brand { font-size: 18px; } .site-letterhead-brand img { height: 32px; } .site-letterhead-logout { font-size: 15px; } }
     </style>
 </head>
 <body>
-<?php include 'includes/header.php'; ?>
-<div class="container">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <a href="index.php" class="btn btn-primary">
-            <i class="bi bi-arrow-left"></i> Back to Dashboard
-        </a>
-        <div class="header-actions">
+<header class="site-letterhead">
+    <div class="site-letterhead-brand"><img src="../assets/img/logo.png" alt="Inua Premium Logo">Inua Premium Services</div>
+    <a class="site-letterhead-logout" href="../logout.php"><i class="bi bi-box-arrow-right"></i> Logout</a>
+</header>
+<div class="sidebar" id="sidebarWrapper">
+    <?php include '../includes/sidebar.php'; ?>
+</div>
+<main class="main" id="mainContent">
+<div class="report-shell">
+    <div class="report-header">
+        <div class="d-flex align-items-center gap-2">
+            <button type="button" class="sidebar-toggle-btn" id="sidebarToggleMain" aria-label="Toggle navigation"><i class="bi bi-list"></i></button>
+            <h1>Due Loans</h1>
+        </div>
+        <div class="report-actions">
+            <a href="index.php" class="btn btn-primary">
+                <i class="bi bi-arrow-left"></i> Back to Dashboard
+            </a>
             <form method="post" class="d-inline-block">
                 <input type="hidden" name="send_email" value="1">
                 <button type="submit" class="btn btn-outline-primary">
@@ -566,16 +630,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
             <?= htmlspecialchars($email_message); ?>
         </div>
     <?php endif; ?>
-    <h2 class="text-center">All Clients with Due Loans</h2>
+    <h2 class="section-title">All Clients with Due Loans</h2>
+
+    <ul class="nav nav-tabs report-tabs">
+        <li class="nav-item"><a class="nav-link <?= ($selected_area === 'all') ? 'active' : '' ?>" href="?area_id=all&officer_id=<?= htmlspecialchars($selected_officer); ?>&day=<?= htmlspecialchars($selected_day); ?>">All Regions</a></li>
+        <?php foreach ($areas as $area): ?>
+            <li class="nav-item"><a class="nav-link <?= ($selected_area == $area['area_id']) ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($area['area_id']); ?>&officer_id=all&day=<?= htmlspecialchars($selected_day); ?>"><?= htmlspecialchars($area['area_name']); ?></a></li>
+        <?php endforeach; ?>
+    </ul>
 
     <!-- Loan Officer Tabs -->
-    <ul class="nav nav-tabs justify-content-center">
+    <ul class="nav nav-tabs report-tabs mt-3">
         <li class="nav-item">
-            <a class="nav-link <?= ($selected_officer === 'all') ? 'active' : '' ?>" href="?officer_id=all&day=<?= htmlspecialchars($selected_day); ?>">All Loan Officers</a>
+            <a class="nav-link <?= ($selected_officer === 'all') ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($selected_area); ?>&officer_id=all&day=<?= htmlspecialchars($selected_day); ?>">All Loan Officers</a>
         </li>
         <?php while ($officer = $result_officers->fetch_assoc()): ?>
             <li class="nav-item">
-                <a class="nav-link <?= ($selected_officer == $officer['id']) ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($officer['id']); ?>&day=<?= htmlspecialchars($selected_day); ?>">
+                <a class="nav-link <?= ($selected_officer == $officer['id']) ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($selected_area); ?>&officer_id=<?= htmlspecialchars($officer['id']); ?>&day=<?= htmlspecialchars($selected_day); ?>">
                     <?= htmlspecialchars($officer['full_name']); ?>
                 </a>
             </li>
@@ -583,30 +654,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
     </ul>
 
     <!-- Day Tabs -->
-    <ul class="nav nav-tabs justify-content-center mt-3">
+    <ul class="nav nav-tabs report-tabs mt-3">
         <li class="nav-item">
-            <a class="nav-link <?= ($selected_day === 'all') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=all">All Days</a>
+            <a class="nav-link <?= ($selected_day === 'all') ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($selected_area); ?>&officer_id=<?= htmlspecialchars($selected_officer); ?>&day=all">All Days</a>
         </li>
         <li class="nav-item">
-            <a class="nav-link <?= ($selected_day === 'Monday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Monday">Monday</a>
+            <a class="nav-link <?= ($selected_day === 'Monday') ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($selected_area); ?>&officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Monday">Monday</a>
         </li>
         <li class="nav-item">
-            <a class="nav-link <?= ($selected_day === 'Tuesday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Tuesday">Tuesday</a>
+            <a class="nav-link <?= ($selected_day === 'Tuesday') ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($selected_area); ?>&officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Tuesday">Tuesday</a>
         </li>
         <li class="nav-item">
-            <a class="nav-link <?= ($selected_day === 'Wednesday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Wednesday">Wednesday</a>
+            <a class="nav-link <?= ($selected_day === 'Wednesday') ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($selected_area); ?>&officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Wednesday">Wednesday</a>
         </li>
         <li class="nav-item">
-            <a class="nav-link <?= ($selected_day === 'Thursday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Thursday">Thursday</a>
+            <a class="nav-link <?= ($selected_day === 'Thursday') ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($selected_area); ?>&officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Thursday">Thursday</a>
         </li>
         <li class="nav-item">
-            <a class="nav-link <?= ($selected_day === 'Friday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Friday">Friday</a>
+            <a class="nav-link <?= ($selected_day === 'Friday') ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($selected_area); ?>&officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Friday">Friday</a>
         </li>
         <li class="nav-item">
-            <a class="nav-link <?= ($selected_day === 'Saturday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Saturday">Saturday</a>
+            <a class="nav-link <?= ($selected_day === 'Saturday') ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($selected_area); ?>&officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Saturday">Saturday</a>
         </li>
         <li class="nav-item">
-            <a class="nav-link <?= ($selected_day === 'Sunday') ? 'active' : '' ?>" href="?officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Sunday">Sunday</a>
+            <a class="nav-link <?= ($selected_day === 'Sunday') ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($selected_area); ?>&officer_id=<?= htmlspecialchars($selected_officer); ?>&day=Sunday">Sunday</a>
         </li>
     </ul>
 
@@ -651,9 +722,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
         </table>
     </div>
 </div>
+</div>
+</main>
 
 <script>
     document.addEventListener('DOMContentLoaded', function () {
+        const toggleButton = document.getElementById('sidebarToggleMain');
+        const sidebarWrapper = document.getElementById('sidebarWrapper');
+        const mainContent = document.getElementById('mainContent');
+        if (toggleButton && sidebarWrapper && mainContent) {
+            toggleButton.addEventListener('click', function () {
+                sidebarWrapper.classList.toggle('collapsed');
+                mainContent.classList.toggle('sidebar-collapsed');
+            });
+        }
+
         const searchInput = document.getElementById('searchInput');
         if (searchInput) {
             function normalizeSearchText(text) {

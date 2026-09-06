@@ -296,8 +296,9 @@ function generate_repayment_details_pdf($loan, $guarantors, $adjusted_history, $
         foreach ($payment_records as $row) {
             $payment_date = !empty($row['PaymentDate']) ? date('d/m/Y', strtotime($row['PaymentDate'])) : 'N/A';
             $amount = !empty($row['Amount']) ? number_format((float) $row['Amount'], 2) : '0.00';
+            $payment_label = !empty($row['is_penalty_writeoff']) ? 'Write-off (' . $payment_date . ')' : $payment_date;
             $pdf->SetX($margin);
-            $pdf->Cell($col1, 7, $payment_date, 1, 0, 'L');
+            $pdf->Cell($col1, 7, $payment_label, 1, 0, 'L');
             $pdf->Cell($col2, 7, 'KSH ' . $amount, 1, 1, 'R');
         }
     } else {
@@ -788,10 +789,30 @@ while ($row_records = $result_records->fetch_assoc()) {
 }
 $stmt_records->close();
 
+$penaltyActions = [];
+$totalPenaltyWrittenOff = 0.0;
+$penaltyWriteOffDate = null;
+$penaltyActionsStmt = $conn->prepare("SELECT amount, note, created_at, acted_by FROM penalty_actions WHERE loan_id = ? ORDER BY created_at DESC");
+
+if ($penaltyActionsStmt) {
+    $penaltyActionsStmt->bind_param("i", $loanId);
+    $penaltyActionsStmt->execute();
+    $penaltyActionsResult = $penaltyActionsStmt->get_result();
+    while ($penaltyAction = $penaltyActionsResult->fetch_assoc()) {
+        $penaltyActions[] = $penaltyAction;
+        $totalPenaltyWrittenOff += (float) $penaltyAction['amount'];
+        if ($penaltyWriteOffDate === null && !empty($penaltyAction['created_at'])) {
+            $penaltyWriteOffDate = date('Y-m-d', strtotime($penaltyAction['created_at']));
+        }
+    }
+    $penaltyActionsStmt->close();
+}
+
 $totalPaid = 0.0;
 foreach ($payment_records as $record) {
     $totalPaid += (float) ($record['Amount'] ?? 0);
 }
+$totalPaid += $totalPenaltyWrittenOff;
 $balance = $totalDue - $totalPaid;
 $overpayments = max(0, $totalPaid - $totalDue);
 
@@ -832,6 +853,51 @@ while ($repayment_row = $repayment_rows_result->fetch_assoc()) {
     $repayment_rows[] = $repayment_row;
 }
 $repayment_rows_stmt->close();
+
+if ($totalPenaltyWrittenOff > 0 && $penaltyWriteOffDate !== null) {
+    $remainingWriteOff = $totalPenaltyWrittenOff;
+    foreach ($repayment_rows as &$repaymentRow) {
+        if ($remainingWriteOff <= 0) {
+            break;
+        }
+
+        $scheduledAmount = (float) ($repaymentRow['amount'] ?? 0);
+        $alreadyPaid = (float) ($repaymentRow['paid'] ?? 0);
+        $remainingDue = max(0, $scheduledAmount - $alreadyPaid);
+        if ($remainingDue <= 0) {
+            continue;
+        }
+
+        $creditedAmount = min($remainingWriteOff, $remainingDue);
+        $repaymentRow['paid'] = $alreadyPaid + $creditedAmount;
+        $repaymentRow['repaid_date'] = $penaltyWriteOffDate;
+        $remainingWriteOff -= $creditedAmount;
+    }
+    unset($repaymentRow);
+
+    $daysInArrears = 0;
+    $overdueAmount = 0;
+    $today = new DateTime('today');
+    foreach ($repayment_rows as $repaymentRow) {
+        $repaymentDate = $repaymentRow['repayment_date'] ?? null;
+        $amount = (float) ($repaymentRow['amount'] ?? 0);
+        $paid = (float) ($repaymentRow['paid'] ?? 0);
+        if (empty($repaymentDate) || $amount <= 0) {
+            continue;
+        }
+
+        $dueDate = new DateTime($repaymentDate);
+        $amountOutstanding = max(0, $amount - $paid);
+        $overdueAmount += $amountOutstanding;
+        $clearDate = !empty($repaymentRow['repaid_date'])
+            ? new DateTime($repaymentRow['repaid_date'])
+            : ($amountOutstanding > 0 ? $today : null);
+
+        if ($clearDate !== null && $dueDate < $clearDate) {
+            $daysInArrears += max(0, (int) $dueDate->diff($clearDate)->days);
+        }
+    }
+}
 
 $daysAfterProjectedMaturity = calculateDaysOverdueAfterMaturity(
     $projectedMaturityDate,
@@ -878,6 +944,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
 
     if (empty($payment_records_for_email)) {
         $payment_records_for_email = $payment_records;
+    }
+
+    if ($totalPenaltyWrittenOff > 0) {
+        $payment_records_for_email[] = [
+            'id' => 0,
+            'PaymentDate' => $penaltyWriteOffDate,
+            'Amount' => $totalPenaltyWrittenOff,
+            'is_penalty_writeoff' => true,
+        ];
     }
 
     $sender_email = getConfiguredSenderEmail();
@@ -972,6 +1047,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
         }
         .download-btn {
             margin-bottom: 15px;
+        }
+        .penalty-writeoff-row td {
+            background: #fff4d6;
+            border-top: 2px solid #c7973e;
+            color: #604817;
+            font-weight: 600;
+        }
+        .penalty-writeoff-label {
+            letter-spacing: .04em;
+            text-transform: uppercase;
         }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
@@ -1071,6 +1156,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
                     <?php endforeach; ?>
                     <?php if (empty($payment_records)): ?>
                         <tr><td colspan="3">No payment records found.</td></tr>
+                    <?php endif; ?>
+                    <?php if (!empty($penaltyActions)): ?>
+                        <tr class="penalty-writeoff-row">
+                            <td><span class="penalty-writeoff-label"><?php echo htmlspecialchars($penaltyWriteOffDate ?? 'N/A'); ?></span></td>
+                            <td>KSH <?php echo number_format($totalPenaltyWrittenOff, 2); ?></td>
+                            <td class="no-export">Write-off</td>
+                        </tr>
                     <?php endif; ?>
                 </tbody>
             </table>

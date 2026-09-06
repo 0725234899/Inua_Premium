@@ -209,7 +209,7 @@ $sql_due = "SELECT
     borrowers.full_name AS borrower_name, 
     loan_applications.loan_product, 
     SUM(repayments.amount) AS total_amount_due, 
-    SUM(repayments.paid) AS total_amount_paid,
+    SUM(repayments.paid) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0) AS total_amount_paid,
     repayments.repayment_date,
     CASE 
         WHEN DATEDIFF(repayments.repayment_date, CURDATE()) <= 7 THEN '0-7 days (Upcoming soon)'

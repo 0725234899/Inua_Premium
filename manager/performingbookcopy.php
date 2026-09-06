@@ -127,11 +127,11 @@ include("includes/header.php");
                     l.loan_status,
                     b.full_name AS borrower_name, 
                     p.name AS loan_product_name, 
-                    COALESCE(SUM(r.paid), 0) AS total_paid_amount, 
+                    COALESCE(SUM(r.paid), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0) AS total_paid_amount,
                     COALESCE(SUM(r.amount), 0) AS total_amount, 
                     CASE 
                         WHEN LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%' THEN 0 
-                        ELSE COALESCE(SUM(r.amount), 0) - COALESCE(SUM(r.paid), 0) 
+                        ELSE COALESCE(SUM(r.amount), 0) - COALESCE(SUM(r.paid), 0) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)
                     END AS loan_balance 
                 FROM loan_applications l 
                 INNER JOIN borrowers b ON l.borrower = b.id 

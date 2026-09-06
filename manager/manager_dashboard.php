@@ -4,6 +4,20 @@ ini_set('display_errors', 1);
 include 'db.php';
 include '../includes/functions.php';
 
+$conn->query("CREATE TABLE IF NOT EXISTS penalty_actions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    loan_id INT NOT NULL,
+    borrower_id INT NOT NULL,
+    officer_email VARCHAR(255) NOT NULL,
+    officer_name VARCHAR(255) NOT NULL,
+    amount DECIMAL(15, 2) NOT NULL,
+    note VARCHAR(500) DEFAULT NULL,
+    acted_by VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_penalty_actions_loan (loan_id),
+    INDEX idx_penalty_actions_officer (officer_email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
 function bindDynamicParams($stmt, $params) {
     if (empty($params)) {
         return;
@@ -152,6 +166,7 @@ $result_officers = $stmt_officers->get_result();
 $sql_total_overdue = "SELECT COALESCE(SUM(overdue_summary.total_overdue), 0) AS total_overdue
                 FROM (
                     SELECT 
+                        borrowers.id AS borrower_id,
                         borrowers.full_name AS borrower_name, 
                         borrowers.mobile AS phone_number, 
                         GREATEST(
@@ -160,7 +175,8 @@ $sql_total_overdue = "SELECT COALESCE(SUM(overdue_summary.total_overdue), 0) AS 
                                 THEN COALESCE(repayments.amount, 0) 
                                 ELSE 0 
                             END), 0)
-                            - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
+                            - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0)
+                            - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0),
                             0
                         ) AS total_overdue
                     FROM 
@@ -176,7 +192,7 @@ $sql_total_overdue = "SELECT COALESCE(SUM(overdue_summary.total_overdue), 0) AS 
                         $eligible_loan_filter
                         $filter_sql
                     GROUP BY 
-                        borrowers.full_name, borrowers.mobile
+                        borrowers.id, borrowers.full_name, borrowers.mobile
                     HAVING 
                         total_overdue > 0
                 ) AS overdue_summary";
@@ -190,8 +206,8 @@ $total_arrears = $result_total_overdue->fetch_assoc()['total_overdue'] ?? 0;
 
 
 // Fetch total paid amount for approved loans
-$sql_total_paid = "SELECT CEIL(SUM(paid)) AS total_paid 
-                   FROM repayments 
+$sql_total_paid = "SELECT CEIL(SUM(repayments.paid + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0))) AS total_paid
+                   FROM repayments
                    INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
                    INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
                    INNER JOIN users ON borrowers.loan_officer = users.email
@@ -247,14 +263,14 @@ $loan_book = $performing_book + $total_arrears;
 $par = ($loan_book > 0) ? ($total_arrears / $loan_book) * 100 : 0;
 
 // Fetch total due loans for today
-$sql_due_loans = "SELECT CEIL(SUM(amount - paid)) AS total_due_loans 
+$sql_due_loans = "SELECT CEIL(SUM(amount - paid - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = repayments.loan_id), 0))) AS total_due_loans
                   FROM repayments 
                   INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
                   INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
                   INNER JOIN users ON borrowers.loan_officer = users.email
-                  WHERE repayment_date = CURDATE() 
+                  WHERE repayment_date = CURDATE()
                   AND loan_applications.loan_status = 'approved' 
-                  AND (amount - paid) > 0
+                  AND (amount - paid - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0)) > 0
                   $filter_sql";
 $stmt_due_loans = $conn->prepare($sql_due_loans);
 bindDynamicParams($stmt_due_loans, $filter_params);
@@ -272,7 +288,7 @@ $sql_total_clients = "SELECT COUNT(*) AS total_clients
                           WHERE loan_applications.loan_status = 'approved'
                           $filter_sql
                           GROUP BY borrowers.id
-                          HAVING SUM(COALESCE(repayments.amount - repayments.paid, 0)) > 0
+                          HAVING SUM(COALESCE(repayments.amount - repayments.paid, 0)) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0) > 0
                       ) AS clients_with_balance";
 $stmt_total_clients = $conn->prepare($sql_total_clients);
 bindDynamicParams($stmt_total_clients, $filter_params);
@@ -286,8 +302,8 @@ $sql_clients_in_arrears = "SELECT COUNT(*) AS clients_in_arrears
                                    SUM(CASE 
                                        WHEN repayments.repayment_date < CURDATE() 
                                        THEN GREATEST(COALESCE(repayments.amount, 0) - COALESCE(repayments.paid, 0), 0) 
-                                       ELSE 0 
-                                   END) AS total_overdue
+                                       ELSE 0
+                                   END) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0) AS total_overdue
                                FROM borrowers
                                LEFT JOIN loan_applications ON borrowers.id = loan_applications.borrower
                                LEFT JOIN repayments ON loan_applications.id = repayments.loan_id
@@ -313,7 +329,7 @@ $sql_clients_in_arrears_details = "SELECT
         END), 0) 
         - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
         0
-    ) AS arrears_amount
+    ) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0) AS arrears_amount
 FROM 
     borrowers
 LEFT JOIN 

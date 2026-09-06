@@ -596,7 +596,7 @@
                     l.registration_fee,
                     l.total_amount_inclusive,
                     l.loan_status AS status,
-                    COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0) AS total_paid,
+                    COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0) AS total_paid,
                     (l.total_amount - l.principal) AS interest_amount
                 FROM loan_applications l 
                 INNER JOIN borrowers b ON l.borrower = b.id";

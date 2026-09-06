@@ -266,7 +266,7 @@ $loanListStmt = $conn->prepare(
          l.repayment_cycle,
          l.processing_fee,
          COALESCE(SUM(r.amount), 0) AS total_amount_due,
-         COALESCE(p.total_paid, 0) AS total_paid
+         COALESCE(p.total_paid, 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0) AS total_paid
      FROM loan_applications l
      LEFT JOIN repayments r ON l.id = r.loan_id
      LEFT JOIN (

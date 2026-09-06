@@ -17,7 +17,7 @@ $sql_loan = "SELECT
     loan_products.name AS loan_product_name,
     loan_applications.loan_product, 
     SUM(repayments.amount) AS total_amount_due, 
-    SUM(repayments.paid) AS total_amount_paid 
+    SUM(repayments.paid) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = repayments.loan_id), 0) AS total_amount_paid
 FROM 
     repayments
 INNER JOIN 

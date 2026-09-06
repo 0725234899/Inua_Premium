@@ -12,8 +12,23 @@ if (empty($_SESSION['email'])) {
     exit();
 }
 
+$conn->query("CREATE TABLE IF NOT EXISTS penalty_actions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    loan_id INT NOT NULL,
+    borrower_id INT NOT NULL,
+    officer_email VARCHAR(255) NOT NULL,
+    officer_name VARCHAR(255) NOT NULL,
+    amount DECIMAL(15, 2) NOT NULL,
+    note VARCHAR(500) DEFAULT NULL,
+    acted_by VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_penalty_actions_loan (loan_id),
+    INDEX idx_penalty_actions_officer (officer_email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
 // Fetch total overdue amount using same calculation as overdue_repayments.php (sum per-borrower amounts)
 $sql_total_overdue = "SELECT 
+                    borrowers.id AS borrower_id,
                     borrowers.full_name AS borrower_name, 
                     borrowers.mobile AS phone_number, 
                     GREATEST(
@@ -21,7 +36,8 @@ $sql_total_overdue = "SELECT
                             WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
                             ELSE 0 
                         END), 0) 
-                        - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
+                        - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0)
+                        - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0),
                         0
                     ) AS total_overdue
                 FROM 
@@ -34,7 +50,7 @@ $sql_total_overdue = "SELECT
                     1=1
                     AND loan_applications.loan_status = 'approved'
                 GROUP BY 
-                    borrowers.full_name, borrowers.mobile
+                    borrowers.id, borrowers.full_name, borrowers.mobile
                 HAVING 
                     total_overdue > 0";
 $stmt_total_overdue = $conn->prepare($sql_total_overdue);
@@ -48,7 +64,7 @@ while ($row = $result_total_overdue->fetch_assoc()) {
 }
 
 // Fetch total paid amount for approved loans
-$sql_total_paid = "SELECT CEIL(SUM(paid)) AS total_paid 
+$sql_total_paid = "SELECT CEIL(SUM(repayments.paid + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0))) AS total_paid
                    FROM repayments 
                    INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
                    WHERE loan_applications.loan_status = 'approved'";
@@ -67,9 +83,16 @@ $stmt_total_interest = $conn->prepare($sql_total_interest);
 $stmt_total_interest->execute();
 $total_interest_amount = $stmt_total_interest->get_result()->fetch_assoc()['total_interest'] ?? 0;
 
+$interestCalculationColumnStmt = $conn->query("SELECT COUNT(*) AS column_count FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'loan_applications' AND COLUMN_NAME = 'interest_calculation'");
+$hasInterestCalculationColumn = $interestCalculationColumnStmt && (int) $interestCalculationColumnStmt->fetch_assoc()['column_count'] > 0;
+$interestRateExpression = $hasInterestCalculationColumn
+    ? "LOWER(COALESCE(l.interest_calculation, l.repayment_cycle, 'monthly'))"
+    : "LOWER(COALESCE(l.repayment_cycle, l.loan_duration_unit, 'monthly'))";
+
 $sql_total_penalties = "SELECT COALESCE(SUM(GREATEST(0, (
                             COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)
-                            - (l.principal + (l.principal * 0.06 * l.loan_duration))
+                            + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)
+                            - (l.principal + (l.principal * CASE WHEN $interestRateExpression IN ('weekly', 'week', 'weeks') THEN 0.06 ELSE 0.24 END * l.loan_duration))
                         ))), 0) AS total_penalties
                         FROM loan_applications l
                         WHERE l.loan_status IN ('approved', 'rolled_over')
@@ -109,11 +132,11 @@ $loan_book = $performing_book + $total_arrears;
 $par = ($loan_book > 0) ? ($total_arrears / $loan_book) * 100 : 0;
 
 // Fetch total performing loans
-$sql_total_performing = "SELECT CEIL(SUM(amount - paid)) AS total_performing 
+$sql_total_performing = "SELECT CEIL(SUM(amount - paid - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = repayments.loan_id), 0))) AS total_performing
                          FROM repayments 
                          INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
                          WHERE loan_applications.loan_status = 'approved' 
-                         AND (amount - paid) = 0";
+                         AND (amount - paid - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = repayments.loan_id), 0)) = 0";
 $stmt_total_performing = $conn->prepare($sql_total_performing);
 $stmt_total_performing->execute();
 $total_performing_loans = $stmt_total_performing->get_result()->fetch_assoc()['total_performing'] ?? 0;
@@ -127,7 +150,7 @@ $sql_total_clients = "SELECT COUNT(*) AS total_clients
                           LEFT JOIN repayments ON loan_applications.id = repayments.loan_id
                           WHERE loan_applications.loan_status = 'approved'
                           GROUP BY borrowers.id
-                          HAVING SUM(COALESCE(repayments.amount - repayments.paid, 0)) > 0
+                          HAVING SUM(COALESCE(repayments.amount - repayments.paid, 0)) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0) > 0
                       ) AS clients_with_balance";
 $stmt_total_clients = $conn->prepare($sql_total_clients);
 $stmt_total_clients->execute();
@@ -142,7 +165,8 @@ $sql_clients_in_arrears = "SELECT COUNT(*) AS clients_in_arrears
                                            WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
                                            ELSE 0 
                                        END), 0) 
-                                       - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
+                                       - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0)
+                                       - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0),
                                        0
                                    ) AS total_overdue
                                FROM borrowers
@@ -157,12 +181,12 @@ $stmt_clients_in_arrears->execute();
 $clients_in_arrears = $stmt_clients_in_arrears->get_result()->fetch_assoc()['clients_in_arrears'] ?? 0;
 
 // Fetch total due loans
-$sql_due_loans = "SELECT CEIL(SUM(amount - paid)) AS total_due_loans 
+$sql_due_loans = "SELECT CEIL(SUM(amount - paid - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0))) AS total_due_loans
                   FROM repayments 
                   INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
                   WHERE repayment_date = CURDATE() 
                   AND loan_applications.loan_status = 'approved' 
-                  AND (amount - paid) > 0";
+                  AND (amount - paid - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = repayments.loan_id), 0)) > 0";
 $stmt_due_loans = $conn->prepare($sql_due_loans);
 $stmt_due_loans->execute();
 $total_due_loans = $stmt_due_loans->get_result()->fetch_assoc()['total_due_loans'] ?? 0;

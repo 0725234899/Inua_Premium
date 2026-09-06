@@ -433,95 +433,37 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
     <link href="assets/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
     <link href="assets/css/style.css" rel="stylesheet">
     <style>
-        body {
-            background-color: #f8f9fa;
-            color: #212529;
-            font-family: 'Open Sans', sans-serif;
-            margin: 0;
-        }
-
-        .header {
-            background-color: #e84545;
-            color: #ffffff;
-            padding: 10px 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .header .logo h1 {
-            color: #ffffff;
-            margin: 0;
-            font-size: 24px;
-        }
-
-        .sidebar {
-            background-color: #ffffff;
-            color: #3a3939;
-            padding: 20px;
-            width: 250px;
-            position: fixed;
-            height: 100%;
-            overflow: auto;
-        }
-
-        .main {
-            margin-left: 270px;
-            padding: 20px;
-        }
-        .rolled-over-balance {
-            background-color: #fff3cd;
-            color: #856404;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-weight: 700;
-            display: inline-block;
-        }
-        .nav-tabs .nav-link {
-            border-radius: 0.5rem 0.5rem 0 0;
-            margin-right: 0.25rem;
-            font-weight: 600;
-            color: #495057;
-        }
-        .nav-tabs .nav-link.active {
-            background-color: #dc3545;
-            color: #ffffff;
-            border-color: #dc3545 #dc3545 #fff;
-            box-shadow: 0 0.2rem 0.4rem rgba(220, 53, 69, 0.2);
-        }
-        .nav-tabs .nav-link:hover {
-            border-color: #dee2e6 #dee2e6 #dee2e6;
-            color: #dc3545;
-        }
-        .filter-summary {
-            font-size: 0.95rem;
-            color: #6c757d;
-            font-weight: 600;
-            margin-bottom: 1rem;
-        }
-        .container {
-            margin-top: 30px;
-        }
-        .table-container {
-            overflow-x: auto;
-        }
-        .table thead th {
-            background-color: #007bff;
-            color: #ffffff;
-        }
-        .table tbody tr:nth-child(odd) {
-            background-color: #f9f9f9;
-        }
-        .table tbody tr:hover {
-            background-color: #f1f1f1;
-        }
-        .btn-primary {
-            background-color: #007bff;
-            border: none;
-        }
-        .btn-primary:hover {
-            background-color: #008fb3;
-        }
+        :root { --ink: #172331; --muted: #687582; --line: #dbe3e8; --paper: #ffffff; --canvas: #f2f5f6; --teal: #147d78; --gold: #c7973e; }
+        body { background: var(--canvas); color: var(--ink); font-family: "Trebuchet MS", Arial, sans-serif; }
+        .sidebar { transition: all .3s ease; }
+        .sidebar.collapsed { display: none; }
+        .main { margin-left: 250px; padding: 34px 22px 60px; transition: margin-left .3s ease; }
+        .main.sidebar-collapsed { margin-left: 0; }
+        .main > .section > .container { background: var(--paper); border: 1px solid var(--line); margin: 0 auto; max-width: 1280px; padding: 22px; }
+        .main > .section > .container > .d-flex:first-child { background: var(--ink); border-top: 4px solid var(--gold); margin: -22px -22px 22px; padding: 26px 34px; }
+        .main > .section > .container > .d-flex:first-child::before { color: white; content: 'Performing Book'; font-family: Georgia, serif; font-size: clamp(1.8rem, 3vw, 2.6rem); margin-right: auto; }
+        .header-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
+        .header-actions form { margin: 0; }
+        .header-actions .form-control { background: white; border: 1px solid #82939c; border-radius: 0; color: var(--ink); height: 38px; max-width: 300px; }
+        .header-actions .btn, .main > .section > .container > .d-flex:first-child > .btn { align-items: center; display: inline-flex; gap: 6px; height: 38px; justify-content: center; white-space: nowrap; }
+        .btn-primary, .btn-success, .btn-outline-primary { background: transparent; border: 1px solid #82939c; border-radius: 0; color: white; }
+        .btn-primary:hover, .btn-success:hover, .btn-outline-primary:hover { background: var(--teal); border-color: var(--teal); color: white; }
+        .main > .section h2.text-center { background: var(--ink); border-top: 4px solid var(--gold); color: white; font-family: Georgia, serif; font-size: 1.25rem; font-weight: normal; margin: 0 0 18px; padding: 18px 22px; }
+        .filter-summary { border: 1px solid var(--line); color: var(--muted); margin-bottom: 18px; padding: 14px 18px; }
+        .filter-summary .badge { background: #edf2f3 !important; color: #425460 !important; border-radius: 0; }
+        .nav-tabs { border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; margin-top: 0 !important; padding: 16px 22px 0; }
+        .nav-tabs .nav-link { background: transparent; border: 1px solid var(--line); border-bottom: 0; border-radius: 0; color: var(--muted); font-weight: normal; margin: 0; padding: 9px 14px; }
+        .nav-tabs .nav-link.active { background: var(--teal); border-color: var(--teal); color: white; box-shadow: none; }
+        .nav-tabs .nav-link:hover { background: #f7faf9; border-color: var(--teal); color: var(--teal); }
+        .table-container { overflow-x: auto; margin-top: 18px !important; }
+        .table { background: var(--paper); margin: 0; min-width: 1200px; }
+        .table thead th { background: #edf2f3; border-bottom: 2px solid var(--teal); color: #425460; font-size: .72rem; letter-spacing: .08em; padding: 14px 12px; text-transform: uppercase; white-space: nowrap; }
+        .table tbody td { border-color: #e6ecef; padding: 15px 12px; vertical-align: middle; }
+        .table tbody tr:hover { background: #f7faf9; }
+        .table a { color: var(--teal); font-weight: bold; text-decoration: none; }
+        .table a:hover { color: var(--ink); text-decoration: underline; }
+        .rolled-over-balance { background: #fff4d6; color: #604817; padding: 4px 8px; }
+        @media (max-width: 768px) { .main { margin-left: 0; padding: 20px 12px 40px; } .main > .section > .container { padding: 16px 12px; } .main > .section > .container > .d-flex:first-child { margin: -16px -12px 16px; padding: 20px; } .main > .section > .container > .d-flex:first-child::before { font-size: 1.8rem; } .main > .section > .container > .d-flex:first-child { align-items: flex-start !important; flex-direction: column; } .header-actions { justify-content: flex-start; margin-top: 14px; width: 100%; } .header-actions .form-control { flex: 1 1 220px; max-width: none; } }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
@@ -587,14 +529,14 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
                     b.mobile AS phone_number,
                     b.loan_officer AS borrower_loan_officer,
                     p.name AS loan_product_name, 
-                    COALESCE(SUM(r.paid), 0) AS total_paid_amount, 
+                    COALESCE(SUM(r.paid), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0) AS total_paid_amount,
                     CASE 
                         WHEN LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%' THEN 0 
-                        ELSE COALESCE(SUM(CASE WHEN r.repayment_date < CURDATE() THEN GREATEST(COALESCE(r.amount, 0) - COALESCE(r.paid, 0), 0) ELSE 0 END), 0) 
+                        ELSE GREATEST(COALESCE(SUM(CASE WHEN r.repayment_date < CURDATE() THEN GREATEST(COALESCE(r.amount, 0) - COALESCE(r.paid, 0), 0) ELSE 0 END), 0) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0), 0)
                     END AS arrears_amount,
                     CASE 
                         WHEN LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%' THEN 0 
-                        ELSE l.total_amount - COALESCE(SUM(r.paid), 0) 
+                        ELSE l.total_amount - COALESCE(SUM(r.paid), 0) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)
                     END AS loan_balance,
                     COALESCE((
                         SELECT DATE_FORMAT(la2.loan_release_date, '%d/%m/%Y')
@@ -627,7 +569,7 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
                 $officer_filter
                 $area_filter
                 GROUP BY l.id, b.full_name, b.loan_officer, p.name, l.loan_status, l.loan_duration, l.loan_duration_unit, l.loan_release_date, l.loan_product, l.total_amount, l.loan_interest, l.repayment_cycle
-                HAVING (LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%') OR (l.total_amount - COALESCE(SUM(r.paid), 0) > 0)";
+                HAVING (LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%') OR (l.total_amount - COALESCE(SUM(r.paid), 0) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0) > 0)";
 
         $sql .= " ORDER BY CASE WHEN LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%' THEN 0 ELSE 1 END, l.id DESC";
 
@@ -762,7 +704,7 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
                     <strong><?= htmlspecialchars($selected_day === 'all' ? 'All Days' : $selected_day) ?></strong>
                 </div>
 
-                <ul class="nav nav-tabs justify-content-center">
+                <ul class="nav nav-tabs report-tabs">
                     <li class="nav-item">
                         <a class="nav-link <?= ($selected_area === 'all') ? 'active' : '' ?>" href="?area_id=all&officer_id=all&day=<?= htmlspecialchars($selected_day); ?>">All Regions</a>
                     </li>
@@ -775,7 +717,7 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
                     <?php endforeach; ?>
                 </ul>
 
-                <ul class="nav nav-tabs justify-content-center mt-3">
+                <ul class="nav nav-tabs report-tabs mt-3">
                     <li class="nav-item">
                         <a class="nav-link <?= ($selected_officer === 'all') ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($selected_area); ?>&officer_id=all&day=<?= htmlspecialchars($selected_day); ?>">All Loan Officers</a>
                     </li>
@@ -788,7 +730,7 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
                     <?php endwhile; ?>
                 </ul>
 
-                <ul class="nav nav-tabs justify-content-center mt-3">
+                <ul class="nav nav-tabs report-tabs mt-3">
                     <li class="nav-item">
                         <a class="nav-link <?= ($selected_day === 'all') ? 'active' : '' ?>" href="?area_id=<?= htmlspecialchars($selected_area); ?>&officer_id=<?= htmlspecialchars($selected_officer); ?>&day=all">All Days</a>
                     </li>

@@ -31,10 +31,10 @@ $clientResult = $stmt_client->get_result();
 
 $clients = [];
 $sql_loans = "SELECT id, principal, total_amount, loan_duration, loan_release_date,
-                    COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = loan_applications.id), 0) AS total_paid,
-                    GREATEST(0, total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = loan_applications.id), 0)) AS dues_arrears,
+                    COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = loan_applications.id), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0) AS total_paid,
+                    GREATEST(0, total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = loan_applications.id), 0) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0)) AS dues_arrears,
                     CASE
-                        WHEN total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = loan_applications.id), 0) <= 0 THEN 'Cleared'
+                        WHEN total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = loan_applications.id), 0) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0) <= 0 THEN 'Cleared'
                         ELSE 'Not Cleared'
                     END AS loan_status
              FROM loan_applications

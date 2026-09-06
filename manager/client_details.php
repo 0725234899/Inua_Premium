@@ -30,7 +30,7 @@ $sql_loans = "SELECT
     l.total_amount, 
     l.loan_status, 
     DATE_FORMAT(l.loan_release_date, '%d/%m/%Y') AS loan_release_date, 
-    COALESCE(SUM(r.paid), 0) AS total_paid
+    COALESCE(SUM(r.paid), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0) AS total_paid
 FROM 
     loan_applications l 
 LEFT JOIN 

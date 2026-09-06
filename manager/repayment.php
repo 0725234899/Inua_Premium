@@ -26,7 +26,7 @@ if (isset($_POST['search'])) {
             loan_applications.id AS loan_id, 
             loan_applications.loan_product, 
             COALESCE(SUM(repayments.amount), 0) AS total_due,
-            COALESCE(SUM(repayments.paid), 0) AS total_paid
+            COALESCE(SUM(repayments.paid), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0) AS total_paid
         FROM borrowers
         INNER JOIN loan_applications ON borrowers.id = loan_applications.borrower
         INNER JOIN loan_products ON loan_applications.loan_product = loan_products.id

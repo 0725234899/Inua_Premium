@@ -9,7 +9,7 @@ function getBorrowerLoans($conn, $borrowerId, $startDate = null, $endDate = null
                    (la.total_amount - la.principal) AS interest,
                    $processingFeeSelect,
                    $registrationFeeSelect,
-                   COALESCE(SUM(r.paid), 0) AS total_paid
+                   COALESCE(SUM(r.paid), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = la.id), 0) AS total_paid
             FROM loan_applications la
             LEFT JOIN repayments r ON r.loan_id = la.id
             WHERE la.borrower = ? AND la.loan_status = 'approved'";
