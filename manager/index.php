@@ -85,21 +85,38 @@ $total_interest_amount = $stmt_total_interest->get_result()->fetch_assoc()['tota
 
 $interestCalculationColumnStmt = $conn->query("SELECT COUNT(*) AS column_count FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'loan_applications' AND COLUMN_NAME = 'interest_calculation'");
 $hasInterestCalculationColumn = $interestCalculationColumnStmt && (int) $interestCalculationColumnStmt->fetch_assoc()['column_count'] > 0;
-$interestRateExpression = $hasInterestCalculationColumn
-    ? "LOWER(COALESCE(l.interest_calculation, l.repayment_cycle, 'monthly'))"
-    : "LOWER(COALESCE(l.repayment_cycle, l.loan_duration_unit, 'monthly'))";
+$weeklyLoanExpression = $hasInterestCalculationColumn
+    ? "LOWER(COALESCE(l.interest_calculation, '')) IN ('weekly', 'week', 'weeks') OR LOWER(COALESCE(l.repayment_cycle, '')) IN ('weekly', 'week', 'weeks') OR LOWER(COALESCE(l.loan_duration_unit, '')) IN ('weekly', 'week', 'weeks')"
+    : "LOWER(COALESCE(l.repayment_cycle, '')) IN ('weekly', 'week', 'weeks') OR LOWER(COALESCE(l.loan_duration_unit, '')) IN ('weekly', 'week', 'weeks')";
+$totalPaidExpression = "COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)";
+$penaltyThresholdExpression = "l.principal + (l.principal * CASE WHEN $weeklyLoanExpression THEN 0.06 ELSE 0.24 END * l.loan_duration)";
+$loanPenaltyDebitExpression = "COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)";
 
-$sql_total_penalties = "SELECT COALESCE(SUM(GREATEST(0, (
-                            COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)
-                            + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)
-                            - (l.principal + (l.principal * CASE WHEN $interestRateExpression IN ('weekly', 'week', 'weeks') THEN 0.06 ELSE 0.24 END * l.loan_duration))
-                        ))), 0) AS total_penalties
-                        FROM loan_applications l
-                        WHERE l.loan_status IN ('approved', 'rolled_over')
-                           OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%'";
-$stmt_total_penalties = $conn->prepare($sql_total_penalties);
-$stmt_total_penalties->execute();
-$total_penalty_amount = $stmt_total_penalties->get_result()->fetch_assoc()['total_penalties'] ?? 0;
+$sql_penalty_details = "SELECT
+    l.id,
+    l.borrower,
+    GREATEST(0, (
+        ($totalPaidExpression)
+        - ($penaltyThresholdExpression)
+    )) AS gross_penalty_amount,
+    GREATEST(0, (
+        ($totalPaidExpression)
+        - ($penaltyThresholdExpression)
+        - ($loanPenaltyDebitExpression)
+    )) AS penalty_amount
+FROM loan_applications l
+WHERE l.loan_status IN ('approved', 'rolled_over')
+   OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%'";
+
+$result_penalty_details = $conn->query($sql_penalty_details);
+$gross_penalty_total = 0;
+$used_penalty_total = (float) ($conn->query('SELECT COALESCE(SUM(amount), 0) AS used_penalty FROM penalty_actions')->fetch_row()[0] ?? 0);
+if ($result_penalty_details) {
+    while ($penaltyRow = $result_penalty_details->fetch_assoc()) {
+        $gross_penalty_total += (float) $penaltyRow['gross_penalty_amount'];
+    }
+}
+$balance_penalty_amount = max(0, $gross_penalty_total - $used_penalty_total);
 
 $sql_total_fees = "SELECT CEIL(COALESCE(SUM(processing_fee + registration_fee), 0)) AS total_fees
                    FROM loan_applications
@@ -514,8 +531,8 @@ if (session_status() === PHP_SESSION_NONE) {
                 <p>Interest Breakdown</p>
             </div></a>
             <a href="penalty_breakdown.php"><div class="metric">
-                <h2>KSH <?php echo number_format(ceil($total_penalty_amount)); ?></h2>
-                <p>Penalties</p>
+                <h2>KSH <?php echo number_format(ceil($balance_penalty_amount)); ?></h2>
+                <p>Balance Penalty</p>
             </div></a>
             <div class="metric">
                 <h2>KSH <?php echo number_format(ceil($total_fee_amount)); ?></h2>

@@ -957,7 +957,7 @@ foreach ($officerOptions as $officer) {
                     0.05 * norm(officer.registrationFee, bounds.registrationFee) +
                     0.00 * normInv(officer.customersInArrearsPercentage, bounds.customersInArrearsPercentage) +
                     0.00 * norm(officer.fundedCustomers, bounds.fundedCustomers)
-                ) / 0.85;
+                ) / 0.99; // Normalize to [0,1] range
             }
 
             // Sort officers by composite score descending
@@ -1032,7 +1032,7 @@ foreach ($officerOptions as $officer) {
             // Function to get baseline based on loan book, PAR, and composite score
             function getCommissionBaseline(loanBook, par, compositeScore) {
                 // Not entitled case explicitly specified: below 600k, par < 7% and composite >= 50%
-                if (loanBook < 600000 && par < 7 && compositeScore >= 0.5) {
+                if (loanBook < 600000  && par < 7 && compositeScore >= 0.5) {
                     return 0;
                 }
 
@@ -1042,7 +1042,7 @@ foreach ($officerOptions as $officer) {
                     // - par > 7% AND composite >= 50%
                     // - par <= 7% AND composite < 50%
                     if ((par > 7 && compositeScore >= 0.5) || (par <= 7 && compositeScore < 0.5)) {
-                        return 12000;
+                        return 12000; // Not entitled
                     }
 
                     // If par <= 7% AND composite >= 50% -> apply tiered baseline by loanbook range

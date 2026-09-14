@@ -197,12 +197,12 @@ function fetch_arrears_report_data($conn, $selected_officer = 'all', $selected_d
 }
 
 function generate_arrears_pdf($rows, $total_overdue, $total_overdue_count, $loan_officer_label, $day_label) {
-    $pdf = new TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
+    $pdf = new TCPDF('L', 'mm', 'A4', true, 'UTF-8', false);
     $pdf->SetCreator('Inua Premium Services');
     $pdf->SetAuthor('Inua Premium Services');
     $pdf->SetTitle('Arrears List Report');
-    $pdf->SetMargins(15, 20, 15);
-    $pdf->SetAutoPageBreak(true, 25);
+    $pdf->SetMargins(10, 15, 10);
+    $pdf->SetAutoPageBreak(true, 15);
     $pdf->AddPage();
 
     $pdf->SetTextColor(56, 152, 219);
@@ -227,23 +227,29 @@ function generate_arrears_pdf($rows, $total_overdue, $total_overdue_count, $loan
 
     $pdf->SetFillColor(56, 152, 219);
     $pdf->SetTextColor(255, 255, 255);
-    $pdf->SetFont('helvetica', 'B', 11);
-    $pdf->Cell(60, 8, 'Borrower', 1, 0, 'L', true);
-    $pdf->Cell(30, 8, 'Phone', 1, 0, 'L', true);
-    $pdf->Cell(25, 8, 'Days', 1, 0, 'L', true);
-    $pdf->Cell(35, 8, 'OLB', 1, 0, 'R', true);
-    $pdf->Cell(35, 8, 'Arrears', 1, 1, 'R', true);
+    $pdf->SetFont('helvetica', 'B', 10);
+    $pdf->Cell(58, 8, 'Borrower', 1, 0, 'L', true);
+    $pdf->Cell(20, 8, 'Phone', 1, 0, 'L', true);
+    $pdf->Cell(15, 8, 'Days', 1, 0, 'L', true);
+    $pdf->Cell(22, 8, 'OLB', 1, 0, 'R', true);
+    $pdf->Cell(22, 8, 'Arrears', 1, 0, 'R', true);
+    $pdf->Cell(95, 8, 'Client Comments', 1, 1, 'C', true);
 
     $pdf->SetFillColor(255, 255, 255);
     $pdf->SetTextColor(33, 37, 41);
-    $pdf->SetFont('helvetica', '', 9);
+    $pdf->SetFont('helvetica', '', 8.5);
     if (!empty($rows)) {
         foreach ($rows as $row) {
-            $pdf->Cell(60, 7, $row['borrower_name'], 1, 0, 'L');
-            $pdf->Cell(30, 7, $row['phone_number'], 1, 0, 'L');
-            $pdf->Cell(25, 7, (int) $row['days_in_arrears'] . ' days', 1, 0, 'L');
-            $pdf->Cell(35, 7, 'KSH ' . number_format($row['outstanding_loan_balance'], 2), 1, 0, 'R');
-            $pdf->Cell(35, 7, 'KSH ' . number_format($row['total_overdue'], 2), 1, 1, 'R');
+            $borrower_name = trim((string) ($row['borrower_name'] ?? '')) ?: 'N/A';
+            $phone_number = trim((string) ($row['phone_number'] ?? '')) ?: 'N/A';
+            $comment_text = ' ';
+
+            $pdf->Cell(58, 7, $borrower_name, 1, 0, 'L');
+            $pdf->Cell(20, 7, $phone_number, 1, 0, 'L');
+            $pdf->Cell(15, 7, (int) $row['days_in_arrears'] . 'd', 1, 0, 'L');
+            $pdf->Cell(22, 7, 'KSH ' . number_format((float) $row['outstanding_loan_balance'], 2), 1, 0, 'R');
+            $pdf->Cell(22, 7, 'KSH ' . number_format((float) $row['total_overdue'], 2), 1, 0, 'R');
+            $pdf->Cell(95, 7, $comment_text, 1, 1, 'L');
         }
     } else {
         $pdf->Cell(0, 8, 'No arrears found.', 1, 1, 'C');

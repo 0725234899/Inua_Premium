@@ -14,9 +14,12 @@ if (empty($_SESSION['email'])) {
 
 $interestCalculationColumnStmt = $conn->query("SELECT COUNT(*) AS column_count FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'loan_applications' AND COLUMN_NAME = 'interest_calculation'");
 $hasInterestCalculationColumn = $interestCalculationColumnStmt && (int) $interestCalculationColumnStmt->fetch_assoc()['column_count'] > 0;
-$interestRateExpression = $hasInterestCalculationColumn
-    ? "LOWER(COALESCE(l.interest_calculation, l.repayment_cycle, 'monthly'))"
-    : "LOWER(COALESCE(l.repayment_cycle, l.loan_duration_unit, 'monthly'))";
+$weeklyLoanExpression = $hasInterestCalculationColumn
+    ? "LOWER(COALESCE(l.interest_calculation, '')) IN ('weekly', 'week', 'weeks') OR LOWER(COALESCE(l.repayment_cycle, '')) IN ('weekly', 'week', 'weeks') OR LOWER(COALESCE(l.loan_duration_unit, '')) IN ('weekly', 'week', 'weeks')"
+    : "LOWER(COALESCE(l.repayment_cycle, '')) IN ('weekly', 'week', 'weeks') OR LOWER(COALESCE(l.loan_duration_unit, '')) IN ('weekly', 'week', 'weeks')";
+$totalPaidExpression = "COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)";
+$penaltyThresholdExpression = "l.principal + (l.principal * CASE WHEN $weeklyLoanExpression THEN 0.06 ELSE 0.24 END * l.loan_duration)";
+$loanPenaltyDebitExpression = "COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)";
 
 $sql_penalty_details = "SELECT
     l.id,
@@ -27,35 +30,61 @@ $sql_penalty_details = "SELECT
     l.total_amount,
     l.loan_duration,
     l.loan_release_date,
-    COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0) AS total_paid,
-    GREATEST(0, l.total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)) AS total_balance,
+    $totalPaidExpression AS total_paid,
+    GREATEST(0, l.total_amount - ($totalPaidExpression)) AS total_balance,
     GREATEST(0, (
-        COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)
-        - (l.principal + (l.principal * CASE WHEN $interestRateExpression IN ('weekly', 'week', 'weeks') THEN 0.06 ELSE 0.24 END * l.loan_duration))
+        ($totalPaidExpression)
+        - ($penaltyThresholdExpression)
+    )) AS gross_penalty_amount,
+    GREATEST(0, (
+        ($totalPaidExpression)
+        - ($penaltyThresholdExpression)
+        - ($loanPenaltyDebitExpression)
     )) AS penalty_amount,
     l.loan_status
 FROM loan_applications l
 INNER JOIN borrowers b ON l.borrower = b.id
 LEFT JOIN users u ON b.loan_officer = u.email
 LEFT JOIN areas a ON u.area = a.area_id
-WHERE (l.loan_status IN ('approved', 'rolled_over')
-   OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%')
-  AND GREATEST(0, (
-        COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)
-        - (l.principal + (l.principal * CASE WHEN $interestRateExpression IN ('weekly', 'week', 'weeks') THEN 0.06 ELSE 0.24 END * l.loan_duration))
-    )) > 0
-ORDER BY penalty_amount DESC, l.loan_release_date DESC";
+ORDER BY
+    CASE WHEN ($totalPaidExpression) >= l.total_amount THEN 1 ELSE 0 END DESC,
+    penalty_amount DESC,
+    l.loan_release_date DESC,
+    l.id DESC";
 $result_penalty_details = $conn->query($sql_penalty_details);
 $total_penalty_amount = 0;
+$gross_penalty_amount = 0;
+$used_penalty_amount = 0;
 $loanOfficers = [];
 $regions = [];
+
+$usedPenaltyStmt = $conn->query('SELECT COALESCE(SUM(amount), 0) AS used_penalty FROM penalty_actions');
+if ($usedPenaltyStmt && $usedPenaltyStmt->num_rows > 0) {
+    $used_penalty_amount = (float) $usedPenaltyStmt->fetch_assoc()['used_penalty'];
+}
+
 if ($result_penalty_details) {
     while ($penaltyRow = $result_penalty_details->fetch_assoc()) {
+        $gross_penalty_amount += (float) $penaltyRow['gross_penalty_amount'];
         $total_penalty_amount += (float) $penaltyRow['penalty_amount'];
         $loanOfficers[$penaltyRow['loan_officer_name']] = true;
         $regions[$penaltyRow['region_name']] = true;
     }
     $result_penalty_details->data_seek(0);
+}
+$balance_penalty_amount = max(0, $gross_penalty_amount - $used_penalty_amount);
+$officerUsedPenalties = [];
+$officerUsedPenaltyStmt = $conn->query("SELECT pa.officer_email, COALESCE(u.name, 'Unassigned') AS officer_name, COALESCE(SUM(pa.amount), 0) AS used_penalty
+    FROM penalty_actions pa
+    LEFT JOIN users u
+        ON CONVERT(u.email USING utf8mb4) COLLATE utf8mb4_general_ci = CONVERT(pa.officer_email USING utf8mb4) COLLATE utf8mb4_general_ci
+    GROUP BY pa.officer_email, u.name
+    ORDER BY u.name");
+if ($officerUsedPenaltyStmt) {
+    while ($officerPenaltyRow = $officerUsedPenaltyStmt->fetch_assoc()) {
+        $officerName = trim((string) ($officerPenaltyRow['officer_name'] ?? 'Unassigned'));
+        $officerUsedPenalties[$officerName] = (float) ($officerPenaltyRow['used_penalty'] ?? 0);
+    }
 }
 $loanOfficers = array_keys($loanOfficers);
 sort($loanOfficers, SORT_NATURAL | SORT_FLAG_CASE);
@@ -85,8 +114,8 @@ sort($regions, SORT_NATURAL | SORT_FLAG_CASE);
         .sidebar-toggle-btn:hover, .main > .header .btn:hover { background: var(--teal); border-color: var(--teal); color: white; }
         .main > .header .btn { background: transparent; border: 1px solid #82939c; border-radius: 0; color: white; padding: 8px 14px; }
         .report-panel { background: var(--paper); border: 1px solid var(--line); margin: 18px auto 0; max-width: 1280px; }
-        .penalty-metrics { display: grid; grid-template-columns: 1fr; gap: 14px; margin: 18px auto 0; max-width: 1280px; }
-        .penalty-metric { background: var(--paper); border: 1px solid var(--line); border-left: 4px solid #a95d55; padding: 18px 20px; }
+        .penalty-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 18px auto 0; max-width: 1280px; }
+        .penalty-metric { background: var(--paper); border: 1px solid var(--line); border-left: 4px solid #a95d55; padding: 18px 20px; min-height: 128px; display: flex; flex-direction: column; justify-content: center; }
         .penalty-metric-label { color: var(--muted); display: block; font-size: .74rem; letter-spacing: .1em; text-transform: uppercase; }
         .penalty-metric-value { color: var(--ink); display: block; font-family: Georgia, serif; font-size: 1.45rem; margin-top: 8px; }
         .period-filter { border-bottom: 1px solid var(--line); padding: 16px 22px; }
@@ -138,7 +167,9 @@ sort($regions, SORT_NATURAL | SORT_FLAG_CASE);
     </div>
 
     <div class="penalty-metrics" aria-label="Penalty summary">
-        <div class="penalty-metric"><span class="penalty-metric-label">Total Penalties</span><strong class="penalty-metric-value" id="totalPenalty">KSH <?php echo number_format($total_penalty_amount, 2); ?></strong></div>
+        <div class="penalty-metric"><span class="penalty-metric-label">Total Penalties</span><strong class="penalty-metric-value" id="totalPenalty">KSH <?php echo number_format($gross_penalty_amount, 2); ?></strong></div>
+        <div class="penalty-metric"><span class="penalty-metric-label">Balance Penalty</span><strong class="penalty-metric-value" id="balancePenalty">KSH <?php echo number_format($balance_penalty_amount, 2); ?></strong></div>
+        <div class="penalty-metric"><span class="penalty-metric-label">Used Penalty</span><strong class="penalty-metric-value" id="usedPenalty">KSH <?php echo number_format($used_penalty_amount, 2); ?></strong></div>
     </div>
 
     <section class="report-panel">
@@ -172,9 +203,9 @@ sort($regions, SORT_NATURAL | SORT_FLAG_CASE);
             <?php endforeach; ?>
         </div>
         <div class="officer-tabs" id="officerTabs" role="tablist" aria-label="Filter penalties by loan officer">
-            <button type="button" class="officer-tab active" data-officer="all" role="tab" aria-selected="true">All Officers</button>
+            <button type="button" class="officer-tab active" data-officer="all" data-used-penalty="<?php echo array_sum($officerUsedPenalties); ?>" role="tab" aria-selected="true">All Officers</button>
             <?php foreach ($loanOfficers as $loanOfficer): ?>
-                <button type="button" class="officer-tab" data-officer="<?php echo htmlspecialchars($loanOfficer, ENT_QUOTES, 'UTF-8'); ?>" role="tab" aria-selected="false"><?php echo htmlspecialchars($loanOfficer); ?></button>
+                <button type="button" class="officer-tab" data-officer="<?php echo htmlspecialchars($loanOfficer, ENT_QUOTES, 'UTF-8'); ?>" data-used-penalty="<?php echo (float) ($officerUsedPenalties[$loanOfficer] ?? 0); ?>" role="tab" aria-selected="false"><?php echo htmlspecialchars($loanOfficer); ?></button>
             <?php endforeach; ?>
         </div>
         <div class="table-container">
@@ -184,7 +215,7 @@ sort($regions, SORT_NATURAL | SORT_FLAG_CASE);
                 <tbody>
                     <?php if ($result_penalty_details && $result_penalty_details->num_rows > 0): ?>
                         <?php while ($row = $result_penalty_details->fetch_assoc()): ?>
-                            <tr data-release-date="<?php echo htmlspecialchars(date('Y-m-d', strtotime($row['loan_release_date'])), ENT_QUOTES, 'UTF-8'); ?>" data-officer="<?php echo htmlspecialchars($row['loan_officer_name'], ENT_QUOTES, 'UTF-8'); ?>" data-region="<?php echo htmlspecialchars($row['region_name'], ENT_QUOTES, 'UTF-8'); ?>" data-penalty-value="<?php echo (float) $row['penalty_amount']; ?>">
+                            <tr data-release-date="<?php echo htmlspecialchars(date('Y-m-d', strtotime($row['loan_release_date'])), ENT_QUOTES, 'UTF-8'); ?>" data-officer="<?php echo htmlspecialchars($row['loan_officer_name'], ENT_QUOTES, 'UTF-8'); ?>" data-region="<?php echo htmlspecialchars($row['region_name'], ENT_QUOTES, 'UTF-8'); ?>" data-gross-penalty-value="<?php echo (float) $row['gross_penalty_amount']; ?>" data-penalty-value="<?php echo (float) $row['penalty_amount']; ?>">
                                 <td><?php echo htmlspecialchars($row['borrower_name']); ?></td>
                                 <td><a href="repayment_details.php?loanId=<?php echo $row['id']; ?>"><?php echo htmlspecialchars($row['id']); ?></a></td>
                                 <td><?php echo number_format($row['principal'], 2); ?></td>
@@ -242,13 +273,31 @@ sort($regions, SORT_NATURAL | SORT_FLAG_CASE);
         }
 
         function updatePenaltyMetric() {
-            let total = 0;
+            let gross = 0;
+            let balance = 0;
             document.querySelectorAll('#penaltyTable tbody tr[data-officer]').forEach(row => {
                 if ((selectedOfficer === 'all' || row.dataset.officer === selectedOfficer) && (selectedRegion === 'all' || row.dataset.region === selectedRegion) && rowMatchesPeriod(row)) {
-                    total += Number(row.dataset.penaltyValue || 0);
+                    gross += Number(row.dataset.grossPenaltyValue || 0);
+                    balance += Number(row.dataset.penaltyValue || 0);
                 }
             });
-            document.getElementById('totalPenalty').textContent = 'KSH ' + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+            let used = 0;
+            if (selectedOfficer === 'all') {
+                Array.from(officerTabs).forEach(tab => {
+                    if (tab.dataset.officer !== 'all') {
+                        used += Number(tab.dataset.usedPenalty || 0);
+                    }
+                });
+            } else {
+                const selectedTab = Array.from(officerTabs).find(tab => tab.dataset.officer === selectedOfficer);
+                used = Number(selectedTab ? (selectedTab.dataset.usedPenalty || 0) : 0);
+            }
+
+            const remainingBalance = Math.max(0, gross - used);
+            document.getElementById('totalPenalty').textContent = 'KSH ' + gross.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            document.getElementById('balancePenalty').textContent = 'KSH ' + remainingBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            document.getElementById('usedPenalty').textContent = 'KSH ' + used.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         }
 
         function filterPenaltyRows() {
@@ -274,6 +323,7 @@ sort($regions, SORT_NATURAL | SORT_FLAG_CASE);
         if (penaltySearch) {
             penaltySearch.addEventListener('input', function () {
                 filterPenaltyRows();
+                updatePenaltyMetric();
             });
         }
 

@@ -14,9 +14,11 @@ if (empty($_SESSION['email'])) {
 
 $interestCalculationColumnStmt = $conn->query("SELECT COUNT(*) AS column_count FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'loan_applications' AND COLUMN_NAME = 'interest_calculation'");
 $hasInterestCalculationColumn = $interestCalculationColumnStmt && (int) $interestCalculationColumnStmt->fetch_assoc()['column_count'] > 0;
-$interestRateExpression = $hasInterestCalculationColumn
-    ? "LOWER(COALESCE(l.interest_calculation, l.repayment_cycle, 'monthly'))"
-    : "LOWER(COALESCE(l.repayment_cycle, l.loan_duration_unit, 'monthly'))";
+$weeklyLoanExpression = $hasInterestCalculationColumn
+    ? "LOWER(COALESCE(l.interest_calculation, '')) IN ('weekly', 'week', 'weeks') OR LOWER(COALESCE(l.repayment_cycle, '')) IN ('weekly', 'week', 'weeks') OR LOWER(COALESCE(l.loan_duration_unit, '')) IN ('weekly', 'week', 'weeks')"
+    : "LOWER(COALESCE(l.repayment_cycle, '')) IN ('weekly', 'week', 'weeks') OR LOWER(COALESCE(l.loan_duration_unit, '')) IN ('weekly', 'week', 'weeks')";
+$totalPaidExpression = "COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)";
+$penaltyThresholdExpression = "l.principal + (l.principal * CASE WHEN $weeklyLoanExpression THEN 0.06 ELSE 0.24 END * l.loan_duration)";
 
 $conn->query("CREATE TABLE IF NOT EXISTS penalty_actions (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -82,15 +84,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         $loanSql = "SELECT l.id, l.borrower AS borrower_id, b.full_name AS borrower_name,
                            b.loan_officer AS officer_email, COALESCE(u.name, 'Unassigned') AS officer_name,
-                           GREATEST(0, (
-                               COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)
-                               - (l.principal + (l.principal * CASE WHEN $interestRateExpression IN ('weekly', 'week', 'weeks') THEN 0.06 ELSE 0.24 END * l.loan_duration))
-                           ) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)) AS remaining_penalty
+                           GREATEST(0, ($totalPaidExpression) - ($penaltyThresholdExpression)
+                               - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)) AS remaining_penalty
                     FROM loan_applications l
                     INNER JOIN borrowers b ON l.borrower = b.id
                                         LEFT JOIN users u ON CONVERT(b.loan_officer USING utf8mb4) COLLATE utf8mb4_general_ci = CONVERT(u.email USING utf8mb4) COLLATE utf8mb4_general_ci
-                    WHERE l.id = ?
-                      AND (l.loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%')
+                                        WHERE l.id = ?
                     LIMIT 1";
         $loanStmt = $conn->prepare($loanSql);
         $loanStmt->bind_param('i', $loanId);
@@ -100,13 +99,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $poolSql = "SELECT GREATEST(0,
                            COALESCE((
                                SELECT SUM(GREATEST(0,
-                                   COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)
-                                   - (l.principal + (l.principal * CASE WHEN $interestRateExpression IN ('weekly', 'week', 'weeks') THEN 0.06 ELSE 0.24 END * l.loan_duration))
+                                   ($totalPaidExpression) - ($penaltyThresholdExpression)
                                ))
                                FROM loan_applications l
                                INNER JOIN borrowers b ON l.borrower = b.id
                                WHERE CONVERT(b.loan_officer USING utf8mb4) COLLATE utf8mb4_general_ci = CONVERT(? USING utf8mb4) COLLATE utf8mb4_general_ci
-                                 AND (l.loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%')
                            ), 0)
                            - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.officer_email = ?), 0)
                        ) AS available_penalty";
@@ -138,14 +135,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $officerSql = "SELECT u.email, u.name,
                       GREATEST(0,
                           COALESCE((
-                              SELECT SUM(GREATEST(0,
-                                  COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)
-                                  - (l.principal + (l.principal * CASE WHEN $interestRateExpression IN ('weekly', 'week', 'weeks') THEN 0.06 ELSE 0.24 END * l.loan_duration))
-                              ))
+                              SELECT SUM(GREATEST(0, ($totalPaidExpression) - ($penaltyThresholdExpression)))
                               FROM loan_applications l
                               INNER JOIN borrowers b ON l.borrower = b.id
                               WHERE CONVERT(b.loan_officer USING utf8mb4) COLLATE utf8mb4_general_ci = CONVERT(u.email USING utf8mb4) COLLATE utf8mb4_general_ci
-                                AND (l.loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%')
                           ), 0)
                           - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE CONVERT(pa.officer_email USING utf8mb4) COLLATE utf8mb4_general_ci = CONVERT(u.email USING utf8mb4) COLLATE utf8mb4_general_ci), 0)
                       ) AS available_penalty
@@ -165,18 +158,17 @@ $loanSql = "SELECT l.id, b.full_name AS borrower_name, b.loan_officer AS officer
                        - COALESCE(SUM(COALESCE(r.paid, 0)), 0)
                        - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)
                    ) AS arrears,
-                   GREATEST(0, (
-                       COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)
-                       - (l.principal + (l.principal * CASE WHEN $interestRateExpression IN ('weekly', 'week', 'weeks') THEN 0.06 ELSE 0.24 END * l.loan_duration))
-                   ) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)) AS remaining_penalty
+                   GREATEST(0, ($totalPaidExpression) - ($penaltyThresholdExpression)
+                       - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)) AS remaining_penalty
             FROM loan_applications l
             INNER JOIN borrowers b ON l.borrower = b.id
             LEFT JOIN users u ON CONVERT(b.loan_officer USING utf8mb4) COLLATE utf8mb4_general_ci = CONVERT(u.email USING utf8mb4) COLLATE utf8mb4_general_ci
             LEFT JOIN repayments r ON r.loan_id = l.id
-            WHERE (l.loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%')
-            GROUP BY l.id, b.id, b.full_name, b.loan_officer, u.name, l.principal, l.loan_duration
-            HAVING arrears > 0
-            ORDER BY b.full_name";
+                WHERE l.loan_status IN ('approved', 'rolled_over')
+                    OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%'
+                GROUP BY l.id, b.id, b.full_name, b.loan_officer, u.name, l.principal, l.loan_duration
+                HAVING arrears > 0
+                ORDER BY arrears DESC, b.full_name";
 $loanResult = $conn->query($loanSql);
 $loans = [];
 while ($loan = $loanResult->fetch_assoc()) {
@@ -254,7 +246,7 @@ $actionsResult = $conn->query("SELECT pa.*, b.full_name AS borrower_name
                 <select class="form-select" name="loan_id" id="loan_id" required>
                     <option value="">Select client loan</option>
                     <?php foreach ($loans as $loan): ?>
-                        <option class="loan-option" value="<?php echo (int) $loan['id']; ?>" data-officer="<?php echo htmlspecialchars($loan['officer_email'], ENT_QUOTES, 'UTF-8'); ?>" data-remaining="<?php echo (float) $loan['remaining_penalty']; ?>"><?php echo htmlspecialchars($loan['borrower_name']); ?> - Loan #<?php echo (int) $loan['id']; ?> - Arrears KSH <?php echo number_format((float) $loan['arrears'], 2); ?> - Penalty KSH <?php echo number_format((float) $loan['remaining_penalty'], 2); ?></option>
+                        <option class="loan-option" value="<?php echo (int) $loan['id']; ?>" data-officer="<?php echo htmlspecialchars($loan['officer_email'], ENT_QUOTES, 'UTF-8'); ?>" data-remaining="<?php echo (float) $loan['remaining_penalty']; ?>"><?php echo htmlspecialchars($loan['borrower_name']); ?> - Loan #<?php echo (int) $loan['id']; ?> - Arrears KSH <?php echo number_format((float) $loan['arrears'], 2); ?></option>
                     <?php endforeach; ?>
                 </select>
                 <small id="loanPenalty" class="text-muted"></small>
