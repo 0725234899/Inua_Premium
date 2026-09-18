@@ -1031,6 +1031,11 @@ foreach ($officerOptions as $officer) {
             const commissionTableBody = document.getElementById('commission-table-body').querySelector('tbody');
             // Function to get baseline based on loan book, PAR, and composite score
             function getCommissionBaseline(loanBook, par, compositeScore) {
+                // Anyone above 15% PAR does not qualify for commission.
+                if (par > 15) {
+                    return 0;
+                }
+
                 // Not entitled case explicitly specified: below 600k, par < 7% and composite >= 50%
                 if (loanBook < 600000  && par < 7 && compositeScore >= 0.5) {
                     return 0;
@@ -1582,7 +1587,11 @@ foreach ($officerOptions as $officer) {
                 let statusColor = '';
                 let commissionRate = 0;
 
-                if (officer.loanBook >= 600000 && officer.compositeScore >= 0.5) {
+                if (officer.par > 15) {
+                    commissionStatus = 'Not Qualified: PAR above 15%';
+                    statusColor = 'text-red-600 font-bold';
+                    commissionRate = 0;
+                } else if (officer.loanBook >= 600000 && officer.compositeScore >= 0.5) {
                     commissionStatus = 'Qualified for Commission';
                     statusColor = 'text-green-600 font-bold';
                     commissionRate = 100;
@@ -1845,6 +1854,11 @@ foreach ($officerOptions as $officer) {
 
                 // Function to calculate commission baseline
                 function getCommissionBaseline(loanBook, par, compositeScore) {
+                    // Anyone above 15% PAR does not qualify for commission.
+                    if (par > 15) {
+                        return 0;
+                    }
+
                     // Not entitled case explicitly specified: below 600k, par < 7% and composite >= 50%
                     if (loanBook < 600000 && par < 7 && compositeScore >= 0.5) {
                         return 0;

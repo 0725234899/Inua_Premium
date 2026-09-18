@@ -5,9 +5,9 @@ if (isset($_POST['login'])) {
     // Sanitize and validate inputs
     $email = filter_var($_POST['email'], FILTER_SANITIZE_EMAIL);
     $password = $_POST['password'];
-    $role = filter_var($_POST['role'], FILTER_SANITIZE_STRING);
+    $role = trim((string) ($_POST['role'] ?? ''));
 
-    if (filter_var($email, FILTER_VALIDATE_EMAIL) && !empty($password) && !empty($role)) {
+    if (filter_var($email, FILTER_VALIDATE_EMAIL) && !empty($password) && ctype_digit($role)) {
         // Check login credentials
         $res = login($email, $password, $role);
         $sp = explode(",", $res);
@@ -35,6 +35,8 @@ if (isset($_POST['login'])) {
                     break;
             }
             exit();
+        } elseif ($sp[0] == '2' && ($sp[1] ?? '') === 'expired') {
+            $error_message = "Your password expired after 90 days. Please contact the administrator to reset your password.";
         } else {
             $error_message = "Invalid email or password.";
         }

@@ -18,6 +18,7 @@ if (isset($_POST['updateStaff'])) {
 
     $conn = db_connect();
     try {
+        ensureUserPasswordExpiryColumnsExist();
         $conn->beginTransaction();
 
         $oldStmt = $conn->prepare('SELECT email FROM users WHERE id = ? LIMIT 1');
@@ -34,7 +35,7 @@ if (isset($_POST['updateStaff'])) {
 
         $sql = 'UPDATE users SET name = ?, email = ?, phone = ?, area = ?, role_id = ?, basic_salary = ?';
         if ($password !== '') {
-            $sql .= ', password = ?';
+            $sql .= ', password = ?, password_changed_at = NOW(), password_expires_at = DATE_ADD(NOW(), INTERVAL 90 DAY)';
         }
         $sql .= ' WHERE id = ?';
 

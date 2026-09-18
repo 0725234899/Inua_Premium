@@ -460,6 +460,52 @@ function getRepaymentScheduleDates($loan_release_date, $loan_duration, $loan_dur
     return $scheduleDates;
 }
 
+function calculateDaysInArrearsFromRepaymentSchedule($repaymentRows) {
+    $today = new DateTime('today');
+    $daysInArrears = 0;
+    $earliestLateDate = null;
+    $clearDateForEarliestLate = null;
+
+    foreach ($repaymentRows as $row) {
+        $scheduledDateValue = $row['repayment_date'] ?? null;
+        $amount = (float) ($row['amount'] ?? 0);
+        if (empty($scheduledDateValue) || $amount <= 0) {
+            continue;
+        }
+
+        $scheduledDate = new DateTime($scheduledDateValue);
+        $paidAmount = (float) ($row['paid'] ?? 0);
+        $amountOutstanding = max(0, $amount - $paidAmount);
+
+        if ($amountOutstanding <= 0) {
+            $actualClearDateValue = $row['repaid_date'] ?? null;
+            if (empty($actualClearDateValue)) {
+                continue;
+            }
+
+            $clearDate = new DateTime($actualClearDateValue);
+            if ($clearDate <= $scheduledDate) {
+                continue;
+            }
+        } else {
+            $clearDate = $today;
+        }
+
+        if ($clearDate > $scheduledDate) {
+            if ($earliestLateDate === null || $scheduledDate < $earliestLateDate) {
+                $earliestLateDate = clone $scheduledDate;
+                $clearDateForEarliestLate = clone $clearDate;
+            }
+        }
+    }
+
+    if ($earliestLateDate !== null && $clearDateForEarliestLate !== null) {
+        $daysInArrears = max(0, (int) $earliestLateDate->diff($clearDateForEarliestLate)->days);
+    }
+
+    return $daysInArrears;
+}
+
 function calculateDaysOverdueAfterMaturity($projectedMaturityDate, $repaymentRows, $totalDue) {
     if (!$projectedMaturityDate || (float) $totalDue <= 0) {
         return 0;
@@ -689,6 +735,29 @@ if (!$loan) {
     die("Loan details not found.");
 }
 
+$loan_overdue_amount_stmt = $conn->prepare(
+    "SELECT GREATEST(
+        COALESCE(
+            SUM(CASE
+                WHEN r.repayment_date < CURDATE()
+                THEN GREATEST(COALESCE(r.amount, 0) - COALESCE(r.paid, 0), 0)
+                ELSE 0
+            END),
+            0
+        )
+        - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = ?), 0),
+        0
+    ) AS total_overdue
+    FROM repayments r
+    WHERE r.loan_id = ?"
+);
+$loan_overdue_amount_stmt->bind_param("ii", $loanId, $loanId);
+$loan_overdue_amount_stmt->execute();
+$loan_overdue_amount_result = $loan_overdue_amount_stmt->get_result();
+$loan_overdue_amount_row = $loan_overdue_amount_result->fetch_assoc();
+$loan_overdue_amount = (float) ($loan_overdue_amount_row['total_overdue'] ?? 0.0);
+$loan_overdue_amount_stmt->close();
+
 $totalDue = $loan['total_amount_due'];
 $totalPaid = 0.0;
 $balance = 0.0;
@@ -714,34 +783,14 @@ $overdueStmt = $conn->prepare("SELECT repayment_date, amount, paid, repaid_date 
 $overdueStmt->bind_param("i", $loanId);
 $overdueStmt->execute();
 $overdueResult = $overdueStmt->get_result();
-$daysInArrears = 0;
-$overdueAmount = 0;
-$today = new DateTime('today');
+$overdueRows = [];
 while ($overdueRow = $overdueResult->fetch_assoc()) {
-    $repaymentDate = $overdueRow['repayment_date'];
-    $amount = (float) ($overdueRow['amount'] ?? 0);
-    $paid = (float) ($overdueRow['paid'] ?? 0);
-
-    if (empty($repaymentDate) || $amount <= 0) {
-        continue;
-    }
-
-    $dueDate = new DateTime($repaymentDate);
-    $amountOutstanding = max(0, $amount - $paid);
-    $overdueAmount += $amountOutstanding;
-
-    $clearDate = null;
-    if (!empty($overdueRow['repaid_date'])) {
-        $clearDate = new DateTime($overdueRow['repaid_date']);
-    } elseif ($amountOutstanding > 0) {
-        $clearDate = $today;
-    }
-
-    if ($clearDate !== null && $dueDate < $clearDate) {
-        $daysInArrears += max(0, (int) $dueDate->diff($clearDate)->days);
-    }
+    $overdueRows[] = $overdueRow;
 }
 $overdueStmt->close();
+
+$daysInArrears = calculateDaysInArrearsFromRepaymentSchedule($overdueRows);
+$overdueAmount = $loan_overdue_amount;
 
 // Use the stored projected maturity date if available, otherwise fall back to the repayment schedule or loan duration.
 $projectedMaturityDate = null;
@@ -875,28 +924,8 @@ if ($totalPenaltyWrittenOff > 0 && $penaltyWriteOffDate !== null) {
     }
     unset($repaymentRow);
 
-    $daysInArrears = 0;
-    $overdueAmount = 0;
-    $today = new DateTime('today');
-    foreach ($repayment_rows as $repaymentRow) {
-        $repaymentDate = $repaymentRow['repayment_date'] ?? null;
-        $amount = (float) ($repaymentRow['amount'] ?? 0);
-        $paid = (float) ($repaymentRow['paid'] ?? 0);
-        if (empty($repaymentDate) || $amount <= 0) {
-            continue;
-        }
-
-        $dueDate = new DateTime($repaymentDate);
-        $amountOutstanding = max(0, $amount - $paid);
-        $overdueAmount += $amountOutstanding;
-        $clearDate = !empty($repaymentRow['repaid_date'])
-            ? new DateTime($repaymentRow['repaid_date'])
-            : ($amountOutstanding > 0 ? $today : null);
-
-        if ($clearDate !== null && $dueDate < $clearDate) {
-            $daysInArrears += max(0, (int) $dueDate->diff($clearDate)->days);
-        }
-    }
+    $daysInArrears = calculateDaysInArrearsFromRepaymentSchedule($repayment_rows);
+    $overdueAmount = $loan_overdue_amount;
 }
 
 $daysAfterProjectedMaturity = calculateDaysOverdueAfterMaturity(

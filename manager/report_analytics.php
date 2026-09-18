@@ -259,10 +259,11 @@ foreach ($officerOptions as $officer) {
     ];
 }
 
+$monthlyActivityMap = [];
+
 $trendSql = "SELECT DATE_FORMAT(loan_release_date, '%Y-%m') AS month_key,
-                COUNT(*) AS loans_disbursed,
                 SUM(principal) AS principal_value,
-                SUM(total_amount) AS total_value
+                SUM((total_amount - principal)) AS interest_value
             FROM loan_applications
             WHERE loan_status = 'approved'";
 if ($reportScope === 'custom' && !empty($periodStart) && !empty($periodEnd)) {
@@ -278,13 +279,83 @@ if ($reportScope === 'custom' && !empty($periodStart) && !empty($periodEnd)) {
 }
 $trendRows = $trendStmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
+foreach ($trendRows as $row) {
+    $monthKey = (string) ($row['month_key'] ?? '');
+    if ($monthKey === '') {
+        continue;
+    }
+
+    $monthlyActivityMap[$monthKey] = [
+        'loan_book' => (float) ($row['principal_value'] ?? 0),
+        'interest' => (float) ($row['interest_value'] ?? 0),
+        'expense' => 0.0,
+    ];
+}
+
+$expenseTrendSql = "SELECT DATE_FORMAT(expense_date, '%Y-%m') AS month_key,
+                    SUM(amount) AS expense_value
+                FROM loan_officer_expenses
+                WHERE 1=1";
+if ($reportScope === 'custom' && !empty($periodStart) && !empty($periodEnd)) {
+    $expenseTrendSql .= ' AND expense_date BETWEEN ? AND ?';
+    $expenseTrendSql .= " GROUP BY DATE_FORMAT(expense_date, '%Y-%m') ORDER BY month_key ASC";
+    $expenseTrendStmt = $conn->prepare($expenseTrendSql);
+    $expenseTrendStmt->bind_param('ss', $periodStart, $periodEnd);
+    $expenseTrendStmt->execute();
+} else {
+    $expenseTrendSql .= " GROUP BY DATE_FORMAT(expense_date, '%Y-%m') ORDER BY month_key ASC";
+    $expenseTrendStmt = $conn->prepare($expenseTrendSql);
+    $expenseTrendStmt->execute();
+}
+$expenseTrendRows = $expenseTrendStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+foreach ($expenseTrendRows as $row) {
+    $monthKey = (string) ($row['month_key'] ?? '');
+    if ($monthKey === '') {
+        continue;
+    }
+    if (!isset($monthlyActivityMap[$monthKey])) {
+        $monthlyActivityMap[$monthKey] = ['loan_book' => 0.0, 'interest' => 0.0, 'expense' => 0.0];
+    }
+    $monthlyActivityMap[$monthKey]['expense'] = (float) ($row['expense_value'] ?? 0.0);
+}
+
+uksort($monthlyActivityMap, fn ($a, $b) => strcmp($a, $b));
+
 $trendLabels = [];
 $trendLoanBook = [];
-$trendArrears = [];
-foreach ($trendRows as $row) {
-    $trendLabels[] = date('M Y', strtotime($row['month_key'] . '-01'));
-    $trendLoanBook[] = (float) ($row['principal_value'] ?? 0);
-    $trendArrears[] = 0;
+$trendInterest = [];
+$trendExpenses = [];
+foreach ($monthlyActivityMap as $monthKey => $monthData) {
+    $trendLabels[] = date('M Y', strtotime($monthKey . '-01'));
+    $trendLoanBook[] = (float) ($monthData['loan_book'] ?? 0);
+    $trendInterest[] = (float) ($monthData['interest'] ?? 0);
+    $trendExpenses[] = (float) ($monthData['expense'] ?? 0);
+}
+
+$expenseOfficerSql = "SELECT loan_officer_name AS officer_name, SUM(amount) AS total_expense
+                    FROM loan_officer_expenses
+                    WHERE 1=1";
+$expenseOfficerParams = [];
+$expenseOfficerTypes = '';
+if ($reportScope === 'custom' && !empty($periodStart) && !empty($periodEnd)) {
+    $expenseOfficerSql .= ' AND expense_date BETWEEN ? AND ?';
+    $expenseOfficerParams[] = $periodStart;
+    $expenseOfficerParams[] = $periodEnd;
+    $expenseOfficerTypes = 'ss';
+}
+$expenseOfficerSql .= ' GROUP BY loan_officer_name ORDER BY total_expense DESC LIMIT 6';
+$expenseOfficerStmt = $conn->prepare($expenseOfficerSql);
+if (!empty($expenseOfficerParams)) {
+    $expenseOfficerStmt->bind_param($expenseOfficerTypes, ...$expenseOfficerParams);
+}
+$expenseOfficerStmt->execute();
+$expenseOfficerRows = $expenseOfficerStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+
+$expenseOfficerLabels = [];
+$expenseOfficerValues = [];
+foreach ($expenseOfficerRows as $row) {
+    $expenseOfficerLabels[] = $row['officer_name'] ?? 'Unknown';
+    $expenseOfficerValues[] = (float) ($row['total_expense'] ?? 0);
 }
 
 function pickExtremeOfficer(array $officerData, string $metric, bool $highest = true): array {
@@ -310,8 +381,19 @@ $overallTotalLoanBook = array_sum(array_column($officerData, 'loanBook'));
 $overallArrears = array_sum(array_column($officerData, 'arrearsValue'));
 $overallCustomers = array_sum(array_column($officerData, 'customers'));
 $overallCustomersInArrears = array_sum(array_column($officerData, 'customersInArrears'));
+$overallInterest = array_sum(array_column($officerData, 'interest'));
+$overallExpenses = 0.0;
+$expenseStatement = $conn->prepare("SELECT COALESCE(SUM(amount), 0) AS total_expenses FROM loan_officer_expenses WHERE 1=1");
+if ($reportScope === 'custom' && !empty($periodStart) && !empty($periodEnd)) {
+    $expenseStatement = $conn->prepare("SELECT COALESCE(SUM(amount), 0) AS total_expenses FROM loan_officer_expenses WHERE expense_date BETWEEN ? AND ?");
+    $expenseStatement->bind_param('ss', $periodStart, $periodEnd);
+}
+$expenseStatement->execute();
+$expenseStatementResult = $expenseStatement->get_result()->fetch_assoc();
+$overallExpenses = (float) ($expenseStatementResult['total_expenses'] ?? 0.0);
 $overallPar = $overallTotalLoanBook > 0 ? ($overallArrears / $overallTotalLoanBook) * 100 : 0;
 $overallCustomerArrearsPct = $overallCustomers > 0 ? ($overallCustomersInArrears / $overallCustomers) * 100 : 0;
+$netOperatingYield = $overallInterest - $overallExpenses;
 $topOfficer = pickExtremeOfficer($officerData, 'loanBook', true);
 $riskOfficer = pickExtremeOfficer($officerData, 'par', true);
 
@@ -322,6 +404,8 @@ if (!empty($officerData)) {
     $performanceInsights[] = 'The largest book is held by ' . htmlspecialchars($topOfficer['name']) . ' with KES ' . number_format((float) $topOfficer['loanBook'], 2) . ' in outstanding portfolio.';
     $performanceInsights[] = 'Highest risk exposure is recorded with ' . htmlspecialchars($riskOfficer['name']) . ' at ' . number_format((float) $riskOfficer['par'], 2) . '% PAR, warranting closer review.';
     $performanceInsights[] = 'Customers in arrears represent ' . number_format($overallCustomerArrearsPct, 2) . '% of active customers, which signals the need for targeted collections interventions.';
+    $performanceInsights[] = 'Interest income totals KES ' . number_format($overallInterest, 2) . ' while expenses stand at KES ' . number_format($overallExpenses, 2) . ', leaving a net operating yield of KES ' . number_format($netOperatingYield, 2) . '.';
+    $performanceInsights[] = 'The organization should monitor whether the expense base remains well below the revenue generated from portfolio growth and interest accumulation.';
 }
 
 $comparisonTable = [];
@@ -409,8 +493,8 @@ usort($comparisonTable, fn ($a, $b) => $b['par'] <=> $a['par']);
                 <h3 class="text-3xl font-black mt-3">KES <?php echo number_format($overallArrears, 2); ?></h3>
             </div>
             <div class="metric-card p-6 bg-gradient-to-br from-emerald-500 to-teal-500 text-white">
-                <p class="text-sm uppercase tracking-wide text-emerald-100">Active Customers</p>
-                <h3 class="text-3xl font-black mt-3"><?php echo number_format($overallCustomers, 0); ?></h3>
+                <p class="text-sm uppercase tracking-wide text-emerald-100">Interest Income</p>
+                <h3 class="text-3xl font-black mt-3">KES <?php echo number_format($overallInterest, 2); ?></h3>
             </div>
             <div class="metric-card p-6 bg-gradient-to-br from-rose-500 to-red-500 text-white">
                 <p class="text-sm uppercase tracking-wide text-rose-100">Portfolio PAR</p>
@@ -418,11 +502,30 @@ usort($comparisonTable, fn ($a, $b) => $b['par'] <=> $a['par']);
             </div>
         </section>
 
+        <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6 mb-8">
+            <div class="metric-card p-6 bg-gradient-to-br from-violet-600 to-indigo-500 text-white">
+                <p class="text-sm uppercase tracking-wide text-violet-100">Total Expenses</p>
+                <h3 class="text-3xl font-black mt-3">KES <?php echo number_format($overallExpenses, 2); ?></h3>
+            </div>
+            <div class="metric-card p-6 bg-gradient-to-br from-cyan-600 to-sky-500 text-white">
+                <p class="text-sm uppercase tracking-wide text-cyan-100">Net Operating Yield</p>
+                <h3 class="text-3xl font-black mt-3">KES <?php echo number_format($netOperatingYield, 2); ?></h3>
+            </div>
+            <div class="metric-card p-6 bg-gradient-to-br from-lime-600 to-green-500 text-white">
+                <p class="text-sm uppercase tracking-wide text-lime-100">Active Customers</p>
+                <h3 class="text-3xl font-black mt-3"><?php echo number_format($overallCustomers, 0); ?></h3>
+            </div>
+            <div class="metric-card p-6 bg-gradient-to-br from-slate-700 to-slate-600 text-white">
+                <p class="text-sm uppercase tracking-wide text-slate-100">Customer Arrears</p>
+                <h3 class="text-3xl font-black mt-3"><?php echo number_format($overallCustomerArrearsPct, 2); ?>%</h3>
+            </div>
+        </section>
+
         <div class="grid grid-cols-1 xl:grid-cols-2 gap-8 mb-8">
             <div class="chart-shell p-5">
                 <div class="flex items-center justify-between mb-5">
                     <h2 class="text-xl font-bold text-slate-900">Portfolio Trend Analysis</h2>
-                    <span class="text-xs font-semibold uppercase text-slate-500">Monthly trend</span>
+                    <span class="text-xs font-semibold uppercase text-slate-500">Loan book + interest + expenses</span>
                 </div>
                 <div class="h-[360px]">
                     <canvas id="trendChart"></canvas>
@@ -435,6 +538,27 @@ usort($comparisonTable, fn ($a, $b) => $b['par'] <=> $a['par']);
                 </div>
                 <div class="h-[360px]">
                     <canvas id="parChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-8 mb-8">
+            <div class="chart-shell p-5">
+                <div class="flex items-center justify-between mb-5">
+                    <h2 class="text-xl font-bold text-slate-900">Monthly Performance Summary</h2>
+                    <span class="text-xs font-semibold uppercase text-slate-500">Interest vs expense efficiency</span>
+                </div>
+                <div class="h-[360px]">
+                    <canvas id="performanceChart"></canvas>
+                </div>
+            </div>
+            <div class="chart-shell p-5">
+                <div class="flex items-center justify-between mb-5">
+                    <h2 class="text-xl font-bold text-slate-900">Top Expense Contributors</h2>
+                    <span class="text-xs font-semibold uppercase text-slate-500">By officer</span>
+                </div>
+                <div class="h-[360px]">
+                    <canvas id="expenseChart"></canvas>
                 </div>
             </div>
         </div>
@@ -534,7 +658,10 @@ usort($comparisonTable, fn ($a, $b) => $b['par'] <=> $a['par']);
 
         const trendLabels = <?php echo json_encode($trendLabels); ?>;
         const trendLoanBook = <?php echo json_encode($trendLoanBook); ?>;
-        const trendArrears = <?php echo json_encode($trendArrears); ?>;
+        const trendInterest = <?php echo json_encode($trendInterest); ?>;
+        const trendExpenses = <?php echo json_encode($trendExpenses); ?>;
+        const expenseOfficerLabels = <?php echo json_encode($expenseOfficerLabels); ?>;
+        const expenseOfficerValues = <?php echo json_encode($expenseOfficerValues); ?>;
 
         new Chart(document.getElementById('trendChart'), {
             type: 'line',
@@ -542,7 +669,7 @@ usort($comparisonTable, fn ($a, $b) => $b['par'] <=> $a['par']);
                 labels: trendLabels.length ? trendLabels : ['No data'],
                 datasets: [
                     {
-                        label: 'Principal Value',
+                        label: 'Loan Book',
                         data: trendLoanBook.length ? trendLoanBook : [0],
                         borderColor: '#2563eb',
                         backgroundColor: 'rgba(37,99,235,0.10)',
@@ -551,8 +678,17 @@ usort($comparisonTable, fn ($a, $b) => $b['par'] <=> $a['par']);
                         fill: true
                     },
                     {
-                        label: 'Arrears Value',
-                        data: trendArrears.length ? trendArrears : [0],
+                        label: 'Interest Income',
+                        data: trendInterest.length ? trendInterest : [0],
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16,185,129,0.08)',
+                        borderWidth: 2,
+                        tension: 0.35,
+                        fill: true
+                    },
+                    {
+                        label: 'Expenses',
+                        data: trendExpenses.length ? trendExpenses : [0],
                         borderColor: '#f97316',
                         backgroundColor: 'rgba(249,115,22,0.08)',
                         borderWidth: 2,
@@ -567,6 +703,56 @@ usort($comparisonTable, fn ($a, $b) => $b['par'] <=> $a['par']);
                 plugins: { legend: { position: 'top' } },
                 scales: {
                     y: { ticks: { callback: value => 'KES ' + Number(value).toLocaleString() } }
+                }
+            }
+        });
+
+        new Chart(document.getElementById('performanceChart'), {
+            type: 'bar',
+            data: {
+                labels: trendLabels.length ? trendLabels : ['No data'],
+                datasets: [
+                    {
+                        label: 'Interest',
+                        data: trendInterest.length ? trendInterest : [0],
+                        backgroundColor: 'rgba(16,185,129,0.85)',
+                        borderRadius: 8
+                    },
+                    {
+                        label: 'Expenses',
+                        data: trendExpenses.length ? trendExpenses : [0],
+                        backgroundColor: 'rgba(249,115,22,0.85)',
+                        borderRadius: 8
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { position: 'top' } },
+                scales: {
+                    y: { ticks: { callback: value => 'KES ' + Number(value).toLocaleString() } }
+                }
+            }
+        });
+
+        new Chart(document.getElementById('expenseChart'), {
+            type: 'doughnut',
+            data: {
+                labels: expenseOfficerLabels.length ? expenseOfficerLabels : ['No expense data'],
+                datasets: [{
+                    data: expenseOfficerValues.length ? expenseOfficerValues : [0],
+                    backgroundColor: ['#8b5cf6', '#0ea5e9', '#22c55e', '#f59e0b', '#ef4444', '#14b8a6'],
+                    borderWidth: 2,
+                    hoverOffset: 12
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'bottom' },
+                    tooltip: { callbacks: { label: context => 'KES ' + Number(context.parsed).toLocaleString() } }
                 }
             }
         });

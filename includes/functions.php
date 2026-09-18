@@ -129,8 +129,20 @@ function ensureUserSalaryColumnExists() {
     }
 }
 
+function ensureUserPasswordExpiryColumnsExist() {
+    $conn = db_connect();
+    foreach (['password_changed_at' => 'DATETIME NULL', 'password_expires_at' => 'DATETIME NULL'] as $column => $definition) {
+        $stmt = $conn->prepare("SHOW COLUMNS FROM users LIKE ?");
+        $stmt->execute([$column]);
+        if (!$stmt->fetch()) {
+            $conn->exec("ALTER TABLE users ADD COLUMN `{$column}` {$definition}");
+        }
+    }
+}
+
 function add_user($name, $email, $password, $role, $area = null, $phone = null, $basic_salary = 0.00) {
     ensureUserSalaryColumnExists();
+    ensureUserPasswordExpiryColumnsExist();
     $conn = db_connect();
     $email = strtolower(trim((string) $email));
 
@@ -141,7 +153,7 @@ function add_user($name, $email, $password, $role, $area = null, $phone = null, 
         return false;
     }
 
-    $stmt = $conn->prepare("INSERT INTO users (name, email, password, role_id, area, phone, basic_salary) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    $stmt = $conn->prepare("INSERT INTO users (name, email, password, role_id, area, phone, basic_salary, password_changed_at, password_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 90 DAY))");
     try {
         return $stmt->execute([$name, $email, password_hash($password, PASSWORD_DEFAULT), $role, $area, $phone, $basic_salary]);
     } catch (PDOException $e) {
@@ -151,6 +163,7 @@ function add_user($name, $email, $password, $role, $area = null, $phone = null, 
 }
 
 function login($email, $password, $role) {
+    ensureUserPasswordExpiryColumnsExist();
     $pdo = db_connect();
     $stmt = $pdo->prepare("SELECT * FROM users WHERE email = :email AND role_id = :role");
     $stmt->bindParam(':email', $email);
@@ -159,6 +172,18 @@ function login($email, $password, $role) {
 
     $user = $stmt->fetch();
     if ($user && password_verify($password, $user['password'])) {
+        if (in_array((string) $role, ['2', '4'], true)) {
+            if (empty($user['password_expires_at'])) {
+                $expiryStmt = $pdo->prepare("UPDATE users SET password_changed_at = COALESCE(password_changed_at, NOW()), password_expires_at = DATE_ADD(COALESCE(password_changed_at, NOW()), INTERVAL 90 DAY) WHERE id = ?");
+                $expiryStmt->execute([$user['id']]);
+                $user['password_expires_at'] = date('Y-m-d H:i:s', strtotime('+90 days'));
+            }
+
+            if (strtotime($user['password_expires_at']) <= time()) {
+                return '2,expired';
+            }
+        }
+
         $_SESSION['user'] = $email;
         $_SESSION['username'] = $user['name'];
         return '1,' . $role; // Success
@@ -168,8 +193,9 @@ function login($email, $password, $role) {
 }
 
 function update_user($id, $name, $email, $password) {
+    ensureUserPasswordExpiryColumnsExist();
     $conn = db_connect();
-    $stmt = $conn->prepare("UPDATE users SET name = ?, email = ?, password = ? WHERE id = ?");
+    $stmt = $conn->prepare("UPDATE users SET name = ?, email = ?, password = ?, password_changed_at = NOW(), password_expires_at = DATE_ADD(NOW(), INTERVAL 90 DAY) WHERE id = ?");
     return $stmt->execute([$name, $email, password_hash($password, PASSWORD_DEFAULT), $id]);
 }
 
