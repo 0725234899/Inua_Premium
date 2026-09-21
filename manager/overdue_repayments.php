@@ -98,7 +98,7 @@ function get_projected_maturity_date_for_loan($loan) {
 
 function get_eligible_loan_ids_for_arrears($conn) {
     $eligible_ids = [];
-    $stmt = $conn->prepare("SELECT id, loan_status, loan_release_date, repayment_cycle, number_of_repayments, loan_duration FROM loan_applications WHERE loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(loan_status, ''))) LIKE '%roll%'");
+    $stmt = $conn->prepare("SELECT id FROM loan_applications WHERE loan_status = 'approved'");
     if (!$stmt) {
         return $eligible_ids;
     }
@@ -106,23 +106,93 @@ function get_eligible_loan_ids_for_arrears($conn) {
     $stmt->execute();
     $result = $stmt->get_result();
 
-    $today = new DateTime('today');
     while ($loan = $result->fetch_assoc()) {
-        $loanStatus = strtolower(trim((string) ($loan['loan_status'] ?? '')));
-        $isRolledOver = strpos($loanStatus, 'roll') !== false;
-
-        if (!$isRolledOver) {
-            $eligible_ids[] = (int) $loan['id'];
-            continue;
-        }
-
-        $projected_maturity_date = get_projected_maturity_date_for_loan($loan);
-        if ($projected_maturity_date !== null && $projected_maturity_date <= $today) {
-            $eligible_ids[] = (int) $loan['id'];
-        }
+        $eligible_ids[] = (int) $loan['id'];
     }
 
     return $eligible_ids;
+}
+
+function calculateDaysInArrearsFromRepaymentSchedule($repaymentRows) {
+    $today = new DateTime('today');
+    $daysInArrears = 0;
+    $earliestLateDate = null;
+    $clearDateForEarliestLate = null;
+
+    foreach ($repaymentRows as $row) {
+        $scheduledDateValue = $row['repayment_date'] ?? null;
+        $amount = (float) ($row['amount'] ?? 0);
+        if (empty($scheduledDateValue) || $amount <= 0) {
+            continue;
+        }
+
+        $scheduledDate = new DateTime($scheduledDateValue);
+        $paidAmount = (float) ($row['paid'] ?? 0);
+        $amountOutstanding = max(0, $amount - $paidAmount);
+
+        if ($amountOutstanding <= 0) {
+            $actualClearDateValue = $row['repaid_date'] ?? null;
+            if (empty($actualClearDateValue)) {
+                continue;
+            }
+            $clearDate = new DateTime($actualClearDateValue);
+            if ($clearDate <= $scheduledDate) {
+                continue;
+            }
+        } else {
+            $clearDate = $today;
+        }
+
+        if ($clearDate > $scheduledDate) {
+            if ($earliestLateDate === null || $scheduledDate < $earliestLateDate) {
+                $earliestLateDate = clone $scheduledDate;
+                $clearDateForEarliestLate = clone $clearDate;
+            }
+        }
+    }
+
+    if ($earliestLateDate !== null && $clearDateForEarliestLate !== null) {
+        $daysInArrears = max(0, (int) $earliestLateDate->diff($clearDateForEarliestLate)->days);
+    }
+
+    return $daysInArrears;
+}
+
+function get_borrower_days_in_arrears($conn, $borrowerId) {
+    $loanStmt = $conn->prepare("SELECT id FROM loan_applications WHERE borrower = ? AND loan_status = 'approved'");
+    if (!$loanStmt) {
+        return 0;
+    }
+
+    $loanStmt->bind_param('i', $borrowerId);
+    $loanStmt->execute();
+    $loanResult = $loanStmt->get_result();
+
+    $maxDays = 0;
+    while ($loanRow = $loanResult->fetch_assoc()) {
+        $loanId = (int) ($loanRow['id'] ?? 0);
+        if ($loanId <= 0) {
+            continue;
+        }
+
+        $repaymentStmt = $conn->prepare("SELECT repayment_date, amount, paid, repaid_date FROM repayments WHERE loan_id = ? ORDER BY repayment_date ASC");
+        if (!$repaymentStmt) {
+            continue;
+        }
+
+        $repaymentStmt->bind_param('i', $loanId);
+        $repaymentStmt->execute();
+        $repaymentRows = $repaymentStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $repaymentStmt->close();
+
+        $loanDays = calculateDaysInArrearsFromRepaymentSchedule($repaymentRows);
+        if ($loanDays > $maxDays) {
+            $maxDays = $loanDays;
+        }
+    }
+
+    $loanStmt->close();
+    return $maxDays;
 }
 
 function fetch_arrears_report_data($conn, $selected_officer = 'all', $selected_day = 'all') {
@@ -135,22 +205,14 @@ function fetch_arrears_report_data($conn, $selected_officer = 'all', $selected_d
         : "AND 1=0";
 
     $sql = "SELECT 
+                borrowers.id AS borrower_id,
                 borrowers.full_name AS borrower_name, 
-                borrowers.mobile AS phone_number, 
+                borrowers.mobile AS phone_number,
                 GREATEST(SUM(CASE
                     WHEN repayments.repayment_date < CURDATE() 
                     THEN GREATEST(COALESCE(repayments.amount, 0) - COALESCE(repayments.paid, 0), 0) 
                     ELSE 0 
                 END) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0), 0) AS total_overdue,
-                COALESCE(
-                    DATEDIFF(CURDATE(), MIN(CASE 
-                        WHEN repayments.repayment_date < CURDATE() 
-                            AND COALESCE(repayments.amount, 0) > COALESCE(repayments.paid, 0)
-                        THEN repayments.repayment_date 
-                        ELSE NULL 
-                    END)),
-                    0
-                ) AS days_in_arrears,
                 GREATEST(
                     COALESCE((SELECT SUM(la.total_amount) FROM loan_applications la WHERE la.borrower = borrowers.id), 0)
                     - COALESCE((SELECT SUM(rp.paid) FROM loan_applications la2 LEFT JOIN repayments rp ON la2.id = rp.loan_id WHERE la2.borrower = borrowers.id), 0)
@@ -164,9 +226,9 @@ function fetch_arrears_report_data($conn, $selected_officer = 'all', $selected_d
             $eligible_loan_filter
             $officer_filter
             $day_filter
-            GROUP BY borrowers.full_name, borrowers.mobile
+            GROUP BY borrowers.id, borrowers.full_name, borrowers.mobile
             HAVING total_overdue > 0
-            ORDER BY days_in_arrears DESC, total_overdue DESC, borrowers.full_name";
+            ORDER BY total_overdue DESC, borrowers.full_name";
 
     $stmt = $conn->prepare($sql);
     if ($selected_officer !== 'all' && $selected_day !== 'all') {
@@ -184,10 +246,21 @@ function fetch_arrears_report_data($conn, $selected_officer = 'all', $selected_d
     $total_overdue = 0;
     $count = 0;
     while ($row = $result->fetch_assoc()) {
+        $borrowerId = (int) ($row['borrower_id'] ?? 0);
+        $row['days_in_arrears'] = get_borrower_days_in_arrears($conn, $borrowerId);
         $rows[] = $row;
         $total_overdue += (float) $row['total_overdue'];
         $count++;
     }
+
+    usort($rows, function ($a, $b) {
+        $daysDiff = ((int) ($b['days_in_arrears'] ?? 0)) <=> ((int) ($a['days_in_arrears'] ?? 0));
+        if ($daysDiff !== 0) {
+            return $daysDiff;
+        }
+
+        return ((float) ($b['total_overdue'] ?? 0)) <=> ((float) ($a['total_overdue'] ?? 0));
+    });
 
     return [
         'rows' => $rows,
@@ -336,8 +409,9 @@ $eligible_loan_filter = !empty($eligible_loan_ids)
 
 // Query to get all clients with overdue repayments, using scheduled elapsed installments minus total repaid
 $sql_overdue = "SELECT 
+                    borrowers.id AS borrower_id,
                     borrowers.full_name AS borrower_name, 
-                    borrowers.mobile AS phone_number, 
+                    borrowers.mobile AS phone_number,
                     GREATEST(
                         COALESCE(SUM(CASE 
                             WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
@@ -347,11 +421,6 @@ $sql_overdue = "SELECT
                         - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0),
                         0
                     ) AS total_overdue,
-                    DATEDIFF(CURDATE(), MIN(CASE 
-                        WHEN repayments.repayment_date < CURDATE() 
-                        THEN repayments.repayment_date 
-                        ELSE NULL 
-                    END)) + 1 AS days_in_arrears,
                     GREATEST(
                         COALESCE((
                             SELECT SUM(
@@ -392,7 +461,7 @@ $sql_overdue = "SELECT
                 HAVING 
                     total_overdue > 0
                 ORDER BY 
-                    days_in_arrears DESC, total_overdue DESC, borrowers.full_name";
+                    total_overdue DESC, borrowers.full_name";
 
 $stmt_overdue = $conn->prepare($sql_overdue);
 if ($selected_officer !== 'all' && $selected_day !== 'all' && $selected_area !== 'all') {
@@ -418,10 +487,21 @@ $arrears_rows = [];
 $total_overdue = 0;
 $total_overdue_count = 0;
 while ($row = $result_overdue->fetch_assoc()) {
+    $borrowerId = (int) ($row['borrower_id'] ?? 0);
+    $row['days_in_arrears'] = get_borrower_days_in_arrears($conn, $borrowerId);
     $arrears_rows[] = $row;
-    $total_overdue += $row['total_overdue'];
+    $total_overdue += (float) ($row['total_overdue'] ?? 0);
     $total_overdue_count++;
 }
+
+usort($arrears_rows, function ($a, $b) {
+    $daysDiff = ((int) ($b['days_in_arrears'] ?? 0)) <=> ((int) ($a['days_in_arrears'] ?? 0));
+    if ($daysDiff !== 0) {
+        return $daysDiff;
+    }
+
+    return ((float) ($b['total_overdue'] ?? 0)) <=> ((float) ($a['total_overdue'] ?? 0));
+});
 
 $email_message = '';
 $email_status = '';

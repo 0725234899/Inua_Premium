@@ -244,20 +244,19 @@ function generate_repayment_details_pdf($loan, $guarantors, $adjusted_history, $
 
     $loanSummary = [
         'Principal: KSH ' . number_format($loan['principal_amount'], 2),
+        'Duration: ' . ((int)($loan['loan_duration'] ?? 0)) . ' ' . strtoupper($loan['loan_duration_unit'] ?? 'months'),
         'Total Amount: KSH ' . number_format(($loan['total_amount_due'] ?? 0), 2),
         'Total Paid: KSH ' . number_format($totalPaid, 2) . ($overpayments > 0 ? ' (Overpaid by KSh ' . number_format($overpayments, 2) . ')' : ''),
         'Balance: KSH ' . number_format((($loan['total_amount_due'] ?? 0) - $totalPaid), 2),
-        'Release Date: ' . (!empty($loan['loan_release_date']) ? date('d/m/Y', strtotime($loan['loan_release_date'])) : 'N/A'),
-        'Loan Duration: ' . ((int)($loan['loan_duration'] ?? 0)) . ' ' . strtoupper($loan['loan_duration_unit'] ?? 'months'),
-        'Interest Calculation: ' . ucfirst($loan['interest_calculation'] ?? $loan['repayment_cycle'] ?? 'monthly'),
         'Loan Officer: ' . (!empty($loan['loan_officer_name']) ? $loan['loan_officer_name'] : 'Unassigned')
     ];
 
     $arrearsInfo = [
         'Arrears Amount: KSH ' . number_format($overdueAmount, 2),
+        'Release Date: ' . (!empty($loan['loan_release_date']) ? date('d/m/Y', strtotime($loan['loan_release_date'])) : 'N/A'),
+        'Projected maturity date: ' . ($projectedMaturityDate ? $projectedMaturityDate->format('d/m/Y') : 'N/A'),
         'Overpayments: KSH ' . number_format($overpayments, 2),
         'Days in arrears: ' . $daysInArrears,
-        'Projected maturity date: ' . ($projectedMaturityDate ? $projectedMaturityDate->format('d/m/Y') : 'N/A'),
         'Days overdue: ' . $daysAfterProjectedMaturity
     ];
 
@@ -1128,18 +1127,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
                     <div class="col-md-4">
                         <h6 class="fw-bold">Loan Summary</h6>
                         <p class="mb-1"><strong>Principal:</strong> <?php echo number_format($loan['principal_amount'], 2); ?> KES</p>
+                        <p class="mb-1"><strong>Duration:</strong> <?php echo (int)($loan['loan_duration'] ?? 0); ?> <?php echo htmlspecialchars(strtoupper($loan['loan_duration_unit'] ?? 'months')); ?></p>
                         <p class="mb-1"><strong>Total Amount:</strong> <?php echo number_format($totalDue, 2); ?> KES</p>
                         <p class="mb-1"><strong>Total Paid:</strong> <?php echo number_format($totalPaid, 2); ?> KES<?php echo $overpayments > 0 ? ' <span class="text-success">(Overpaid by KSh ' . number_format($overpayments, 2) . ')</span>' : ''; ?></p>
                         <p class="mb-1"><strong>Balance:</strong> <?php echo number_format($balance, 2); ?> KES</p>
-                        <p class="mb-1"><strong>Release Date:</strong> <?php echo !empty($loan['loan_release_date']) ? date('d/m/Y', strtotime($loan['loan_release_date'])) : 'N/A'; ?></p>
                         <p class="mb-1"><strong>Loan Officer:</strong> <?php echo !empty($loan['loan_officer_name']) ? htmlspecialchars($loan['loan_officer_name']) : 'Unassigned'; ?></p>
                     </div>
                     <div class="col-md-4">
                         <h6 class="fw-bold">Arrears Summary</h6>
                         <p class="mb-1"><strong>Arrears Amount:</strong> <?php echo number_format($overdueAmount, 2); ?> KES</p>
+                        <p class="mb-1"><strong>Release Date:</strong> <?php echo !empty($loan['loan_release_date']) ? date('d/m/Y', strtotime($loan['loan_release_date'])) : 'N/A'; ?></p>
+                        <p class="mb-1"><strong>Projected Maturity Date:</strong> <?php echo $projectedMaturityDate ? $projectedMaturityDate->format('d/m/Y') : 'N/A'; ?></p>
                         <p class="mb-1"><strong>Overpayments:</strong> <?php echo number_format($overpayments, 2); ?> KES</p>
                         <p class="mb-1"><strong>Days in Arrears:</strong> <?php echo (int) $daysInArrears; ?></p>
-                        <p class="mb-1"><strong>Projected Maturity Date:</strong> <?php echo $projectedMaturityDate ? $projectedMaturityDate->format('d/m/Y') : 'N/A'; ?></p>
                         <p class="mb-1"><strong>Days Overdue:</strong> <?php echo (int) $daysAfterProjectedMaturity; ?></p>
                     </div>
                 </div>

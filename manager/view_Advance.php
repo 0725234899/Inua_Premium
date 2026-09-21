@@ -98,7 +98,10 @@ if ($officerResult) {
 <?php include 'includes/header.php'; ?>
 <main class="main" id="mainContent">
     <div class="container mt-4">
-        <h1 class="h3 mb-3">Active Advances</h1>
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h1 class="h3 mb-0">Active Advances</h1>
+            <a href="index.php" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
         <div class="card shadow-sm">
             <div class="card-header bg-info text-white">
                 <h5 class="mb-0">Booked Advances</h5>

@@ -421,6 +421,54 @@
             $checkChild->close();
         }
 
+        // Ensure Resources parent and child items exist
+        $resourcesParentTitle = 'Resources';
+        $resourcesParentUrl = '#';
+        $resourcesParentIcon = 'bi bi-folder2-open';
+        $resourcesParentId = null;
+
+        $checkResourcesParent = $conn->prepare("SELECT id FROM navigation_items WHERE title = ? LIMIT 1");
+        $checkResourcesParent->bind_param('s', $resourcesParentTitle);
+        $checkResourcesParent->execute();
+        $checkResourcesParent->store_result();
+
+        if ($checkResourcesParent->num_rows === 0) {
+            $insertResourcesParent = $conn->prepare("INSERT INTO navigation_items (title, url, icon) VALUES (?, ?, ?)");
+            $insertResourcesParent->bind_param('sss', $resourcesParentTitle, $resourcesParentUrl, $resourcesParentIcon);
+            $insertResourcesParent->execute();
+            $resourcesParentId = $conn->insert_id;
+            $insertResourcesParent->close();
+        } else {
+            $checkResourcesParent->bind_result($resourcesParentId);
+            $checkResourcesParent->fetch();
+        }
+        $checkResourcesParent->close();
+
+        $resourcesChildren = [
+            ['title' => 'Demand Letter', 'url' => 'demand_letter.php', 'icon' => 'bi bi-file-earmark-text'],
+            ['title' => 'Application Form', 'url' => 'application_form.php', 'icon' => 'bi bi-file-text'],
+            ['title' => 'Interview Letter', 'url' => 'interview_letter.php', 'icon' => 'bi bi-envelope-paper'],
+            ['title' => 'Offer Letter', 'url' => 'offer_letter.php', 'icon' => 'bi bi-file-richtext'],
+            ['title' => 'Performance Contract Letter', 'url' => 'performance_contract_letter.php', 'icon' => 'bi bi-journal-text'],
+            ['title' => 'Asset Recovery Letter', 'url' => 'asset_recovery_letter.php', 'icon' => 'bi bi-shield-check'],
+            ['title' => 'Termination Letter', 'url' => 'termination_letter.php', 'icon' => 'bi bi-person-x']
+        ];
+
+        foreach ($resourcesChildren as $childItem) {
+            $checkResourcesChild = $conn->prepare("SELECT id FROM navigation_items WHERE title = ? AND parent_id = ? LIMIT 1");
+            $checkResourcesChild->bind_param('si', $childItem['title'], $resourcesParentId);
+            $checkResourcesChild->execute();
+            $checkResourcesChild->store_result();
+
+            if ($checkResourcesChild->num_rows === 0) {
+                $insertResourcesChild = $conn->prepare("INSERT INTO navigation_items (title, url, icon, parent_id) VALUES (?, ?, ?, ?)");
+                $insertResourcesChild->bind_param('sssi', $childItem['title'], $childItem['url'], $childItem['icon'], $resourcesParentId);
+                $insertResourcesChild->execute();
+                $insertResourcesChild->close();
+            }
+            $checkResourcesChild->close();
+        }
+
         // Ensure Advance parent and 'advance' child exist
         $parentTitle = 'Advance';
         $parentUrl = '#';
@@ -499,6 +547,43 @@
                 $insMapC->close();
             }
             $checkMapC->close();
+        }
+
+        if (!empty($resourcesParentId)) {
+            $checkResourcesMap = $conn->prepare("SELECT 1 FROM navigation_item_roles WHERE navigation_item_id = ? AND role_id = ? LIMIT 1");
+            $checkResourcesMap->bind_param('ii', $resourcesParentId, $defaultRole);
+            $checkResourcesMap->execute();
+            $checkResourcesMap->store_result();
+            if ($checkResourcesMap->num_rows === 0) {
+                $insResourcesMap = $conn->prepare("INSERT INTO navigation_item_roles (navigation_item_id, role_id) VALUES (?, ?)");
+                $insResourcesMap->bind_param('ii', $resourcesParentId, $defaultRole);
+                $insResourcesMap->execute();
+                $insResourcesMap->close();
+            }
+            $checkResourcesMap->close();
+        }
+
+        foreach ($resourcesChildren as $childItem) {
+            $getResourcesChildId = $conn->prepare("SELECT id FROM navigation_items WHERE title = ? AND parent_id = ? LIMIT 1");
+            $getResourcesChildId->bind_param('si', $childItem['title'], $resourcesParentId);
+            $getResourcesChildId->execute();
+            $getResourcesChildId->bind_result($resourcesChildId);
+            $getResourcesChildId->fetch();
+            $getResourcesChildId->close();
+
+            if (!empty($resourcesChildId)) {
+                $checkResourcesChildMap = $conn->prepare("SELECT 1 FROM navigation_item_roles WHERE navigation_item_id = ? AND role_id = ? LIMIT 1");
+                $checkResourcesChildMap->bind_param('ii', $resourcesChildId, $defaultRole);
+                $checkResourcesChildMap->execute();
+                $checkResourcesChildMap->store_result();
+                if ($checkResourcesChildMap->num_rows === 0) {
+                    $insResourcesChildMap = $conn->prepare("INSERT INTO navigation_item_roles (navigation_item_id, role_id) VALUES (?, ?)");
+                    $insResourcesChildMap->bind_param('ii', $resourcesChildId, $defaultRole);
+                    $insResourcesChildMap->execute();
+                    $insResourcesChildMap->close();
+                }
+                $checkResourcesChildMap->close();
+            }
         }
     }
 
