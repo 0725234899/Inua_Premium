@@ -133,18 +133,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $basicSalary = (float)($staff['basic_salary'] ?? 0);
             $grossPay = $basicSalary;
             $deductions = [];
-            $advanceId = 0;
             $advanceAmount = 0;
-            $advanceStmt = $conn->prepare("SELECT id, monthly_deduction FROM advances WHERE loan_officer_id = ? AND balance > 0 ORDER BY id DESC LIMIT 1");
-            $advanceStmt->bind_param('i', $staffId);
+            $advanceRecords = [];
+            $advanceStmt = $conn->prepare("SELECT id, monthly_deduction FROM advances WHERE loan_officer_id = ? AND balance > 0 AND start_date <= ? ORDER BY start_date ASC, id ASC");
+            $advanceStmt->bind_param('is', $staffId, $payDate);
             $advanceStmt->execute();
             $advanceResult = $advanceStmt->get_result();
-            $activeAdvance = $advanceResult ? $advanceResult->fetch_assoc() : null;
+            if ($advanceResult) {
+                while ($advanceRow = $advanceResult->fetch_assoc()) {
+                    if ((float) $advanceRow['monthly_deduction'] > 0) {
+                        $advanceRecords[] = $advanceRow;
+                        $advanceAmount += (float) $advanceRow['monthly_deduction'];
+                    }
+                }
+            }
             $advanceStmt->close();
 
-            if ($activeAdvance && (float)$activeAdvance['monthly_deduction'] > 0) {
-                $advanceId = (int)$activeAdvance['id'];
-                $advanceAmount = (float)$activeAdvance['monthly_deduction'];
+            if (!empty($advanceRecords)) {
                 $deductions[] = ['label' => 'Advance', 'amount' => $advanceAmount];
             }
 
@@ -163,16 +168,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $payrollIds[] = (int)$conn->insert_id;
-            if ($advanceId > 0 && $advanceAmount > 0) {
-                $paymentDate = date('Y-m-d');
+            if (!empty($advanceRecords)) {
+                $paymentDate = $payDate;
                 $repaymentStmt = $conn->prepare("INSERT INTO advance_repayments (advance_id, amount, payment_date, recorded_by) VALUES (?, ?, ?, ?)");
-                $repaymentStmt->bind_param('idsi', $advanceId, $advanceAmount, $paymentDate, $recordedBy);
-                if ($repaymentStmt->execute()) {
-                    $updateAdvance = $conn->prepare("UPDATE advances SET balance = balance - ? WHERE id = ?");
-                    $updateAdvance->bind_param('di', $advanceAmount, $advanceId);
-                    $updateAdvance->execute();
-                    $updateAdvance->close();
+                $updateAdvance = $conn->prepare("UPDATE advances SET balance = GREATEST(balance - ?, 0) WHERE id = ?");
+                foreach ($advanceRecords as $advanceRecord) {
+                    $advanceId = (int) $advanceRecord['id'];
+                    $monthlyAmount = (float) $advanceRecord['monthly_deduction'];
+                    $repaymentStmt->bind_param('idsi', $advanceId, $monthlyAmount, $paymentDate, $recordedBy);
+                    if (!$repaymentStmt->execute()) {
+                        $error = 'Payroll saved, but an advance deduction could not be recorded.';
+                        break;
+                    }
+                    $updateAdvance->bind_param('di', $monthlyAmount, $advanceId);
+                    if (!$updateAdvance->execute()) {
+                        $error = 'Payroll saved, but an advance balance could not be updated.';
+                        break;
+                    }
                 }
+                $updateAdvance->close();
                 $repaymentStmt->close();
             }
         }
