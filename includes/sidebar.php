@@ -60,6 +60,10 @@ function renderNavItems($items, $parentId = NULL) {
             height: 100vh;
             width: 250px; /* Adjust width as needed */
             position: fixed;
+            max-height: 100vh;
+            overflow-y: auto;
+            overflow-x: hidden;
+            box-sizing: border-box;
         }
 
         .sidebar .nav-link {
@@ -76,6 +80,13 @@ function renderNavItems($items, $parentId = NULL) {
 
         .sidebar .collapse {
             margin-left: 20px; /* Indentation for sub-menu items */
+            overflow: visible;
+        }
+
+        .sidebar-nav {
+            box-sizing: border-box;
+            min-height: 100%;
+            padding-bottom: 80px;
         }
     </style>
 </head>

@@ -3,6 +3,13 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 include 'db.php';
 require_once __DIR__ . '/../includes/functions.php';
+require_once __DIR__ . '/PHPMailer/src/PHPMailer.php';
+require_once __DIR__ . '/PHPMailer/src/Exception.php';
+require_once __DIR__ . '/PHPMailer/src/SMTP.php';
+require_once dirname(__DIR__) . '/admin/TCPDF/tcpdf.php';
+
+use PHPMailer\PHPMailer\Exception;
+use PHPMailer\PHPMailer\PHPMailer;
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -10,6 +17,203 @@ if (session_status() === PHP_SESSION_NONE) {
 if (empty($_SESSION['email'])) {
     header('Location: ../index.html');
     exit();
+}
+
+function getDashboardStaff($conn) {
+    $staff = [];
+    $result = $conn->query("SELECT u.id, u.name, u.email, COALESCE(r.name, 'Staff') AS role_name
+                            FROM users u LEFT JOIN roles r ON r.id = u.role_id
+                            WHERE u.email IS NOT NULL AND u.email <> '' ORDER BY u.name ASC");
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $staff[] = $row;
+        }
+    }
+    return $staff;
+}
+
+function dashboardNoticeValue($value) {
+    return htmlspecialchars(trim((string) $value), ENT_QUOTES, 'UTF-8');
+}
+
+function getDashboardCommunicationTemplates() {
+    return [
+        'repayment_reminder' => ['type' => 'Reminder', 'subject' => 'Repayment and portfolio follow-up reminder', 'message' => 'Please review all assigned repayment schedules, contact customers with upcoming or overdue instalments, update the system records, and escalate unresolved repayment risks before the next review.'],
+        'kyc_documentation' => ['type' => 'Notice', 'subject' => 'KYC and loan documentation compliance notice', 'message' => 'All customer identification, KYC, affordability, approval, and supporting documents must be complete, accurate, and properly filed before a facility is processed or disbursed. Any documentation gap must be reported and corrected promptly.'],
+        'collections_followup' => ['type' => 'Notice', 'subject' => 'Collections and arrears follow-up notice', 'message' => 'Review overdue accounts, make documented customer contacts, agree realistic repayment actions, and update all follow-up outcomes. Escalate persistent arrears, customer complaints, and material repayment risks through the approved collections procedure.'],
+        'compliance_conduct' => ['type' => 'Notice', 'subject' => 'Professional conduct and compliance notice', 'message' => 'All staff must act honestly, protect customer information and company property, disclose conflicts of interest, maintain accurate records, follow approved procedures, and report suspected fraud, misconduct, or control weaknesses immediately.'],
+        'weekly_meeting' => ['type' => 'Reminder', 'subject' => 'Weekly review meeting reminder', 'message' => 'Please prepare your weekly activity summary, portfolio movement, collections progress, customer issues, unresolved exceptions, and proposed actions before the scheduled management review.'],
+        'policy_reminder' => ['type' => 'Notice', 'subject' => 'Microfinance policy and procedure reminder', 'message' => 'Please comply with the organization\'s approved lending, customer service, data protection, cash handling, complaints, reporting, and records-management policies and procedures. Seek clarification before taking an action outside your authority.'],
+        'termination_fraud' => ['type' => 'Notice', 'subject' => 'Corrective notice: fraud or dishonest conduct concern', 'message' => 'A concern has been raised regarding possible fraud, dishonesty, misrepresentation, or misuse of company or client information or funds. You are required to provide your response, cooperate with any review, preserve relevant records, and correct any confirmed breach by the lapse date. Failure to respond or meet the required standard may result in disciplinary action, recovery of losses, referral to authorities, or termination in accordance with policy and applicable law.', 'termination_item' => 'Fraud', 'individual_only' => true],
+        'termination_conflict' => ['type' => 'Notice', 'subject' => 'Corrective notice: conflict of interest concern', 'message' => 'You are required to disclose and resolve any actual, potential, or undisclosed conflict of interest affecting your duties, clients, suppliers, or the organization. Submit the required disclosure and corrective action by the lapse date. Failure to comply may result in disciplinary action or termination in accordance with policy and applicable law.', 'termination_item' => 'Conflict of Interest', 'individual_only' => true],
+        'termination_theft' => ['type' => 'Notice', 'subject' => 'Corrective notice: property or funds concern', 'message' => 'A concern has been raised regarding possible theft, unauthorized taking, conversion, or misuse of company, client, or colleague property. Preserve records, cooperate with the review, and return or account for any property or funds by the lapse date. Confirmed misconduct may lead to disciplinary action, recovery, referral to authorities, or termination in accordance with policy and applicable law.', 'termination_item' => 'Theft', 'individual_only' => true],
+        'termination_behavior' => ['type' => 'Notice', 'subject' => 'Corrective notice: professional conduct concern', 'message' => 'Your conduct is being reviewed against the standards of professionalism, respect, integrity, dignity, and workplace behavior required by Inua Premium Services. Provide your response and demonstrate the required correction by the lapse date. Failure to improve may result in disciplinary action or termination in accordance with policy and applicable law.', 'termination_item' => 'Unbecoming Behavior', 'individual_only' => true],
+        'termination_performance' => ['type' => 'Notice', 'subject' => 'Performance improvement notice', 'message' => 'Your performance has remained below the reasonable duties, targets, service standards, or role expectations communicated to you. Submit your response and demonstrate measurable improvement by the lapse date. Continued poor performance after reasonable review and support may result in further disciplinary action or termination in accordance with policy and applicable law.', 'termination_item' => 'Poor Performance', 'individual_only' => true]
+    ];
+}
+
+function dashboardNoticeDate($value) {
+    $value = trim((string) $value);
+    if ($value === '') {
+        return '';
+    }
+    $date = DateTime::createFromFormat('Y-m-d', $value);
+    return $date ? $date->format('d/m/Y') : '';
+}
+
+function dashboardNoticeReference() {
+    return 'NT-' . date('Ymd-His') . '-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 6));
+}
+
+function generateDashboardNoticePdf($recipient, $sender, $noticeType, $subject, $message, $lapseDate = '', $investigationDays = null, $reference = '') {
+    $pdf = new TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
+    $pdf->SetCreator('Inua Premium Services');
+    $pdf->SetAuthor($sender['name']);
+    $pdf->SetTitle(ucfirst($noticeType) . ' - ' . $subject);
+    $pdf->SetMargins(15, 16, 15);
+    $pdf->SetAutoPageBreak(false, 18);
+    $pdf->setPrintHeader(false);
+    $pdf->setPrintFooter(false);
+    $safe = function ($value) { return htmlspecialchars(trim((string) $value), ENT_QUOTES, 'UTF-8'); };
+    $pdf->AddPage();
+    $logoPath = dirname(__DIR__) . '/assets/img/logo.png';
+    if (file_exists($logoPath)) {
+        $pdf->Image($logoPath, 150, 10, 40, 0, 'PNG');
+    }
+    $pdf->SetDrawColor(0, 47, 196);
+    $pdf->SetLineWidth(1.1);
+    $pdf->Line(15, 13, 145, 13);
+    $pdf->SetDrawColor(210, 0, 0);
+    $pdf->SetLineWidth(0.5);
+    $pdf->Line(15, 15, 145, 15);
+    $pdf->SetTextColor(0, 47, 196);
+    $pdf->SetFont('helvetica', 'B', 17);
+    $pdf->Cell(0, 9, 'INUA PREMIUM SERVICES', 0, 1, 'L');
+    $pdf->SetTextColor(45, 45, 45);
+    $pdf->SetFont('helvetica', '', 8.5);
+    $pdf->Cell(0, 5, 'Human Resources and Administration Department', 0, 1, 'L');
+    $pdf->Cell(0, 5, 'Formal Staff Communication', 0, 1, 'L');
+    $pdf->Ln(8);
+    $pdf->SetTextColor(210, 0, 0);
+    $pdf->SetFont('helvetica', 'B', 13);
+    $pdf->Cell(0, 8, strtoupper($noticeType), 0, 1, 'C');
+    $pdf->SetTextColor(45, 45, 45);
+    $pdf->SetFont('helvetica', 'B', 9);
+    $pdf->Cell(0, 5, 'Reference: ' . $safe($reference ?: dashboardNoticeReference()) . '    Date: ' . date('d/m/Y'), 0, 1, 'R');
+    $pdf->Ln(6);
+    $pdf->SetFont('helvetica', '', 10);
+    $lapseLine = $noticeType === 'Notice' && $lapseDate !== '' ? '<br><b>Notice lapses:</b> ' . $safe($lapseDate) : '';
+    $suspensionLine = $investigationDays !== null ? '<br><b>Administrative workplace exclusion:</b> ' . (int) $investigationDays . ' day(s) pending investigation' : '';
+    $pdf->writeHTML('<b>To:</b> ' . $safe($recipient['name']) . '<br><b>Role:</b> ' . $safe($recipient['role_name']) . '<br><b>Subject:</b> ' . $safe($subject) . $lapseLine . $suspensionLine, true, false, true, false, 'L');
+    $pdf->Ln(5);
+    $pdf->writeHTML('Dear ' . $safe($recipient['name']) . ',', true, false, true, false, 'L');
+    $pdf->Ln(3);
+    $pdf->writeHTML(nl2br($safe($message)), true, false, true, false, 'L');
+    if ($investigationDays !== null) {
+        $pdf->Ln(4);
+        $pdf->SetFont('helvetica', 'B', 9.5);
+        $pdf->writeHTML('<b>Pending investigation instruction:</b> You must not attend the workplace or perform workplace duties for ' . (int) $investigationDays . ' day(s) from the date of this notice, unless Human Resources provides written instructions otherwise. This is an administrative measure and is not a finding of misconduct. You must remain available to cooperate with the investigation and comply with lawful instructions.', true, false, true, false, 'L');
+    }
+    $pdf->Ln(8);
+    $pdf->writeHTML('Please acknowledge receipt where required and direct any clarification to your manager or the Human Resources and Administration Department.', true, false, true, false, 'L');
+    $pdf->Ln(12);
+    $stampPath = __DIR__ . '/New Folder/assets/img/company_stamp.JPG';
+    if (file_exists($stampPath)) {
+        $stampY = $pdf->GetY();
+        $pdf->SetAlpha(0.42);
+        $pdf->Image($stampPath, 146, $stampY - 8, 35, 0, 'JPG', '', '', true, 300, '', false, false, 0, false, false, false);
+        $pdf->SetAlpha(1);
+    }
+    $pdf->SetFont('helvetica', 'B', 9);
+    $pdf->Cell(0, 6, $sender['name'], 0, 1, 'L');
+    $pdf->SetFont('helvetica', '', 8.5);
+    $pdf->Cell(0, 5, 'Manager, Inua Premium Services', 0, 1, 'L');
+    $pdf->Cell(0, 5, 'Date: ____/____/________', 0, 1, 'L');
+    $pdf->Line(15, 276, 195, 276);
+    $pdf->SetFont('helvetica', 'I', 7.2);
+    $pdf->SetXY(15, 278);
+    $pdf->Cell(180, 4, 'Confidential staff communication | Inua Premium Services', 0, 0, 'C');
+    return $pdf->Output('', 'S');
+}
+
+function sendDashboardNoticeEmail($recipient, $pdfContent, $filename, $noticeType, $subject, $message, $lapseDate = '', $investigationDays = null, $reference = '') {
+    $credentials = getEmailAccount();
+    if (empty($credentials['sender_email']) || empty($credentials['sender_app_password'])) {
+        throw new Exception('Email settings are not configured.');
+    }
+    $mail = new PHPMailer(true);
+    $mail->SMTPOptions = ['ssl' => ['verify_peer' => false, 'verify_peer_name' => false, 'allow_self_signed' => true]];
+    $mail->isSMTP();
+    $mail->Host = 'smtp.gmail.com';
+    $mail->Port = 587;
+    $mail->SMTPSecure = 'tls';
+    $mail->SMTPAuth = true;
+    $mail->Username = $credentials['sender_email'];
+    $mail->Password = $credentials['sender_app_password'];
+    $mail->CharSet = 'UTF-8';
+    $mail->setFrom($credentials['sender_email'], 'Inua Premium Services');
+    $mail->addAddress($recipient['email'], $recipient['name']);
+    $mail->isHTML(true);
+    $mail->Subject = $noticeType . ': ' . $subject;
+    $lapseText = $noticeType === 'Notice' && $lapseDate !== '' ? '<p><strong>Notice lapses:</strong> ' . htmlspecialchars($lapseDate, ENT_QUOTES, 'UTF-8') . '</p>' : '';
+    $suspensionText = $investigationDays !== null ? '<p><strong>Administrative workplace exclusion:</strong> ' . (int) $investigationDays . ' day(s) pending investigation. This is an administrative measure and not a finding of misconduct.</p>' : '';
+    $mail->Body = '<p>Dear ' . htmlspecialchars($recipient['name'], ENT_QUOTES, 'UTF-8') . ',</p><p>Please find attached a formal <strong>' . htmlspecialchars($noticeType, ENT_QUOTES, 'UTF-8') . '</strong> from Inua Premium Services.</p><p><strong>Reference:</strong> ' . htmlspecialchars($reference, ENT_QUOTES, 'UTF-8') . '<br><strong>Subject:</strong> ' . htmlspecialchars($subject, ENT_QUOTES, 'UTF-8') . '</p>' . $lapseText . $suspensionText . '<p>' . nl2br(htmlspecialchars($message, ENT_QUOTES, 'UTF-8')) . '</p><p>Regards,<br>Management and Human Resources<br>Inua Premium Services</p>';
+    $mail->AltBody = 'Reference: ' . $reference . "\n" . $noticeType . ': ' . $subject . ($lapseDate !== '' ? "\nLapses: " . $lapseDate : '') . ($investigationDays !== null ? "\nWorkplace exclusion: " . (int) $investigationDays . " day(s) pending investigation." : '') . "\n\n" . $message;
+    $mail->addStringAttachment($pdfContent, $filename, 'base64', 'application/pdf');
+    $mail->send();
+}
+
+$dashboardStaff = getDashboardStaff($conn);
+$dashboardTemplates = getDashboardCommunicationTemplates();
+$noticeMessage = '';
+$noticeStatus = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_dashboard_notice'])) {
+    $recipientId = (int) ($_POST['notice_recipient'] ?? 0);
+    $noticeType = trim((string) ($_POST['notice_type'] ?? 'Notice'));
+    $noticeSubject = trim((string) ($_POST['notice_subject'] ?? ''));
+    $noticeBody = trim((string) ($_POST['notice_message'] ?? ''));
+    $noticeTemplate = trim((string) ($_POST['notice_template'] ?? ''));
+    $investigationDaysInput = trim((string) ($_POST['investigation_days'] ?? ''));
+    $noticeLapseDate = $noticeType === 'Notice' ? dashboardNoticeDate($_POST['notice_lapse_date'] ?? '') : '';
+    $noticeReference = dashboardNoticeReference();
+    $validTypes = ['Notice', 'Reminder'];
+    $selectedTemplate = $dashboardTemplates[$noticeTemplate] ?? null;
+    $individualOnly = !empty($selectedTemplate['individual_only']);
+    $isFraudNotice = $noticeTemplate === 'termination_fraud';
+    $investigationDays = $isFraudNotice && ctype_digit($investigationDaysInput) && (int) $investigationDaysInput > 0 ? (int) $investigationDaysInput : null;
+    $recipients = [];
+    foreach ($dashboardStaff as $staffMember) {
+        if (($recipientId === 0 || (int) $staffMember['id'] === $recipientId) && filter_var($staffMember['email'], FILTER_VALIDATE_EMAIL)) {
+            $recipients[] = $staffMember;
+        }
+    }
+    if ($individualOnly && $recipientId === 0) {
+        $noticeMessage = 'Termination-related corrective notices can only be sent to one selected staff member.';
+        $noticeStatus = 'danger';
+    } elseif (empty($recipients) || !in_array($noticeType, $validTypes, true) || $noticeSubject === '' || $noticeBody === '' || ($noticeType === 'Notice' && ($noticeLapseDate === '' || trim((string) ($_POST['notice_lapse_date'] ?? '')) === '')) || ($isFraudNotice && $investigationDays === null)) {
+        $noticeMessage = $isFraudNotice ? 'For a fraud-related notice, provide a valid investigation exclusion period in whole days.' : 'Select a recipient and type, complete the subject and message, and provide a valid lapse date for notices.';
+        $noticeStatus = 'danger';
+    } else {
+        try {
+            $sender = ['name' => 'Management'];
+            foreach ($dashboardStaff as $staffMember) {
+                if (trim((string) ($_SESSION['email'] ?? '')) === trim((string) $staffMember['email'])) {
+                    $sender['name'] = $staffMember['name'];
+                    break;
+                }
+            }
+            foreach ($recipients as $recipient) {
+                $pdfContent = generateDashboardNoticePdf($recipient, $sender, $noticeType, $noticeSubject, $noticeBody, $noticeLapseDate, $investigationDays, $noticeReference);
+                $safeName = preg_replace('/[^A-Za-z0-9_-]+/', '_', $recipient['name']) ?: 'staff';
+                sendDashboardNoticeEmail($recipient, $pdfContent, strtolower($noticeType) . '_' . $safeName . '_' . date('Ymd_His') . '.pdf', $noticeType, $noticeSubject, $noticeBody, $noticeLapseDate, $investigationDays, $noticeReference);
+            }
+            $noticeMessage = 'The ' . strtolower($noticeType) . ' was sent to ' . count($recipients) . ' staff member(s).';
+            $noticeStatus = 'success';
+        } catch (Exception $e) {
+            $noticeMessage = 'The notice could not be sent: ' . $e->getMessage();
+            $noticeStatus = 'danger';
+        }
+    }
 }
 
 $conn->query("CREATE TABLE IF NOT EXISTS penalty_actions (
@@ -322,6 +526,16 @@ if (session_status() === PHP_SESSION_NONE) {
             color: white;
         }
 
+        .notice-toast {
+            position: fixed;
+            right: 24px;
+            top: 82px;
+            z-index: 1100;
+            min-width: 280px;
+            max-width: 420px;
+            box-shadow: 0 12px 30px rgba(15, 23, 42, .16);
+        }
+
         .main > .header .btn-primary {
             background: transparent;
             border: 1px solid #82939c;
@@ -459,6 +673,34 @@ if (session_status() === PHP_SESSION_NONE) {
         .sidebar.collapsed { display: none; }
         .main.sidebar-collapsed { margin-left: 0; }
 
+        /* The shared sidebar is included inside this dashboard wrapper. Keep one scroll container. */
+        #sidebarWrapper {
+            box-sizing: border-box;
+            height: 100vh;
+            max-height: 100vh;
+            overflow-x: hidden;
+            overflow-y: auto;
+            position: fixed;
+            width: 250px;
+            z-index: 1000;
+        }
+        #sidebarWrapper .sidebar {
+            box-sizing: border-box;
+            height: auto;
+            max-height: none;
+            overflow: visible;
+            position: static;
+            width: 100%;
+        }
+        #sidebarWrapper .sidebar-nav {
+            box-sizing: border-box;
+            min-height: 100%;
+            padding-bottom: 80px;
+        }
+        #sidebarWrapper .sidebar-nav .collapse {
+            overflow: visible;
+        }
+
         @media (max-width: 850px) {
             .main > .header { padding: 24px; }
             .dashboard-metrics { grid-template-columns: repeat(2, 1fr); }
@@ -482,6 +724,125 @@ if (session_status() === PHP_SESSION_NONE) {
 </head>
 <body>
 <?php include 'includes/header.php'; ?>
+<?php if ($noticeMessage): ?><div class="notice-toast alert alert-<?= htmlspecialchars($noticeStatus); ?>"><?= htmlspecialchars($noticeMessage); ?></div><?php endif; ?>
+<div class="modal fade" id="dashboardNoticeModal" tabindex="-1" aria-labelledby="dashboardNoticeModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header bg-primary text-white">
+                <h5 class="modal-title" id="dashboardNoticeModalLabel"><i class="fas fa-bell me-2"></i>Send Staff Notice or Reminder</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form method="post" action="index.php">
+                <div class="modal-body">
+                    <div class="alert alert-light border">Choose one staff member for a private communication, or select all staff to send the same formal notice or reminder to everyone.</div>
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label" for="notice_recipient">Recipient</label>
+                            <select class="form-select" id="notice_recipient" name="notice_recipient" required>
+                                <option value="0">All staff</option>
+                                <?php foreach ($dashboardStaff as $staffMember): ?>
+                                    <option value="<?= (int) $staffMember['id']; ?>"><?= dashboardNoticeValue($staffMember['name'] . ' - ' . $staffMember['role_name'] . ' (' . $staffMember['email'] . ')'); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="notice_type">Communication Type</label>
+                            <select class="form-select" id="notice_type" name="notice_type" required>
+                                <option value="Notice">Notice</option>
+                                <option value="Reminder">Reminder</option>
+                            </select>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label" for="notice_template">Common Microfinance Template</label>
+                            <select class="form-select" id="notice_template" name="notice_template">
+                                <option value="">Write a custom communication</option>
+                                <?php foreach ($dashboardTemplates as $templateKey => $template): ?>
+                                    <option value="<?= dashboardNoticeValue($templateKey); ?>"><?= dashboardNoticeValue($template['type'] . (!empty($template['individual_only']) ? ' - Individual only - ' : ' - ') . $template['subject']); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <div class="form-text" id="templateHelp">Templates cover repayments, KYC, collections, compliance, weekly reviews, policy reminders, and individual corrective notices based on termination grounds. You can edit the loaded text.</div>
+                        </div>
+                        <div class="col-md-6" id="noticeLapseGroup">
+                            <label class="form-label" for="notice_lapse_date">Notice Lapse Date</label>
+                            <input type="date" class="form-control" id="notice_lapse_date" name="notice_lapse_date">
+                            <div class="form-text">Optional for notices; reminders do not use a lapse date.</div>
+                        </div>
+                        <div class="col-md-6" id="investigationDaysGroup" style="display:none;">
+                            <label class="form-label" for="investigation_days">Workplace Exclusion Period (Days)</label>
+                            <input type="number" class="form-control" id="investigation_days" name="investigation_days" min="1" step="1" placeholder="e.g. 7">
+                            <div class="form-text">Fraud-related notices require the number of days the employee must not attend the workplace pending investigation.</div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label" for="notice_subject">Subject</label>
+                            <input class="form-control" id="notice_subject" name="notice_subject" maxlength="180" required placeholder="Enter notice subject">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label" for="notice_message">Message</label>
+                            <textarea class="form-control" id="notice_message" name="notice_message" rows="7" maxlength="5000" required placeholder="Write the formal notice or reminder message"></textarea>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" name="send_dashboard_notice" class="btn btn-primary"><i class="fas fa-paper-plane me-1"></i> Send PDF Communication</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<script>
+    (function () {
+        const templates = <?= json_encode($dashboardTemplates, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+        const typeField = document.getElementById('notice_type');
+        const templateField = document.getElementById('notice_template');
+        const subjectField = document.getElementById('notice_subject');
+        const messageField = document.getElementById('notice_message');
+        const recipientField = document.getElementById('notice_recipient');
+        const recipientAllOption = recipientField.querySelector('option[value="0"]');
+        const templateHelp = document.getElementById('templateHelp');
+        const lapseGroup = document.getElementById('noticeLapseGroup');
+        const lapseField = document.getElementById('notice_lapse_date');
+        const investigationDaysGroup = document.getElementById('investigationDaysGroup');
+        const investigationDaysField = document.getElementById('investigation_days');
+        function updateLapseVisibility() {
+            const isNotice = typeField.value === 'Notice';
+            lapseGroup.style.display = isNotice ? '' : 'none';
+            lapseField.required = isNotice;
+            if (!isNotice) lapseField.value = '';
+        }
+        function updateInvestigationVisibility() {
+            const isFraudNotice = templateField.value === 'termination_fraud';
+            investigationDaysGroup.style.display = isFraudNotice ? '' : 'none';
+            investigationDaysField.required = isFraudNotice;
+            if (!isFraudNotice) investigationDaysField.value = '';
+        }
+        templateField.addEventListener('change', function () {
+            const template = templates[this.value];
+            if (!template) {
+                recipientAllOption.disabled = false;
+                templateHelp.textContent = 'Templates cover repayments, KYC, collections, compliance, weekly reviews, policy reminders, and individual corrective notices based on termination grounds. You can edit the loaded text.';
+                updateLapseVisibility();
+                updateInvestigationVisibility();
+                return;
+            }
+            typeField.value = template.type;
+            subjectField.value = template.subject;
+            messageField.value = template.message;
+            recipientAllOption.disabled = Boolean(template.individual_only);
+            if (template.individual_only && recipientField.value === '0') {
+                recipientField.value = '';
+            }
+            templateHelp.textContent = template.individual_only
+                ? 'This corrective notice is individual-only. Select the staff member whose conduct or performance requires correction. It cannot be sent to all staff.'
+                : 'You can edit the loaded template before sending it to one staff member or all staff.';
+            updateLapseVisibility();
+            updateInvestigationVisibility();
+        });
+        typeField.addEventListener('change', updateLapseVisibility);
+        updateLapseVisibility();
+        updateInvestigationVisibility();
+    })();
+</script>
 <div class="sidebar" id="sidebarWrapper">
     <?php include '../includes/sidebar.php'; ?>
 </div>

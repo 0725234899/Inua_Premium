@@ -25,6 +25,11 @@ require_once __DIR__ . '/../../includes/functions.php';
             <button id="sidebarToggle" class="mobile-nav-toggle btn btn-link text-white p-0 me-3" type="button" aria-label="Toggle sidebar" style="font-size: 24px;">
                 <i class="fas fa-bars"></i>
             </button>
+            <?php if (basename($_SERVER['PHP_SELF']) === 'index.php'): ?>
+                <button type="button" class="btn btn-link text-white p-0 me-3" data-bs-toggle="modal" data-bs-target="#dashboardNoticeModal" aria-label="Send staff notice or reminder" title="Send staff notice or reminder" style="font-size: 21px;">
+                    <i class="fas fa-bell"></i>
+                </button>
+            <?php endif; ?>
             <ul class="d-flex align-items-center mb-0" style="gap: 20px; list-style: none; margin: 0; padding: 0;">
                 <?php 
                 $role = getRole($_SESSION['role']);

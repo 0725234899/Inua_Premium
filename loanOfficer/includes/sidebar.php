@@ -48,6 +48,10 @@ function renderNavItems($items, $parentId = NULL) {
             background-color: #f8f9fa;
             padding: 10px;
             height: 100vh;
+            max-height: 100vh;
+            overflow-y: auto;
+            overflow-x: hidden;
+            box-sizing: border-box;
         }
 
         .sidebar .nav-link {
@@ -57,6 +61,16 @@ function renderNavItems($items, $parentId = NULL) {
         .sidebar .nav-link.active {
             background-color: #007bff;
             color: #fff;
+        }
+
+        .sidebar-nav {
+            box-sizing: border-box;
+            min-height: 100%;
+            padding-bottom: 80px;
+        }
+
+        .sidebar-nav .collapse {
+            overflow: visible;
         }
     </style>
 </head>
