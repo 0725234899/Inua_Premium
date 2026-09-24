@@ -287,6 +287,24 @@ $stmt_total_interest = $conn->prepare($sql_total_interest);
 $stmt_total_interest->execute();
 $total_interest_amount = $stmt_total_interest->get_result()->fetch_assoc()['total_interest'] ?? 0;
 
+$conn->query("CREATE TABLE IF NOT EXISTS loan_officer_expenses (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    template_id INT NULL,
+    template_name VARCHAR(100) NOT NULL,
+    expense_type VARCHAR(100) NOT NULL,
+    amount DECIMAL(12,2) NOT NULL,
+    expense_date DATE NOT NULL,
+    loan_officer_id INT NOT NULL,
+    loan_officer_name VARCHAR(100) NOT NULL,
+    payment_method VARCHAR(50) DEFAULT 'cash',
+    recorded_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_loan_officer (loan_officer_id),
+    KEY idx_expense_date (expense_date)
+)");
+$totalExpensesResult = $conn->query("SELECT CEIL(COALESCE(SUM(amount), 0)) AS total_expenses FROM loan_officer_expenses");
+$total_expenses_amount = $totalExpensesResult ? ($totalExpensesResult->fetch_assoc()['total_expenses'] ?? 0) : 0;
+
 $interestCalculationColumnStmt = $conn->query("SELECT COUNT(*) AS column_count FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'loan_applications' AND COLUMN_NAME = 'interest_calculation'");
 $hasInterestCalculationColumn = $interestCalculationColumnStmt && (int) $interestCalculationColumnStmt->fetch_assoc()['column_count'] > 0;
 $weeklyLoanExpression = $hasInterestCalculationColumn
@@ -883,9 +901,9 @@ if (session_status() === PHP_SESSION_NONE) {
                 <h2><?php echo number_format($par, 2); ?>%</h2>
                 <p>Portfolio At Risk</p>
             </div>
-            <a href="interest_breakdown.php"><div class="metric">
-                <h2>KSH <?php echo number_format(ceil($total_interest_amount)); ?></h2>
-                <p>Total Interest</p>
+            <a href="expense_more_information.php"><div class="metric">
+                <h2>KSH <?php echo number_format(ceil($total_expenses_amount)); ?></h2>
+                <p>Total Expenses</p>
             </div></a>
             <a href="interest_breakdown.php"><div class="metric">
                 <h2>KSH <?php echo number_format(ceil($total_interest_amount)); ?></h2>

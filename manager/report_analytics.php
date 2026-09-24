@@ -729,6 +729,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_weekly_review'])
                 <h1 class="text-4xl font-black text-slate-900">Portfolio Intelligence & Performance Analytics</h1>
             </div>
             <div class="flex gap-3">
+                <a href="report_review.php" class="inline-flex items-center gap-2 bg-blue-600 text-white px-5 py-3 rounded-xl font-semibold hover:bg-blue-700 shadow-lg">
+                    Report Review
+                </a>
                 <a href="par.php<?php echo isset($_SERVER['QUERY_STRING']) && $_SERVER['QUERY_STRING'] ? '?' . $_SERVER['QUERY_STRING'] : ''; ?>" class="inline-flex items-center gap-2 bg-slate-800 text-white px-5 py-3 rounded-xl font-semibold hover:bg-slate-700 shadow-lg">
                     ← Back to PAR Dashboard
                 </a>

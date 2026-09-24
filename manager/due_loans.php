@@ -318,7 +318,7 @@ FROM (
         ) AS overdue_total
     FROM loan_applications la
     INNER JOIN borrowers b ON b.id = la.borrower
-    WHERE (la.loan_status IS NULL OR la.loan_status != 'rolled_over')
+    WHERE la.loan_status = 'approved'
       AND b.loan_officer = (SELECT email FROM users WHERE id = ?)
     GROUP BY la.borrower
 ) portfolio";
@@ -343,7 +343,7 @@ if ($selected_officer === 'all') {
             ) AS overdue_total
         FROM loan_applications la
         INNER JOIN borrowers b ON b.id = la.borrower
-        WHERE (la.loan_status IS NULL OR la.loan_status != 'rolled_over')
+        WHERE la.loan_status = 'approved'
         GROUP BY la.borrower
     ) portfolio";
     $portfolio_metrics_stmt = $conn->prepare($portfolio_metrics_sql);
@@ -408,7 +408,7 @@ $sql_due_loans = "SELECT
                                         users ON borrowers.loan_officer = users.email
                   WHERE 
                     repayments.repayment_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
-                                        AND (loan_applications.loan_status IS NULL OR loan_applications.loan_status != 'rolled_over')
+                                        AND loan_applications.loan_status = 'approved'
                                         $cleared_loan_filter
                                         $day_filter
                                         $officer_filter
