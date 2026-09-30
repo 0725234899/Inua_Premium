@@ -264,7 +264,11 @@ $sendStatus = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_application_form'])) {
     $officerId = (int) ($_POST['officer_id'] ?? 0);
-    $stmt = $conn->prepare("SELECT id, name, email FROM users WHERE id = ? AND role_id = 2 LIMIT 1");
+    $stmt = $conn->prepare("SELECT u.id, u.name, u.email, COALESCE(a.area_name, 'Unassigned') AS region_name
+                            FROM users u
+                            LEFT JOIN areas a ON a.area_id = u.area
+                            WHERE u.id = ? AND u.role_id = 2
+                            LIMIT 1");
     if ($stmt) {
         $stmt->bind_param('i', $officerId);
         $stmt->execute();
@@ -289,6 +293,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_application_form
 
         try {
             $manager = getManagerProfileForApplicationForm($conn);
+            $manager['region'] = trim((string) ($selectedOfficer['region_name'] ?? '')) ?: 'Unassigned';
             $pdf = generateLoanApplicationPdf($details, $manager);
             sendLoanApplicationEmail($selectedOfficer['email'], $pdf, 'loan_application_form.pdf', 'Selected Loan Officer');
             $sendMessage = 'The blank two-page loan application form was sent to ' . $selectedOfficer['name'] . '.';

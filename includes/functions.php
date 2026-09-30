@@ -4,6 +4,71 @@ use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 require_once __DIR__ . '/vendor/autoload.php';
 
+function calculateManagerBillingExpiry($startDate, $billingCycle) {
+    $monthsByCycle = ['Monthly' => 1, 'Quarterly' => 3, 'Annually' => 12];
+    if (!isset($monthsByCycle[$billingCycle])) {
+        return null;
+    }
+
+    $start = DateTimeImmutable::createFromFormat('!Y-m-d', (string) $startDate);
+    $dateErrors = DateTimeImmutable::getLastErrors();
+    if (!$start || ($dateErrors !== false && ($dateErrors['warning_count'] > 0 || $dateErrors['error_count'] > 0)) || $start->format('Y-m-d') !== $startDate) {
+        return null;
+    }
+
+    if ($start > new DateTimeImmutable('today')) {
+        return null;
+    }
+
+    $targetMonth = $start->modify('first day of this month')->modify('+' . $monthsByCycle[$billingCycle] . ' months');
+    $targetDay = min((int) $start->format('d'), (int) $targetMonth->format('t'));
+    $maturityDate = $targetMonth->setDate((int) $targetMonth->format('Y'), (int) $targetMonth->format('m'), $targetDay);
+
+    return $maturityDate->modify('+1 day')->format('Y-m-d') . ' 00:00:00';
+}
+
+function enforceManagerBillingAccess(PDO $connection) {
+    $scriptName = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? ''));
+    if (strpos($scriptName, '/manager/') === false) {
+        return;
+    }
+
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    if (empty($_SESSION['email']) || in_array(basename($scriptName), ['index.php', 'callback.php'], true)) {
+        return;
+    }
+
+    $billingRecord = false;
+    try {
+        $stmt = $connection->prepare('SELECT start_date, billing_cycle, expires_at FROM manager_billing_access WHERE user_email = ? LIMIT 1');
+        $stmt->execute([strtolower(trim((string) $_SESSION['email']))]);
+        $billingRecord = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        $billingRecord = false;
+    }
+
+    $expiresAt = $billingRecord
+        ? calculateManagerBillingExpiry($billingRecord['start_date'], $billingRecord['billing_cycle'])
+        : null;
+    if ($billingRecord && $expiresAt !== null && $expiresAt !== $billingRecord['expires_at']) {
+        $updateExpiry = $connection->prepare('UPDATE manager_billing_access SET expires_at = ? WHERE user_email = ?');
+        $updateExpiry->execute([$expiresAt, strtolower(trim((string) $_SESSION['email']))]);
+    }
+
+    if ($expiresAt === null || strtotime($expiresAt) <= time()) {
+        if (preg_match('#^(.*?/manager)(?:/|$)#', $scriptName, $matches)) {
+            $billingGateUrl = $matches[1] . '/index.php';
+        } else {
+            $billingGateUrl = 'index.php';
+        }
+        header('Location: ' . $billingGateUrl);
+        exit();
+    }
+}
+
 if (!function_exists('db_connect')) {
     // Database connection
     function db_connect() {
@@ -12,10 +77,12 @@ if (!function_exists('db_connect')) {
     $user = 'root';
     $pass = '';
     try {
-        return new PDO("mysql:host=$host;dbname=$db", $user, $pass, [
+        $connection = new PDO("mysql:host=$host;dbname=$db", $user, $pass, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ]);
+        enforceManagerBillingAccess($connection);
+        return $connection;
     } catch (PDOException $e) {
         die('Connection failed: ' . $e->getMessage());
     }
@@ -435,18 +502,29 @@ function ensureEmailAccountTable() {
     $conn = db_connect();
     $conn->exec("CREATE TABLE IF NOT EXISTS email_accounts (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        sender_email VARCHAR(255) NOT NULL,
+        sender_email VARCHAR(255) DEFAULT NULL,
         sender_app_password VARCHAR(255) DEFAULT NULL,
         admin_email VARCHAR(255) DEFAULT NULL,
         admin_app_password VARCHAR(255) DEFAULT NULL,
+        admin_totp_secret VARCHAR(128) DEFAULT NULL,
         app_password VARCHAR(255) DEFAULT NULL,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    $senderEmailColumn = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'sender_email'")->fetch(PDO::FETCH_ASSOC);
+    if ($senderEmailColumn && $senderEmailColumn['Null'] === 'NO') {
+        $conn->exec("ALTER TABLE email_accounts MODIFY COLUMN sender_email VARCHAR(255) DEFAULT NULL");
+    }
 
     $columnCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'sender_app_password'");
     if ($columnCheck->rowCount() === 0) {
         $conn->exec("ALTER TABLE email_accounts ADD COLUMN sender_app_password VARCHAR(255) DEFAULT NULL AFTER sender_email");
         $conn->exec("UPDATE email_accounts SET sender_app_password = app_password WHERE sender_app_password IS NULL");
+    }
+
+    $senderPasswordColumn = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'sender_app_password'")->fetch(PDO::FETCH_ASSOC);
+    if ($senderPasswordColumn && $senderPasswordColumn['Null'] === 'NO') {
+        $conn->exec("ALTER TABLE email_accounts MODIFY COLUMN sender_app_password VARCHAR(255) DEFAULT NULL");
     }
 
     $columnCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'admin_email'");
@@ -459,17 +537,27 @@ function ensureEmailAccountTable() {
         $conn->exec("ALTER TABLE email_accounts ADD COLUMN admin_app_password VARCHAR(255) DEFAULT NULL AFTER admin_email");
     }
 
+    $columnCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'admin_totp_secret'");
+    if ($columnCheck->rowCount() === 0) {
+        $conn->exec("ALTER TABLE email_accounts ADD COLUMN admin_totp_secret VARCHAR(128) DEFAULT NULL AFTER admin_app_password");
+    }
+
     $columnCheck = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'app_password'");
     if ($columnCheck->rowCount() === 0) {
         $conn->exec("ALTER TABLE email_accounts ADD COLUMN app_password VARCHAR(255) DEFAULT NULL AFTER admin_app_password");
         $conn->exec("UPDATE email_accounts SET app_password = sender_app_password WHERE app_password IS NULL");
+    }
+
+    $legacyPasswordColumn = $conn->query("SHOW COLUMNS FROM email_accounts LIKE 'app_password'")->fetch(PDO::FETCH_ASSOC);
+    if ($legacyPasswordColumn && $legacyPasswordColumn['Null'] === 'NO') {
+        $conn->exec("ALTER TABLE email_accounts MODIFY COLUMN app_password VARCHAR(255) DEFAULT NULL");
     }
 }
 
 function getEmailAccount() {
     $conn = db_connect();
     ensureEmailAccountTable();
-    $stmt = $conn->query("SELECT * FROM email_accounts ORDER BY id ASC LIMIT 1");
+    $stmt = $conn->query("SELECT * FROM email_accounts WHERE TRIM(COALESCE(sender_email, '')) <> '' AND TRIM(COALESCE(sender_app_password, app_password, '')) <> '' ORDER BY id ASC LIMIT 1");
     $account = $stmt->fetch();
     if ($account) {
         if (isset($account['sender_app_password']) && $account['sender_app_password'] !== null && $account['sender_app_password'] !== '') {
@@ -501,6 +589,20 @@ function ensurePayrollEmailSettingsTable() {
         admin_app_password VARCHAR(255) DEFAULT NULL,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function getAdminAuthenticatorAccount() {
+    ensureEmailAccountTable();
+    $conn = db_connect();
+        $stmt = $conn->query("SELECT ea.id, ea.admin_email, ea.admin_totp_secret, u.phone AS admin_phone
+                FROM email_accounts ea
+                LEFT JOIN roles r ON LOWER(TRIM(r.name)) = 'admin'
+                LEFT JOIN users u ON u.role_id = r.id AND LOWER(TRIM(u.email)) = LOWER(TRIM(ea.admin_email))
+                WHERE TRIM(COALESCE(ea.admin_email, '')) <> ''
+                    AND TRIM(COALESCE(ea.admin_totp_secret, '')) <> ''
+                ORDER BY ea.id ASC
+                LIMIT 1");
+    return $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 }
 
 function getPayrollEmailAccount() {

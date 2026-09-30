@@ -250,6 +250,11 @@ $settings = getSettings();
                         <i class="bi bi-geo-alt me-2"></i>Location & Branding
                     </button>
                 </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="billing-tab" data-bs-toggle="tab" data-bs-target="#billing" type="button" role="tab">
+                        <i class="bi bi-wallet2 me-2"></i>System Billing
+                    </button>
+                </li>
             </ul>
 
             <div class="tab-content" id="settingsTabsContent">
@@ -388,6 +393,50 @@ $settings = getSettings();
                                             </div>
                                         <?php endif; ?>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 4. SYSTEM BILLING -->
+                <div class="tab-pane fade" id="billing" role="tabpanel">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title"><i class="bi bi-wallet2 text-danger"></i> System Billing</h3>
+                        </div>
+                        <div class="card-body p-4">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label for="billing_contact" class="form-label">Billing Contact</label>
+                                    <input type="text" class="form-control" id="billing_contact" name="billing_contact" value="<?php echo htmlspecialchars($settings['billing_contact'] ?? ''); ?>">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="billing_email" class="form-label">Billing Email</label>
+                                    <input type="email" class="form-control" id="billing_email" name="billing_email" value="<?php echo htmlspecialchars($settings['billing_email'] ?? ''); ?>">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="payment_method" class="form-label">Payment Method</label>
+                                    <select class="form-select" id="payment_method" name="payment_method">
+                                        <option value="">Select payment method</option>
+                                        <option value="Bank Transfer" <?php echo (($settings['payment_method'] ?? '') === 'Bank Transfer') ? 'selected' : ''; ?>>Bank Transfer</option>
+                                        <option value="Credit Card" <?php echo (($settings['payment_method'] ?? '') === 'Credit Card') ? 'selected' : ''; ?>>Credit Card</option>
+                                        <option value="Mobile Money" <?php echo (($settings['payment_method'] ?? '') === 'Mobile Money') ? 'selected' : ''; ?>>Mobile Money</option>
+                                        <option value="Cash" <?php echo (($settings['payment_method'] ?? '') === 'Cash') ? 'selected' : ''; ?>>Cash</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="billing_cycle" class="form-label">Billing Cycle</label>
+                                    <select class="form-select" id="billing_cycle" name="billing_cycle">
+                                        <option value="">Select cycle</option>
+                                        <option value="Monthly" <?php echo (($settings['billing_cycle'] ?? '') === 'Monthly') ? 'selected' : ''; ?>>Monthly</option>
+                                        <option value="Quarterly" <?php echo (($settings['billing_cycle'] ?? '') === 'Quarterly') ? 'selected' : ''; ?>>Quarterly</option>
+                                        <option value="Annually" <?php echo (($settings['billing_cycle'] ?? '') === 'Annually') ? 'selected' : ''; ?>>Annually</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-12">
+                                    <label for="account_notes" class="form-label">Billing Notes</label>
+                                    <textarea class="form-control" id="account_notes" name="account_notes" rows="4" placeholder="Add billing requirements, invoicing rules, or payment reminders here."><?php echo htmlspecialchars($settings['account_notes'] ?? ''); ?></textarea>
                                 </div>
                             </div>
                         </div>

@@ -1855,7 +1855,7 @@ foreach ($officerOptions as $officer) {
                 // Function to calculate commission baseline
                 function getCommissionBaseline(loanBook, par, compositeScore) {
                     // Anyone above 15% PAR does not qualify for commission.
-                    if (par > 15) {
+                    if (par > 20) {
                         return 0;
                     }
 

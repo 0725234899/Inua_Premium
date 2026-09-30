@@ -469,6 +469,46 @@
             $checkResourcesChild->close();
         }
 
+        // Ensure Setting parent and 'billing' child exist
+        $settingParentTitle = 'Setting';
+        $settingParentUrl = '#';
+        $settingParentIcon = 'bi bi-gear';
+        $settingParentId = null;
+
+        $checkSettingParent = $conn->prepare("SELECT id FROM navigation_items WHERE title = ? LIMIT 1");
+        $checkSettingParent->bind_param('s', $settingParentTitle);
+        $checkSettingParent->execute();
+        $checkSettingParent->store_result();
+
+        if ($checkSettingParent->num_rows === 0) {
+            $insertSettingParent = $conn->prepare("INSERT INTO navigation_items (title, url, icon) VALUES (?, ?, ?)");
+            $insertSettingParent->bind_param('sss', $settingParentTitle, $settingParentUrl, $settingParentIcon);
+            $insertSettingParent->execute();
+            $settingParentId = $conn->insert_id;
+            $insertSettingParent->close();
+        } else {
+            $checkSettingParent->bind_result($settingParentId);
+            $checkSettingParent->fetch();
+        }
+        $checkSettingParent->close();
+
+        $billingChildTitle = 'billing';
+        $billingChildUrl = 'account_settings.php';
+        $billingChildIcon = 'bi bi-wallet2';
+
+        $checkBillingChild = $conn->prepare("SELECT id FROM navigation_items WHERE title = ? AND parent_id = ? LIMIT 1");
+        $checkBillingChild->bind_param('si', $billingChildTitle, $settingParentId);
+        $checkBillingChild->execute();
+        $checkBillingChild->store_result();
+
+        if ($checkBillingChild->num_rows === 0) {
+            $insertBillingChild = $conn->prepare("INSERT INTO navigation_items (title, url, icon, parent_id) VALUES (?, ?, ?, ?)");
+            $insertBillingChild->bind_param('sssi', $billingChildTitle, $billingChildUrl, $billingChildIcon, $settingParentId);
+            $insertBillingChild->execute();
+            $insertBillingChild->close();
+        }
+        $checkBillingChild->close();
+
         // Ensure Advance parent and 'advance' child exist
         $parentTitle = 'Advance';
         $parentUrl = '#';
@@ -584,6 +624,41 @@
                 }
                 $checkResourcesChildMap->close();
             }
+        }
+
+        if (!empty($settingParentId)) {
+            $checkSettingMap = $conn->prepare("SELECT 1 FROM navigation_item_roles WHERE navigation_item_id = ? AND role_id = ? LIMIT 1");
+            $checkSettingMap->bind_param('ii', $settingParentId, $defaultRole);
+            $checkSettingMap->execute();
+            $checkSettingMap->store_result();
+            if ($checkSettingMap->num_rows === 0) {
+                $insSettingMap = $conn->prepare("INSERT INTO navigation_item_roles (navigation_item_id, role_id) VALUES (?, ?)");
+                $insSettingMap->bind_param('ii', $settingParentId, $defaultRole);
+                $insSettingMap->execute();
+                $insSettingMap->close();
+            }
+            $checkSettingMap->close();
+        }
+
+        $getBillingChildId = $conn->prepare("SELECT id FROM navigation_items WHERE title = ? AND parent_id = ? LIMIT 1");
+        $getBillingChildId->bind_param('si', $billingChildTitle, $settingParentId);
+        $getBillingChildId->execute();
+        $getBillingChildId->bind_result($billingChildId);
+        $getBillingChildId->fetch();
+        $getBillingChildId->close();
+
+        if (!empty($billingChildId)) {
+            $checkBillingChildMap = $conn->prepare("SELECT 1 FROM navigation_item_roles WHERE navigation_item_id = ? AND role_id = ? LIMIT 1");
+            $checkBillingChildMap->bind_param('ii', $billingChildId, $defaultRole);
+            $checkBillingChildMap->execute();
+            $checkBillingChildMap->store_result();
+            if ($checkBillingChildMap->num_rows === 0) {
+                $insBillingChildMap = $conn->prepare("INSERT INTO navigation_item_roles (navigation_item_id, role_id) VALUES (?, ?)");
+                $insBillingChildMap->bind_param('ii', $billingChildId, $defaultRole);
+                $insBillingChildMap->execute();
+                $insBillingChildMap->close();
+            }
+            $checkBillingChildMap->close();
         }
     }
 

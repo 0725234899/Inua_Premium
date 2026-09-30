@@ -1,40 +1,117 @@
 <?php
 session_start();
 require_once("includes/functions.php");
+
+function loginBase32Decode($secret) {
+    $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    $secret = strtoupper(preg_replace('/[^A-Z2-7]/', '', (string) $secret));
+    $buffer = 0;
+    $bits = 0;
+    $decoded = '';
+
+    foreach (str_split($secret) as $character) {
+        $value = strpos($alphabet, $character);
+        if ($value === false) {
+            return '';
+        }
+        $buffer = ($buffer << 5) | $value;
+        $bits += 5;
+        if ($bits >= 8) {
+            $bits -= 8;
+            $decoded .= chr(($buffer >> $bits) & 0xff);
+        }
+    }
+
+    return $decoded;
+}
+
+function loginVerifyTotp($code, $secret, $timestamp = null) {
+    if (!preg_match('/^\d{6}$/', (string) $code)) {
+        return false;
+    }
+
+    $key = loginBase32Decode($secret);
+    if ($key === '') {
+        return false;
+    }
+
+    $counter = (int) floor(($timestamp ?? time()) / 30);
+    for ($offset = -1; $offset <= 1; $offset++) {
+        $currentCounter = $counter + $offset;
+        $message = pack('N2', ($currentCounter >> 32) & 0xffffffff, $currentCounter & 0xffffffff);
+        $hash = hash_hmac('sha1', $message, $key, true);
+        $position = ord($hash[19]) & 0x0f;
+        $binary = unpack('N', substr($hash, $position, 4))[1] & 0x7fffffff;
+        $expected = str_pad((string) ($binary % 1000000), 6, '0', STR_PAD_LEFT);
+        if (hash_equals($expected, (string) $code)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+$loginRoles = getRoles();
+$adminRoleIds = [];
+foreach ($loginRoles as $availableRole) {
+    if (strtolower(trim((string) ($availableRole['name'] ?? ''))) === 'admin') {
+        $adminRoleIds[] = (string) $availableRole['id'];
+    }
+}
+
 if (isset($_POST['login'])) {
-    // Sanitize and validate inputs
-    $email = filter_var($_POST['email'], FILTER_SANITIZE_EMAIL);
-    $password = $_POST['password'];
+    $email = filter_var($_POST['email'] ?? '', FILTER_SANITIZE_EMAIL);
+    $password = (string) ($_POST['password'] ?? '');
     $role = trim((string) ($_POST['role'] ?? ''));
+    $authenticatorCode = trim((string) ($_POST['authenticator_code'] ?? ''));
+    $isAdminRole = in_array($role, $adminRoleIds, true);
 
     if (filter_var($email, FILTER_VALIDATE_EMAIL) && !empty($password) && ctype_digit($role)) {
-        // Check login credentials
         $res = login($email, $password, $role);
         $sp = explode(",", $res);
 
         if ($sp[0] == '1') {
-            $_SESSION['email'] = $email;
-            $_SESSION['role'] = $role;
+            if ($isAdminRole) {
+                $adminAuthenticatorAccount = getAdminAuthenticatorAccount();
+                $configuredAdminEmail = strtolower(trim((string) ($adminAuthenticatorAccount['admin_email'] ?? '')));
+                $loginEmail = strtolower(trim($email));
+                $adminTotpSecret = trim((string) ($adminAuthenticatorAccount['admin_totp_secret'] ?? ''));
 
-            // Redirect based on role
-            switch ($role) {
-                case '1':
-                    // Admin
-                    header("Location: admin/");
-                    break;
-                case '2':
-                    // Another role, such as Manager
-                    header("Location: loanOfficer/index.php");
-                    break;
-                case '4':
-                    // Client
-                    header("Location: manager/index.php");
-                    break;
-                default:
-                    $error_message = "Invalid role.";
-                    break;
+                if ($configuredAdminEmail === '' || $adminTotpSecret === '') {
+                    unset($_SESSION['user'], $_SESSION['username'], $_SESSION['email'], $_SESSION['role']);
+                    $error_message = 'Admin two-factor authentication is not configured. Contact the system administrator.';
+                } elseif (!hash_equals($configuredAdminEmail, $loginEmail)) {
+                    unset($_SESSION['user'], $_SESSION['username'], $_SESSION['email'], $_SESSION['role']);
+                    $error_message = 'This authenticator is configured for a different admin email account.';
+                } elseif (!loginVerifyTotp($authenticatorCode, $adminTotpSecret)) {
+                    unset($_SESSION['user'], $_SESSION['username'], $_SESSION['email'], $_SESSION['role']);
+                    $error_message = 'The admin code is invalid or expired. Enter the current six-digit code.';
+                }
             }
-            exit();
+
+            if (!isset($error_message)) {
+                session_regenerate_id(true);
+                $_SESSION['email'] = $email;
+                $_SESSION['role'] = $role;
+
+                switch ($role) {
+                    case '1':
+                        header("Location: admin/");
+                        break;
+                    case '2':
+                        header("Location: loanOfficer/index.php");
+                        break;
+                    case '4':
+                        header("Location: manager/index.php");
+                        break;
+                    default:
+                        $error_message = "Invalid role.";
+                        break;
+                }
+                if (!isset($error_message)) {
+                    exit();
+                }
+            }
         } elseif ($sp[0] == '2' && ($sp[1] ?? '') === 'expired') {
             $error_message = "Your password expired after 90 days. Please contact the administrator to reset your password.";
         } else {
@@ -273,14 +350,12 @@ if (isset($_POST['login'])) {
                                         <label for="role" class="form-label">User Type</label>
                                         <div class="input-group">
                                             <span class="input-group-text"><i class="bi bi-person-badge"></i></span>
-                                            <?php
-                                            $roles = getRoles(); // Assuming getRoles() returns an array with role id and name
-                                            ?>
                                             <select class="form-control" id="role" name="role" required>
                                                 <option value="">Select user type</option>
                                                 <?php
-                                                foreach ($roles as $role) {
-                                                    echo "<option value='" . htmlspecialchars($role['id']) . "'>" . htmlspecialchars($role['name']) . "</option>";
+                                                foreach ($loginRoles as $availableRole) {
+                                                    $selected = ((string) ($_POST['role'] ?? '') === (string) $availableRole['id']) ? ' selected' : '';
+                                                    echo "<option value='" . htmlspecialchars($availableRole['id'], ENT_QUOTES) . "'" . $selected . ">" . htmlspecialchars($availableRole['name'], ENT_QUOTES) . "</option>";
                                                 }
                                                 ?>
                                             </select>
@@ -291,7 +366,7 @@ if (isset($_POST['login'])) {
                                         <label for="email" class="form-label">Email Address</label>
                                         <div class="input-group">
                                             <span class="input-group-text"><i class="bi bi-envelope"></i></span>
-                                            <input type="email" id="email" name="email" required class="form-control" placeholder="Enter your email" autocomplete="email">
+                                            <input type="email" id="email" name="email" required class="form-control" placeholder="Enter your email" autocomplete="email" value="<?php echo htmlspecialchars($_POST['email'] ?? '', ENT_QUOTES); ?>">
                                         </div>
                                     </div>
                                     
@@ -302,6 +377,15 @@ if (isset($_POST['login'])) {
                                             <input type="password" id="password" name="password" required class="form-control" placeholder="Enter your password" autocomplete="current-password">
                                             <span class="password-toggle" onclick="togglePassword()"><i class="bi bi-eye"></i></span>
                                         </div>
+                                    </div>
+
+                                    <div class="mb-4" id="authenticatorCodeGroup" hidden>
+                                        <label for="authenticator_code" class="form-label">Enter Code</label>
+                                        <div class="input-group">
+                                            <span class="input-group-text"><i class="bi bi-shield-lock"></i></span>
+                                            <input type="text" id="authenticator_code" name="authenticator_code" class="form-control" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="Enter current 6-digit code" <?php echo in_array((string) ($_POST['role'] ?? ''), $adminRoleIds, true) ? 'required' : ''; ?>>
+                                        </div>
+                                        <small class="text-muted"></small>
                                     </div>
                                     
                                     <div class="mb-4 form-check">
@@ -357,6 +441,21 @@ if (isset($_POST['login'])) {
                 icon.classList.add('bi-eye');
             }
         }
+
+        const roleSelect = document.getElementById('role');
+        const authenticatorCodeGroup = document.getElementById('authenticatorCodeGroup');
+        const authenticatorCodeInput = document.getElementById('authenticator_code');
+        const adminRoleIds = <?php echo json_encode($adminRoleIds); ?>;
+
+        function updateAuthenticatorRequirement() {
+            const isAdmin = adminRoleIds.includes(roleSelect.value);
+            authenticatorCodeGroup.hidden = !isAdmin;
+            authenticatorCodeInput.required = isAdmin;
+            if (!isAdmin) authenticatorCodeInput.value = '';
+        }
+
+        roleSelect.addEventListener('change', updateAuthenticatorRequirement);
+        updateAuthenticatorRequirement();
         
         // Form validation
         (function () {

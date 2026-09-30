@@ -19,6 +19,223 @@ if (empty($_SESSION['email'])) {
     exit();
 }
 
+function dashboardBase32Decode($secret) {
+    $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    $secret = strtoupper(preg_replace('/[^A-Z2-7]/', '', (string) $secret));
+    $buffer = 0;
+    $bits = 0;
+    $decoded = '';
+
+    foreach (str_split($secret) as $character) {
+        $value = strpos($alphabet, $character);
+        if ($value === false) {
+            return '';
+        }
+        $buffer = ($buffer << 5) | $value;
+        $bits += 5;
+        if ($bits >= 8) {
+            $bits -= 8;
+            $decoded .= chr(($buffer >> $bits) & 0xff);
+        }
+    }
+
+    return $decoded;
+}
+
+function dashboardVerifyTotp($code, $secret, $timestamp = null) {
+    if (!preg_match('/^\d{6}$/', (string) $code)) {
+        return false;
+    }
+
+    $key = dashboardBase32Decode($secret);
+    if ($key === '') {
+        return false;
+    }
+
+    $timestamp = $timestamp ?? time();
+    $counter = (int) floor($timestamp / 30);
+    for ($offset = -1; $offset <= 1; $offset++) {
+        $currentCounter = $counter + $offset;
+        $message = pack('N2', ($currentCounter >> 32) & 0xffffffff, $currentCounter & 0xffffffff);
+        $hash = hash_hmac('sha1', $message, $key, true);
+        $position = ord($hash[19]) & 0x0f;
+        $binary = unpack('N', substr($hash, $position, 4))[1] & 0x7fffffff;
+        $expected = str_pad((string) ($binary % 1000000), 6, '0', STR_PAD_LEFT);
+        if (hash_equals($expected, (string) $code)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+$billingAdminAccount = getAdminAuthenticatorAccount() ?: [];
+$billingAdminEmail = trim((string) ($billingAdminAccount['admin_email'] ?? ''));
+$billingAdminPhone = trim((string) ($billingAdminAccount['admin_phone'] ?? ''));
+$billingTotpSecret = trim((string) ($billingAdminAccount['admin_totp_secret'] ?? ''));
+$billingConfigurationError = '';
+if ($billingTotpSecret === '' || $billingAdminEmail === '' || $billingAdminPhone === '') {
+    $billingConfigurationError = 'System billing verification is not fully configured. Ask the administrator to configure the admin email, phone number, and Google Authenticator setup key.';
+}
+$billingGateMessage = $billingConfigurationError;
+$billingUserEmail = strtolower(trim((string) ($_SESSION['email'] ?? '')));
+$billingPdo = db_connect();
+$billingPdo->exec("CREATE TABLE IF NOT EXISTS manager_billing_access (
+    user_email VARCHAR(255) NOT NULL PRIMARY KEY,
+    billing_contact VARCHAR(50) NOT NULL,
+    admin_email VARCHAR(255) NOT NULL,
+    payment_method VARCHAR(50) NOT NULL,
+    billing_cycle VARCHAR(20) NOT NULL,
+    start_date DATE NOT NULL,
+    expires_at DATETIME NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+$billingRecordStatement = $billingPdo->prepare('SELECT user_email, billing_contact, admin_email, payment_method, billing_cycle, start_date, expires_at FROM manager_billing_access WHERE user_email = ? LIMIT 1');
+$billingRecordStatement->execute([$billingUserEmail]);
+$billingAccess = $billingRecordStatement->fetch(PDO::FETCH_ASSOC) ?: null;
+$calculatedBillingExpiry = $billingAccess
+    ? calculateManagerBillingExpiry($billingAccess['start_date'], $billingAccess['billing_cycle'])
+    : null;
+if ($billingAccess && $calculatedBillingExpiry !== null && $calculatedBillingExpiry !== $billingAccess['expires_at']) {
+    $updateBillingExpiry = $billingPdo->prepare('UPDATE manager_billing_access SET expires_at = ? WHERE user_email = ?');
+    $updateBillingExpiry->execute([$calculatedBillingExpiry, $billingUserEmail]);
+    $billingAccess['expires_at'] = $calculatedBillingExpiry;
+}
+$billingAccessActive = $billingAccess && $calculatedBillingExpiry !== null && strtotime($calculatedBillingExpiry) > time();
+if (!$billingAccessActive && $billingConfigurationError === '') {
+    $billingGateMessage = 'Your billing period has expired or has not been activated. Enter the confirmed billing details and current admin code to continue.';
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_billing'])) {
+    $billingContact = $billingAdminPhone;
+    $billingPaymentMethod = trim((string) ($_POST['payment_method'] ?? ''));
+    $billingCycle = trim((string) ($_POST['billing_cycle'] ?? ''));
+    $billingStartDate = trim((string) ($_POST['billing_start_date'] ?? ''));
+    $billingExpiry = calculateManagerBillingExpiry($billingStartDate, $billingCycle);
+    $authenticatorCode = trim((string) ($_POST['authenticator_code'] ?? ''));
+    $validPaymentMethods = ['Bank Transfer', 'Credit Card', 'Mobile Money', 'Cash'];
+    $validBillingCycles = ['Monthly', 'Quarterly', 'Annually'];
+    $attemptWindow = (int) ($_SESSION['billing_totp_attempt_window'] ?? 0);
+    if (time() - $attemptWindow >= 300) {
+        $_SESSION['billing_totp_attempt_window'] = time();
+        $_SESSION['billing_totp_attempts'] = 0;
+    }
+
+    if ($billingConfigurationError !== '') {
+        $billingGateMessage = $billingConfigurationError;
+    } elseif ((int) ($_SESSION['billing_totp_attempts'] ?? 0) >= 5) {
+        $billingGateMessage = 'Too many incorrect code attempts. Wait five minutes before trying again.';
+    } elseif ($billingContact === '' || !in_array($billingPaymentMethod, $validPaymentMethods, true) || !in_array($billingCycle, $validBillingCycles, true) || $billingAdminEmail === '' || $billingExpiry === null) {
+        $billingGateMessage = 'Enter a valid billing date (not in the future), payment method, and billing cycle before continuing.';
+    } elseif (strtotime($billingExpiry) <= time()) {
+        $billingGateMessage = 'The selected billing period has already expired. Choose a current start date.';
+    } elseif (!dashboardVerifyTotp($authenticatorCode, $billingTotpSecret)) {
+        $_SESSION['billing_totp_attempt_window'] = $_SESSION['billing_totp_attempt_window'] ?? time();
+        $_SESSION['billing_totp_attempts'] = (int) ($_SESSION['billing_totp_attempts'] ?? 0) + 1;
+        $billingGateMessage = 'The code is incorrect or expired. Enter the current six-digit code given to you by the administrator.';
+    } else {
+        $_SESSION['billing_totp_attempts'] = 0;
+        $saveBilling = $billingPdo->prepare("INSERT INTO manager_billing_access (user_email, billing_contact, admin_email, payment_method, billing_cycle, start_date, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE billing_contact = VALUES(billing_contact), admin_email = VALUES(admin_email), payment_method = VALUES(payment_method), billing_cycle = VALUES(billing_cycle), start_date = VALUES(start_date), expires_at = VALUES(expires_at), updated_at = NOW()");
+        $saveBilling->execute([$billingUserEmail, $billingContact, $billingAdminEmail, $billingPaymentMethod, $billingCycle, $billingStartDate, $billingExpiry]);
+        header('Location: index.php');
+        exit();
+    }
+}
+
+if ($billingConfigurationError !== '' || !$billingAccessActive) {
+    $billingCycleOptions = ['Monthly', 'Quarterly', 'Annually'];
+    $billingPaymentOptions = ['Bank Transfer', 'Credit Card', 'Mobile Money', 'Cash'];
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>System Billing Verification</title>
+        <link href="assets/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+        <link href="assets/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
+        <style>
+            :root { --ink: #172331; --muted: #687582; --line: #dbe3e8; --canvas: #f2f5f6; --teal: #147d78; --gold: #c7973e; }
+            body { background: var(--canvas); color: var(--ink); font-family: "Trebuchet MS", Arial, sans-serif; min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+            .billing-gate { width: min(100%, 720px); background: #fff; border: 1px solid var(--line); border-top: 5px solid var(--gold); }
+            .gate-heading { background: var(--ink); color: #fff; padding: 28px 32px; }
+            .gate-heading h1 { font: normal 2rem Georgia, serif; margin: 0 0 8px; }
+            .gate-heading p { color: #c3d0d6; margin: 0; }
+            .gate-content { padding: 28px 32px 32px; }
+            .gate-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+            .gate-field { display: flex; flex-direction: column; gap: 7px; }
+            .gate-field.full { grid-column: 1 / -1; }
+            .gate-field label { font-weight: 600; }
+            .gate-field input, .gate-field select { border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px; width: 100%; }
+            .gate-field input:focus, .gate-field select:focus { border-color: var(--teal); outline: 2px solid rgba(20,125,120,.14); }
+            .gate-note { color: var(--muted); font-size: .88rem; margin-top: 18px; }
+            .gate-submit { background: var(--teal); border: 0; color: #fff; padding: 12px 18px; font-weight: 700; margin-top: 22px; }
+            .gate-alert { background: #fff1f1; border: 1px solid #f0cccc; color: #8f3030; padding: 12px 14px; margin-bottom: 20px; }
+            .gate-alert.setup { background: #fff8e7; border-color: #ead9a5; color: #684f19; }
+            @media (max-width: 560px) { body { padding: 12px; } .gate-heading, .gate-content { padding: 22px; } .gate-grid { grid-template-columns: 1fr; } .gate-field.full { grid-column: auto; } }
+        </style>
+    </head>
+    <body>
+        <main class="billing-gate">
+            <header class="gate-heading">
+                <div class="text-uppercase small mb-2" style="color:#e5c579; letter-spacing:.12em">Account access · System billing</div>
+                <h1>Verify your billing</h1>
+                <p>Enter billing details and the current code assigned by the administrator.</p>
+            </header>
+            <section class="gate-content">
+                <?php if ($billingGateMessage !== ''): ?>
+                    <div class="gate-alert <?php echo $billingConfigurationError !== '' ? 'setup' : ''; ?>" role="alert"><?php echo htmlspecialchars($billingGateMessage, ENT_QUOTES, 'UTF-8'); ?></div>
+                <?php endif; ?>
+                <form method="post" action="index.php" autocomplete="off">
+                    <div class="gate-grid">
+                        <div class="gate-field">
+                            <label for="billing_contact">Billing contact</label>
+                            <input id="billing_contact" type="tel" readonly value="<?php echo htmlspecialchars($billingAdminPhone, ENT_QUOTES, 'UTF-8'); ?>" placeholder="Admin phone not configured">
+                        </div>
+                        <div class="gate-field">
+                            <label for="billing_email">Admin billing email</label>
+                            <input id="billing_email" type="email" readonly value="<?php echo htmlspecialchars($billingAdminEmail, ENT_QUOTES, 'UTF-8'); ?>">
+                        </div>
+                        <div class="gate-field">
+                            <label for="payment_method">Payment method</label>
+                            <select id="payment_method" name="payment_method" required>
+                                <option value="">Choose method</option>
+                                <?php foreach ($billingPaymentOptions as $paymentOption): ?>
+                                    <option value="<?php echo htmlspecialchars($paymentOption, ENT_QUOTES, 'UTF-8'); ?>" <?php echo (($_POST['payment_method'] ?? '') === $paymentOption) ? 'selected' : ''; ?>><?php echo htmlspecialchars($paymentOption, ENT_QUOTES, 'UTF-8'); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="gate-field">
+                            <label for="billing_cycle">Billing cycle</label>
+                            <select id="billing_cycle" name="billing_cycle" required>
+                                <option value="">Choose cycle</option>
+                                <?php foreach ($billingCycleOptions as $cycleOption): ?>
+                                    <option value="<?php echo htmlspecialchars($cycleOption, ENT_QUOTES, 'UTF-8'); ?>" <?php echo (($_POST['billing_cycle'] ?? ($billingAccess['billing_cycle'] ?? '')) === $cycleOption) ? 'selected' : ''; ?>><?php echo htmlspecialchars($cycleOption, ENT_QUOTES, 'UTF-8'); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="gate-field">
+                            <label for="billing_start_date">Billing start date</label>
+                            <input id="billing_start_date" name="billing_start_date" type="date" max="<?php echo date('Y-m-d'); ?>" required value="<?php echo htmlspecialchars($_POST['billing_start_date'] ?? date('Y-m-d'), ENT_QUOTES, 'UTF-8'); ?>">
+                        </div>
+                        <div class="gate-field full">
+                            <label for="authenticator_code">Enter Code</label>
+                            <input id="authenticator_code" name="authenticator_code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+                        </div>
+                    </div>
+                    <p class="gate-note">The selected start date and billing cycle determine when access expires. Ask the administrator for the current six-digit code after they confirm the service payment.</p>
+                    <button class="gate-submit" type="submit" name="verify_billing" value="1"><i class="bi bi-shield-check me-2"></i>Verify and continue</button>
+                </form>
+            </section>
+        </main>
+    </body>
+    </html>
+    <?php
+    exit();
+}
+
 function getDashboardStaff($conn) {
     $staff = [];
     $result = $conn->query("SELECT u.id, u.name, u.email, COALESCE(r.name, 'Staff') AS role_name
@@ -544,6 +761,58 @@ if (session_status() === PHP_SESSION_NONE) {
             color: white;
         }
 
+        .header-icon-btn {
+            align-items: center;
+            background: transparent;
+            border: 1px solid #82939c;
+            color: white;
+            display: inline-flex;
+            justify-content: center;
+            min-height: 40px;
+            min-width: 42px;
+            padding: 8px 11px;
+        }
+
+        .header-icon-btn:hover {
+            background: var(--teal);
+            border-color: var(--teal);
+            color: white;
+        }
+
+        .billing-countdown {
+            color: #fff;
+            font-size: .82rem;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+
+        .billing-expired-overlay {
+            align-items: center;
+            background: rgba(18, 33, 45, .96);
+            color: #fff;
+            display: flex;
+            inset: 0;
+            justify-content: center;
+            padding: 24px;
+            position: fixed;
+            text-align: center;
+            z-index: 3000;
+        }
+
+        .billing-expired-overlay[hidden] {
+            display: none !important;
+        }
+
+        .billing-expired-message {
+            max-width: 540px;
+        }
+
+        .billing-expired-message h2 {
+            font-family: Georgia, serif;
+            font-weight: normal;
+            margin-bottom: 12px;
+        }
+
         .notice-toast {
             position: fixed;
             right: 24px;
@@ -867,6 +1136,9 @@ if (session_status() === PHP_SESSION_NONE) {
 <main class="main" id="mainContent">
     <div class="header d-flex justify-content-between align-items-center">
         <div class="d-flex align-items-center">
+            <button type="button" class="header-icon-btn me-2" data-bs-toggle="modal" data-bs-target="#billingModal" aria-label="Open billing details" title="Billing details">
+                <i class="bi bi-receipt-cutoff"></i>
+            </button>
             <button type="button" class="sidebar-toggle-btn" id="sidebarToggleMain" aria-label="Toggle navigation">
                 <i class="bi bi-list"></i>
             </button>
@@ -876,6 +1148,12 @@ if (session_status() === PHP_SESSION_NONE) {
             <input type="search" class="form-control" id="clientSearchInput" placeholder="Search client name or phone" aria-label="Search client name or phone">
             <button type="submit" class="btn" id="clientSearchButton"><i class="bi bi-search"></i> Search</button>
         </form>
+        <button type="button" class="header-icon-btn me-2" data-bs-toggle="modal" data-bs-target="#billingNotificationModal" aria-label="Billing notification" title="Billing status">
+            <i class="bi bi-bell"></i>
+        </button>
+        <span class="billing-countdown me-3" aria-label="Billing access countdown">
+            <i class="bi bi-hourglass-split me-1" aria-hidden="true"></i><span id="billingCountdown" data-expires-at="<?php echo (int) strtotime($billingAccess['expires_at']) * 1000; ?>">Loading access timer</span>
+        </span>
         <a href="add_repayments.php" class="btn btn-primary" style="margin-right:20px;">Add Repayments</a>
     </div>
     <div class="container mt-4">
@@ -935,6 +1213,92 @@ if (session_status() === PHP_SESSION_NONE) {
     </div>
 </main>
 
+<div class="billing-expired-overlay" id="billingExpiredOverlay" role="alertdialog" aria-modal="true" aria-labelledby="billingExpiredTitle" hidden>
+    <div class="billing-expired-message">
+        <h2 id="billingExpiredTitle">Billing period expired</h2>
+        <p>Your manager dashboard access has ended. Redirecting you to billing verification.</p>
+    </div>
+</div>
+
+<div class="modal fade" id="billingModal" tabindex="-1" aria-labelledby="billingModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title fs-5" id="billingModalLabel"><i class="bi bi-receipt-cutoff me-2"></i>Billing details</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form method="post" action="index.php" autocomplete="off">
+                <div class="modal-body">
+                    <p class="text-muted">Update billing details and re-enter the current admin code to renew dashboard access.</p>
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label" for="renew_billing_contact">Billing contact</label>
+                            <input class="form-control" id="renew_billing_contact" type="tel" readonly value="<?php echo htmlspecialchars($billingAdminPhone, ENT_QUOTES, 'UTF-8'); ?>">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="renew_billing_email">Admin billing email</label>
+                            <input class="form-control" id="renew_billing_email" type="email" readonly value="<?php echo htmlspecialchars($billingAdminEmail, ENT_QUOTES, 'UTF-8'); ?>">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="renew_payment_method">Payment method</label>
+                            <select class="form-select" id="renew_payment_method" name="payment_method" required>
+                                <?php foreach (['Bank Transfer', 'Credit Card', 'Mobile Money', 'Cash'] as $paymentOption): ?>
+                                    <option value="<?php echo htmlspecialchars($paymentOption, ENT_QUOTES, 'UTF-8'); ?>" <?php echo (($billingAccess['payment_method'] ?? '') === $paymentOption) ? 'selected' : ''; ?>><?php echo htmlspecialchars($paymentOption, ENT_QUOTES, 'UTF-8'); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="renew_billing_cycle">Billing cycle</label>
+                            <select class="form-select" id="renew_billing_cycle" name="billing_cycle" required>
+                                <?php foreach (['Monthly', 'Quarterly', 'Annually'] as $cycleOption): ?>
+                                    <option value="<?php echo htmlspecialchars($cycleOption, ENT_QUOTES, 'UTF-8'); ?>" <?php echo (($billingAccess['billing_cycle'] ?? '') === $cycleOption) ? 'selected' : ''; ?>><?php echo htmlspecialchars($cycleOption, ENT_QUOTES, 'UTF-8'); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="renew_billing_start_date">Billing start date</label>
+                            <input class="form-control" id="renew_billing_start_date" name="billing_start_date" type="date" max="<?php echo date('Y-m-d'); ?>" required value="<?php echo htmlspecialchars($billingAccess['start_date'] ?? date('Y-m-d'), ENT_QUOTES, 'UTF-8'); ?>">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label" for="renew_authenticator_code">Admin code</label>
+                            <input class="form-control" id="renew_authenticator_code" name="authenticator_code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary" name="verify_billing" value="1">Verify billing</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="billingNotificationModal" tabindex="-1" aria-labelledby="billingNotificationModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title fs-5" id="billingNotificationModalLabel"><i class="bi bi-bell me-2"></i>Billing status</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p><strong>Status:</strong> <?php echo $billingAccessActive ? 'Active' : 'Expired'; ?></p>
+                <p><strong>Billing start date:</strong> <?php echo htmlspecialchars($billingAccess['start_date'] ?? '', ENT_QUOTES, 'UTF-8'); ?></p>
+                <p><strong>Access expires:</strong> <?php echo htmlspecialchars($billingAccess['expires_at'] ?? '', ENT_QUOTES, 'UTF-8'); ?></p>
+                <p><strong>Time remaining:</strong> <span id="billingModalCountdown">Loading access timer</span></p>
+                <p><strong>Billing contact:</strong> <?php echo htmlspecialchars($billingAccess['billing_contact'] ?? $billingAdminPhone, ENT_QUOTES, 'UTF-8'); ?></p>
+                <p><strong>Admin email:</strong> <?php echo htmlspecialchars($billingAccess['admin_email'] ?? $billingAdminEmail, ENT_QUOTES, 'UTF-8'); ?></p>
+                <p><strong>Payment method:</strong> <?php echo htmlspecialchars($billingAccess['payment_method'] ?? '', ENT_QUOTES, 'UTF-8'); ?></p>
+                <p class="mb-0"><strong>Billing cycle:</strong> <?php echo htmlspecialchars($billingAccess['billing_cycle'] ?? '', ENT_QUOTES, 'UTF-8'); ?></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" data-bs-dismiss="modal" data-bs-toggle="modal" data-bs-target="#billingModal">Update billing</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="modal fade" id="clientSearchModal" tabindex="-1" aria-labelledby="clientSearchModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
@@ -949,6 +1313,40 @@ if (session_status() === PHP_SESSION_NONE) {
 
 <script>
     document.addEventListener('DOMContentLoaded', function () {
+        const billingCountdown = document.getElementById('billingCountdown');
+        const billingModalCountdown = document.getElementById('billingModalCountdown');
+        const billingExpiredOverlay = document.getElementById('billingExpiredOverlay');
+        const billingExpiresAt = Number(billingCountdown ? billingCountdown.dataset.expiresAt : 0);
+
+        function formatBillingTime(milliseconds) {
+            const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+            const days = Math.floor(totalSeconds / 86400);
+            const hours = Math.floor((totalSeconds % 86400) / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+            return `${days}d ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }
+
+        function updateBillingCountdown() {
+            const remaining = billingExpiresAt - Date.now();
+            if (remaining <= 0) {
+                if (billingCountdown) billingCountdown.textContent = 'Expired';
+                if (billingModalCountdown) billingModalCountdown.textContent = 'Expired';
+                if (billingExpiredOverlay) billingExpiredOverlay.hidden = false;
+                document.body.style.overflow = 'hidden';
+                window.location.replace('index.php');
+                return;
+            }
+
+            const formatted = formatBillingTime(remaining);
+            if (billingCountdown) billingCountdown.textContent = formatted;
+            if (billingModalCountdown) billingModalCountdown.textContent = formatted;
+        }
+
+        updateBillingCountdown();
+        window.setInterval(updateBillingCountdown, 1000);
+        document.addEventListener('visibilitychange', updateBillingCountdown);
+
         const toggleButton = document.getElementById('sidebarToggleMain');
         const sidebarWrapper = document.getElementById('sidebarWrapper');
         const mainContent = document.getElementById('mainContent');

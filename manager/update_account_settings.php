@@ -23,6 +23,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $city = htmlspecialchars($_POST['city']);
     $province = htmlspecialchars($_POST['province']);
     $zipcode = htmlspecialchars($_POST['zipcode']);
+    $billingContact = htmlspecialchars($_POST['billing_contact'] ?? '');
+    $billingEmail = htmlspecialchars($_POST['billing_email'] ?? '');
+    $paymentMethod = htmlspecialchars($_POST['payment_method'] ?? '');
+    $billingCycle = htmlspecialchars($_POST['billing_cycle'] ?? '');
+    $accountNotes = htmlspecialchars($_POST['account_notes'] ?? '');
     
     // Handle logo upload
     $logoPath = '';
@@ -60,6 +65,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         city = :city,
         province = :province,
         zipcode = :zipcode,
+        billing_contact = :billing_contact,
+        billing_email = :billing_email,
+        payment_method = :payment_method,
+        billing_cycle = :billing_cycle,
+        account_notes = :account_notes,
         logo = :logo
         WHERE id = 1"); // Assuming you have a single record with ID 1
 
@@ -82,6 +92,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ':city' => $city,
         ':province' => $province,
         ':zipcode' => $zipcode,
+        ':billing_contact' => $billingContact,
+        ':billing_email' => $billingEmail,
+        ':payment_method' => $paymentMethod,
+        ':billing_cycle' => $billingCycle,
+        ':account_notes' => $accountNotes,
         ':logo' => $logoPath
     ]);
 
