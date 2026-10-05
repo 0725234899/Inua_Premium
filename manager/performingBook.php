@@ -52,7 +52,9 @@ function generate_performing_book_pdf($rows, $officer_display_name, $day_label, 
     $pdf = new TCPDF('L', 'mm', 'A4', true, 'UTF-8', false);
     $pdf->SetCreator('Inua Premium Services');
     $pdf->SetAuthor('Inua Premium Services');
-    $pdf->SetTitle('Performing Book');
+    $pdf->SetTitle('Performing Book Report');
+    $pdf->setPrintHeader(false);
+    $pdf->setPrintFooter(false);
     $leftMargin = 12;
     $rightMargin = 12;
     $topMargin = 15;
@@ -61,24 +63,58 @@ function generate_performing_book_pdf($rows, $officer_display_name, $day_label, 
     $pdf->AddPage();
 
     $contentWidth = $pdf->getPageWidth() - ($leftMargin + $rightMargin);
-    $pdf->SetTextColor(56, 152, 219);
-    $pdf->SetFont('helvetica', 'B', 16);
-    $pdf->Cell(0, 8, 'Inua Premium Services', 0, 1, 'C');
-    $pdf->SetFont('helvetica', 'B', 14);
-    $pdf->Cell(0, 8, 'Performing Book', 0, 1, 'C');
-    $pdf->SetDrawColor(56, 152, 219);
-    $pdf->SetLineWidth(0.35);
-    $yLine = $pdf->GetY() + 2;
-    $pdf->Line($leftMargin, $yLine, $leftMargin + $contentWidth, $yLine);
-    $pdf->Ln(4);
+    $logoPath = __DIR__ . '/../assets/img/logo.png';
+    if (file_exists($logoPath)) {
+        $pdf->Image($logoPath, $leftMargin, 10, 22, 0, 'PNG', '', 'T', false, 300, '', false, false, 0, false, false, false);
+    }
 
-    $pdf->SetFont('helvetica', '', 10);
+    $pdf->SetTextColor(15, 76, 129);
+    $pdf->SetFont('helvetica', 'B', 18);
+    $pdf->SetXY($leftMargin + 28, 10);
+    $pdf->Cell(0, 8, 'Inua Premium Services', 0, 1, 'L');
+    $pdf->SetFont('helvetica', 'I', 9);
+    $pdf->SetXY($leftMargin + 28, 18);
+    $pdf->Cell(0, 6, 'Performing Book Report', 0, 1, 'L');
+
     $pdf->SetTextColor(33, 37, 41);
-    $pdf->Cell(0, 6, 'Loan Officer: ' . $officer_display_name, 0, 1, 'L');
-    $pdf->Cell(0, 6, 'Region: ' . $region_label, 0, 1, 'L');
-    $pdf->Cell(0, 6, 'Day Filter: ' . $day_label, 0, 1, 'L');
-    $pdf->Cell(0, 6, 'Generated on: ' . date('d/m/Y H:i'), 0, 1, 'L');
+    $pdf->SetFont('helvetica', '', 9);
+    $pdf->SetXY($leftMargin, 30);
+    $pdf->Cell(0, 5, 'Loan Officer: ' . $officer_display_name, 0, 1, 'L');
+    $pdf->SetXY($leftMargin, 35);
+    $pdf->Cell(0, 5, 'Region: ' . $region_label . ' | Day Filter: ' . $day_label, 0, 1, 'L');
+
+    $pdf->SetDrawColor(15, 76, 129);
+    $pdf->SetLineWidth(0.35);
+    $yLine = 42;
+    $pdf->Line($leftMargin, $yLine, $leftMargin + $contentWidth, $yLine);
     $pdf->Ln(2);
+
+    $totalPrincipal = array_sum(array_map('floatval', array_column($rows, 'principal')));
+    $totalLoanAmount = array_sum(array_map('floatval', array_column($rows, 'loan_total_amount')));
+    $totalPaid = array_sum(array_map('floatval', array_column($rows, 'total_paid_amount')));
+    $totalBalance = array_sum(array_map('floatval', array_column($rows, 'loan_balance')));
+    $totalArrears = array_sum(array_map('floatval', array_column($rows, 'arrears_amount')));
+    $metricWidth = ($contentWidth - 20) / 3;
+    $metricLabels = [
+        ['Total Loans', (string) count($rows)],
+        ['Total Principal', 'KSH ' . number_format($totalPrincipal, 2)],
+        ['Total Loan Amount', 'KSH ' . number_format($totalLoanAmount, 2)],
+        ['Total Paid', 'KSH ' . number_format($totalPaid, 2)],
+        ['Loan Balance', 'KSH ' . number_format($totalBalance, 2)],
+        ['Arrears', 'KSH ' . number_format($totalArrears, 2)],
+    ];
+    $pdf->SetFillColor(239, 246, 255);
+    $pdf->SetTextColor(15, 76, 129);
+    $pdf->SetFont('helvetica', 'B', 8);
+    $startY = 48;
+    foreach ($metricLabels as $index => $metric) {
+        $col = $index % 3;
+        $rowIndex = intdiv($index, 3);
+        $x = $leftMargin + ($col * ($metricWidth + 10));
+        $y = $startY + ($rowIndex * 16);
+        $pdf->SetXY($x, $y);
+        $pdf->MultiCell($metricWidth, 6, $metric[0] . "\n" . $metric[1], 1, 'C', true, 0);
+    }
 
     // Define column widths proportional to content width
     $colWidths = [
@@ -94,7 +130,7 @@ function generate_performing_book_pdf($rows, $officer_display_name, $day_label, 
         $contentWidth - (intval($contentWidth * 0.16) + intval($contentWidth * 0.10) + intval($contentWidth * 0.09) + intval($contentWidth * 0.08) + intval($contentWidth * 0.08) + intval($contentWidth * 0.08) + intval($contentWidth * 0.10) + intval($contentWidth * 0.09) + intval($contentWidth * 0.13))
     ];
 
-    $headers = ['Borrower', 'Loan Release Date', 'Loan Duration', 'Principal', 'Total Amount', 'Total Paid', 'Loan Balance', 'Arrears', 'Maturity Date', 'Status'];
+    $headers = ['Borrower', 'Release Date', 'Loan Duration', 'Principal', 'Total Amount', 'Total Paid', 'Loan Balance', 'Arrears', 'Maturity Date', 'Status'];
 
     // Table header rendering helper (used for initial page and repeated on new pages)
     $tableHeaderHeight = 8;
@@ -117,7 +153,9 @@ function generate_performing_book_pdf($rows, $officer_display_name, $day_label, 
         $pdf->SetFont('helvetica', '', 8);
     };
 
-    // Print the first header row
+    $pdf->SetY($startY + 34);
+
+    // Print the table heading on the initial page and after page breaks.
     $printTableHeader();
 
     $lineHeight = 4; // approximate
@@ -465,8 +503,6 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
         .rolled-over-balance { background: #fff4d6; color: #604817; padding: 4px 8px; }
         @media (max-width: 768px) { .main { margin-left: 0; padding: 20px 12px 40px; } .main > .section > .container { padding: 16px 12px; } .main > .section > .container > .d-flex:first-child { margin: -16px -12px 16px; padding: 20px; } .main > .section > .container > .d-flex:first-child::before { font-size: 1.8rem; } .main > .section > .container > .d-flex:first-child { align-items: flex-start !important; flex-direction: column; } .header-actions { justify-content: flex-start; margin-top: 14px; width: 100%; } .header-actions .form-control { flex: 1 1 220px; max-width: none; } }
     </style>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
 </head>
 <body>
 
@@ -614,6 +650,67 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
 
     $email_message = '';
     $email_status = '';
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_bulk_email'])) {
+        $sender_email = getConfiguredSenderEmail();
+        $allOfficers = $conn->query("SELECT id, name AS full_name, email, area FROM users WHERE role_id = '2' AND email IS NOT NULL AND TRIM(email) <> '' ORDER BY name ASC");
+        $recipients = [];
+        if ($allOfficers) {
+            while ($officer = $allOfficers->fetch_assoc()) {
+                $email = trim((string) ($officer['email'] ?? ''));
+                if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    $recipients[(int) $officer['id']] = [
+                        'id' => (int) $officer['id'],
+                        'name' => trim((string) ($officer['full_name'] ?? '')),
+                        'email' => $email,
+                        'area' => $officer['area'] ?? null,
+                    ];
+                }
+            }
+        }
+
+        if ($sender_email === '') {
+            $email_status = 'warning';
+            $email_message = 'Please configure the sender email and app password before sending reports.';
+        } elseif (empty($recipients)) {
+            $email_status = 'warning';
+            $email_message = 'No loan officers with valid email addresses were found.';
+        } else {
+            $sent_count = 0;
+            $failed_count = 0;
+            foreach ($recipients as $officer) {
+                try {
+                    $officerLoans = getLoans($conn, 'all', $officer['email'], 'all');
+                    $regionLabel = 'Unassigned Region';
+                    foreach ($areas as $area) {
+                        if ((string) ($area['area_id'] ?? '') === (string) ($officer['area'] ?? '')) {
+                            $regionLabel = $area['area_name'];
+                            break;
+                        }
+                    }
+                    $officerName = $officer['name'] !== '' ? $officer['name'] : 'Loan Officer';
+                    $dayLabel = 'All days';
+                    $pdfContent = generate_performing_book_pdf($officerLoans, $officerName, $dayLabel, $regionLabel);
+                    $subject = 'Performing Book Report - ' . $officerName;
+                    $body = '<p>Dear ' . htmlspecialchars($officerName) . ',</p><p>Please find the attached performing book report for your assigned portfolio in <strong>' . htmlspecialchars($regionLabel) . '</strong>.</p><p>This report was generated automatically by Inua Premium Services.</p>';
+                    $filename = 'performing_book_report_officer_' . $officer['id'] . '_' . date('Ymd_His') . '.pdf';
+                    send_pdf_email($officer['email'], $subject, $body, $pdfContent, $filename);
+                    $sent_count++;
+                } catch (Throwable $e) {
+                    $failed_count++;
+                    error_log('Performing book bulk email failed for ' . $officer['email'] . ': ' . $e->getMessage());
+                }
+            }
+
+            if ($sent_count > 0) {
+                $email_status = $failed_count > 0 ? 'warning' : 'success';
+                $email_message = 'Personalized performing book reports sent to ' . $sent_count . ' of ' . count($recipients) . ' loan officers.';
+            } else {
+                $email_status = 'danger';
+                $email_message = 'Unable to send the performing book reports. Please review the SMTP configuration.';
+            }
+        }
+    }
+
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
         $officer_display_name = ($selected_officer !== 'all' && isset($officer_lookup[$selected_officer]))
             ? $officer_lookup[$selected_officer]['full_name']
@@ -682,9 +779,12 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
                                 <i class="bi bi-envelope"></i> Send Email
                             </button>
                         </form>
-                        <button id="downloadDueLoansPdf" class="btn btn-success">
-                            <i class="bi bi-download"></i> Download PDF
-                        </button>
+                        <form method="post" class="d-inline-block">
+                            <input type="hidden" name="send_bulk_email" value="1">
+                            <button type="submit" class="btn btn-success">
+                                <i class="bi bi-envelope-at"></i> Send Bulk Mail
+                            </button>
+                        </form>
                         <input type="text" id="searchInput" placeholder="Search by Borrower or Phone..." class="form-control" style="width: 300px;">
                     </div>
                 </div>
@@ -746,7 +846,7 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
                         <thead>
                             <tr>
                                 <th>Borrower</th>
-                                <th>Loan Release Date</th>
+                                <th>Release Date</th>
                                 <th>Loan Duration</th>
                                 <th>Principal</th>
                                 <th>Total Amount</th>
@@ -918,77 +1018,6 @@ function generateRepaymentSchedule($conn, $loan_id, $principal_amount, $interest
             });
         });
 
-        // PDF Download functionality
-        function getPerformingBookPdfData(includeLogo, callback) {
-            const { jsPDF } = window.jspdf;
-            const doc = new jsPDF('landscape');
-            const logoPath = '../assets/img/logo.png';
-            const img = new Image();
-
-            function renderPdf() {
-                const pageWidth = doc.internal.pageSize.getWidth();
-                const logoWidth = 28;
-                const logoHeight = 18;
-                const logoX = 14;
-                const logoY = 10;
-
-                if (includeLogo) {
-                    try {
-                        doc.addImage(img, 'PNG', logoX, logoY, logoWidth, logoHeight);
-                    } catch (error) {
-                        // ignore logo if it fails to render
-                    }
-                }
-
-                doc.setFontSize(16);
-                doc.setFont('helvetica', 'bold');
-                doc.text('Performing Book', pageWidth / 2, 18, { align: 'center' });
-                doc.setFontSize(10);
-                doc.setFont('helvetica', 'normal');
-                doc.text('Generated on ' + new Date().toLocaleDateString(), pageWidth - 14, 18, { align: 'right' });
-
-                const table = document.getElementById('performingBookTable');
-                const headers = Array.from(table.querySelectorAll('thead th'))
-                    .slice(0, -1)
-                    .map(th => th.textContent.trim());
-                const rows = Array.from(table.querySelectorAll('tbody tr'))
-                    .filter(row => row.style.display !== 'none')
-                    .map(row => Array.from(row.querySelectorAll('td'))
-                        .slice(0, -1)
-                        .map(td => td.textContent.trim())
-                    );
-
-                doc.autoTable({
-                    head: [headers],
-                    body: rows,
-                    startY: 28,
-                    styles: { fontSize: 8, cellPadding: 2 },
-                    headStyles: { fillColor: [0, 123, 255], textColor: [255, 255, 255] },
-                    alternateRowStyles: { fillColor: [248, 249, 250] },
-                    margin: { left: 14, right: 14 }
-                });
-
-                callback(doc);
-            }
-
-            if (includeLogo) {
-                img.onload = renderPdf;
-                img.onerror = function () { renderPdf(); };
-                img.src = logoPath;
-            } else {
-                renderPdf();
-            }
-        }
-
-        const downloadButton = document.getElementById('downloadDueLoansPdf');
-
-        if (downloadButton) {
-            downloadButton.addEventListener('click', function () {
-                getPerformingBookPdfData(true, function (doc) {
-                    doc.save('performing_book_report.pdf');
-                });
-            });
-        }
     </script>
 
     <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>

@@ -13,118 +13,32 @@ $loanOfficers = $officerResult->fetch_all(MYSQLI_ASSOC);
 <head>
     <meta charset="utf-8">
     <meta content="width=device-width, initial-scale=1.0" name="viewport">
-    <title>Admin Dashboard - Microfinance</title>
+    <title>Add Borrower</title>
     <meta content="" name="description">
     <meta content="" name="keywords">
 
     <style>
-        :root {
-            --background-color: #ffffff;
-            --default-color: #212529;
-            --heading-color: #32353a;
-            --accent-color: #e84545;
-            --surface-color: #ffffff;
-            --contrast-color: #ffffff;
-            --nav-color: #3a3939;
-            --nav-hover-color: #e84545;
-            --nav-mobile-background-color: #ffffff;
-            --nav-dropdown-background-color: #ffffff;
-            --nav-dropdown-color: #3a3939;
-            --nav-dropdown-hover-color: #e84545;
-        }
-
-        body {
-            background-color: var(--background-color);
-            color: var(--default-color);
-            font-family: 'Open Sans', sans-serif;
-            margin: 0;
-        }
-
-        .header {
-            background-color: var(--accent-color);
-            color: var(--contrast-color);
-            padding: 10px 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .header .logo h1 {
-            color: var(--contrast-color);
-            margin: 0;
-            font-size: 24px;
-        }
-
-        .header .navmenu ul {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-            display: flex;
-        }
-
-        .header .navmenu ul li {
-            margin-right: 20px;
-        }
-
-        .header .navmenu ul li a {
-            color: var(--contrast-color);
-            text-decoration: none;
-        }
-
-        .header .navmenu ul li a.active, .header .navmenu ul li a:hover {
-            color: var(--nav-hover-color);
-        }
-
-        .sidebar {
-            background-color: var(--nav-mobile-background-color);
-            color: var(--nav-color);
-            padding: 20px;
-            width: 250px;
-            position: fixed;
-            height: 100%;
-            overflow: auto;
-        }
-
-        .sidebar .nav-item .nav-link {
-            color: var(--nav-color);
-            padding: 10px 15px;
-            text-decoration: none;
-            display: block;
-        }
-
-        .sidebar .nav-item .nav-link.active, .sidebar .nav-item .nav-link:hover {
-            color: var(--nav-hover-color);
-        }
-
-        .main {
-            margin-left: 270px;
-            padding: 20px;
-        }
-
-        .dashboard-metrics {
-            display: flex;
-            justify-content: space-around;
-            margin-top: 20px;
-        }
-
-        .metric {
-            background-color: var(--surface-color);
-            border: 1px solid var(--default-color);
-            border-radius: 8px;
-            padding: 20px;
-            text-align: center;
-            flex: 1;
-            margin: 0 10px;
-        }
-
-        .metric h2 {
-            margin: 0;
-            font-size: 2em;
-        }
-
-        .metric p {
-            margin: 5px 0 0;
-        }
+        body { background: #f8f8f8; color: #282828; font-family: 'Segoe UI', Tahoma, sans-serif; }
+        .main { box-sizing: border-box; height: 100vh; margin-left: 250px; overflow: hidden; padding: 88px 24px 24px; }
+        .page-container { display: flex; flex-direction: column; height: 100%; margin: 0 auto; max-width: 1180px; min-height: 0; }
+        .shell { background: #fff; border: 0; border-radius: 18px; box-shadow: 0 12px 28px rgba(0, 0, 0, .08); display: flex; flex: 1; flex-direction: column; min-height: 0; }
+        .company-header { display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; gap: 18px; border-bottom: 2px solid #ef4444; padding-bottom: 18px; margin-bottom: 24px; }
+        .borrower-page-heading { flex: 0 0 auto; }
+        .borrower-scroll-area { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 8px 12px 0; }
+        .company-header img { height: 64px; width: auto; object-fit: contain; }
+        .section-panel { background: #fff7f7; border: 1px solid #f4d1d1; border-radius: 12px; padding: 20px; height: 100%; }
+        .summary-panel { background: #fff; border: 1px solid #e7e7e7; border-radius: 16px; padding: 24px; height: 100%; }
+        .section-title { color: #0b2f9f; font-size: 1.05rem; font-weight: 700; margin-bottom: 18px; padding-bottom: 10px; border-bottom: 2px solid #ef4444; }
+        .form-label { font-weight: 600; }
+        .form-control, .form-select { border-radius: 8px; border-color: #d9d9d9; min-height: 44px; }
+        .form-control:focus, .form-select:focus { border-color: #0b2f9f; box-shadow: 0 0 0 .2rem rgba(11, 47, 159, .12); }
+        .btn-primary { background: linear-gradient(135deg, #e84545, #ff6b6b); border: 0; }
+        .btn-primary:hover { background: linear-gradient(135deg, #d93d3d, #eb5a5a); }
+        .summary-item { border-left: 4px solid #0b2f9f; background: #f7f9ff; padding: 13px 15px; margin-bottom: 12px; }
+        .summary-item span { color: #64748b; display: block; font-size: .85rem; }
+        .summary-item strong { color: #0b2f9f; display: block; margin-top: 4px; overflow-wrap: anywhere; }
+        @media (max-width: 1199px) { .main { margin-left: 0; padding: 88px 16px 20px; } }
+        @media (max-width: 768px) { .main { padding: 78px 10px 12px; } .shell { padding: 18px !important; } .company-header img { height: 52px; } }
     </style>
 
     <!-- Favicons -->
@@ -144,50 +58,119 @@ $loanOfficers = $officerResult->fetch_all(MYSQLI_ASSOC);
 
 <body class="admin-page">
 
-    <!-- End Header -->
 <?php
 include("../includes/functions.php");
 include("includes/header.php");
 ?>
-    <!-- ======= Sidebar ======= -->
-   <?php
-   include("../includes/sidebar.php");
+<?php include "../includes/sidebar.php"; ?>
+<main class="main">
+    <div class="page-container">
+        <div class="shell p-4">
+            <div class="company-header">
+                <div>
+                    <div class="fw-bold text-uppercase text-secondary" style="letter-spacing: 1px;">Inua Premium Services</div>
+                    <div class="text-muted small">Borrower Management</div>
+                </div>
+                <img src="../assets/img/logo.png" alt="Inua Premium Services Logo">
+            </div>
 
-   ?>
-    <!-- ======= Main ======= -->
-    <main class="main">
-        <section id="admin-dashboard" class="admin-dashboard section">
-            <div class="container">
+            <div class="borrower-page-heading d-flex justify-content-between align-items-center flex-wrap gap-3 mb-4">
+                <div>
+                    <h2 class="mb-1">Add Borrower</h2>
+                    <div class="text-muted">Register borrower details and assign a loan officer.</div>
+                </div>
+                <a href="index.php" class="btn btn-secondary">Back to Dashboard</a>
+            </div>
 
-    <h2>Add Borrower</h2>
-    <form action="insert_borrower.php" method="post" enctype="multipart/form-data">
-        Loan Officer:
-        <select name="loanOfficer" class="form-control" required>
-            <option value="">Select loan officer</option>
-            <?php foreach ($loanOfficers as $officer): ?>
-                <option value="<?php echo htmlspecialchars($officer['email'], ENT_QUOTES); ?>"
-                    <?php echo ($selectedLoanOfficerEmail === $officer['email']) ? 'selected' : ''; ?>>
-                    <?php echo htmlspecialchars($officer['full_name'] . ' (' . $officer['email'] . ')'); ?>
-                </option>
-            <?php endforeach; ?>
-        </select><br>
-        
-        Full Name: <input type="text" name="full_name" class="form-control" required><br>
-        Mobile: <input type="text" name="mobile" class="form-control"><br>
-        ID Number: <input type="text" name="id_number" class="form-control" required><br>
-        Guarantor Name: <input type="text" name="guarantor_name" class="form-control"><br>
-        Guarantor Phone Number: <input type="text" name="guarantor_phone" class="form-control"><br>
-        Business Name: <input type="text" name="business_name" class="form-control"><br>
-        
-        <!-- Hidden Fields for Loan Data -->
-        <input type="number" step="0.01" value="0.00" class="form-control" name="total_paid" hidden><br>
-        <input type="number" value="0.00" step="0.01" class="form-control" name="open_loans_balance" hidden><br>
+            <div class="borrower-scroll-area">
+            <form action="insert_borrower.php" method="post" enctype="multipart/form-data" id="borrowerForm">
+                <div class="row g-4">
+                    <div class="col-lg-7">
+                        <div class="section-panel">
+                            <div class="section-title">Borrower and Guarantor Details</div>
+                            <div class="mb-3">
+                                <label for="loanOfficer" class="form-label">Loan Officer</label>
+                                <select name="loanOfficer" id="loanOfficer" class="form-select" required>
+                                    <option value="">Select loan officer</option>
+                                    <?php foreach ($loanOfficers as $officer): ?>
+                                        <option value="<?php echo htmlspecialchars($officer['email'], ENT_QUOTES); ?>" data-name="<?php echo htmlspecialchars($officer['full_name'], ENT_QUOTES); ?>" <?php echo ($selectedLoanOfficerEmail === $officer['email']) ? 'selected' : ''; ?>>
+                                            <?php echo htmlspecialchars($officer['full_name'] . ' (' . $officer['email'] . ')'); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
 
-       
-        <input type="submit" value="Add Borrower" class="btn btn-primary">
-    </form>
-    </section><!-- End Admin Dashboard Section -->
-    </main><!-- End Main -->
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label for="fullName" class="form-label">Full Name</label>
+                                    <input type="text" id="fullName" name="full_name" class="form-control" autocomplete="name" required>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="mobile" class="form-label">Mobile Number</label>
+                                    <input type="tel" id="mobile" name="mobile" class="form-control" autocomplete="tel">
+                                </div>
+                                <div class="col-12">
+                                    <label for="idNumber" class="form-label">ID Number</label>
+                                    <input type="text" id="idNumber" name="id_number" class="form-control" required>
+                                </div>
+                            </div>
+
+                            <div class="section-title mt-4">Guarantor and Business</div>
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label for="guarantorName" class="form-label">Guarantor Name</label>
+                                    <input type="text" id="guarantorName" name="guarantor_name" class="form-control">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="guarantorPhone" class="form-label">Guarantor Phone Number</label>
+                                    <input type="tel" id="guarantorPhone" name="guarantor_phone" class="form-control">
+                                </div>
+                                <div class="col-12">
+                                    <label for="businessName" class="form-label">Business Name</label>
+                                    <input type="text" id="businessName" name="business_name" class="form-control">
+                                </div>
+                            </div>
+
+                            <input type="hidden" name="total_paid" value="0.00">
+                            <input type="hidden" name="open_loans_balance" value="0.00">
+                            <button type="submit" class="btn btn-primary btn-lg w-100 mt-4">Add Borrower</button>
+                        </div>
+                    </div>
+
+                    <div class="col-lg-5">
+                        <div class="summary-panel">
+                            <div class="section-title">Assignment Summary</div>
+                            <div class="summary-item">
+                                <span>Selected Loan Officer</span>
+                                <strong id="selectedOfficerName"><?php echo htmlspecialchars($selectedLoanOfficerEmail !== '' ? $selectedLoanOfficerEmail : 'Not selected'); ?></strong>
+                            </div>
+                            <div class="summary-item">
+                                <span>Borrower Profile</span>
+                                <strong>Individual registration</strong>
+                            </div>
+                            <div class="summary-item">
+                                <span>Registration Status</span>
+                                <strong>New borrower</strong>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </form>
+            </div>
+        </div>
+    </div>
+</main>
+
+<script>
+    const loanOfficerSelect = document.getElementById('loanOfficer');
+    const selectedOfficerName = document.getElementById('selectedOfficerName');
+    function updateSelectedOfficer() {
+        const option = loanOfficerSelect.options[loanOfficerSelect.selectedIndex];
+        selectedOfficerName.textContent = option && option.value ? option.dataset.name + ' (' + option.value + ')' : 'Not selected';
+    }
+    loanOfficerSelect.addEventListener('change', updateSelectedOfficer);
+    updateSelectedOfficer();
+</script>
 
     <!-- Vendor JS Files -->
     <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>

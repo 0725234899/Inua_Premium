@@ -34,10 +34,12 @@ $loanProducts = getLoanProducts();
     <link rel="stylesheet" href="../assets/vendor/bootstrap/css/bootstrap.min.css">
     <style>
         body { background: #f8f8f8; color: #282828; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        .main { padding: 88px 24px 30px; }
-        .page-container { max-width: 1180px; margin: 0 auto; }
-        .shell { border: none; border-radius: 18px; box-shadow: 0 12px 28px rgba(0, 0, 0, 0.08); background: #fff; }
-        .company-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #ef4444; padding-bottom: 18px; margin-bottom: 24px; }
+        .main { box-sizing: border-box; height: 100vh; margin-left: 0; overflow: hidden; padding: 88px 24px 24px; }
+        .page-container { display: flex; flex-direction: column; height: 100%; margin: 0 auto; max-width: 1180px; min-height: 0; }
+        .shell { background: #fff; border: none; border-radius: 18px; box-shadow: 0 12px 28px rgba(0, 0, 0, 0.08); display: flex; flex: 1; flex-direction: column; min-height: 0; }
+        .company-header { display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; border-bottom: 2px solid #ef4444; padding-bottom: 18px; margin-bottom: 24px; }
+        .loan-page-heading { flex: 0 0 auto; }
+        .loan-form-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 8px 12px 0; }
         .company-header img { height: 70px; width: auto; object-fit: contain; }
         .section-panel { background: #fff7f7; border: 1px solid #f4d1d1; border-radius: 12px; padding: 20px; height: 100%; }
         .summary-panel { background: #fff; border: 1px solid #e7e7e7; border-radius: 16px; padding: 28px; min-height: 100%; }
@@ -50,8 +52,8 @@ $loanProducts = getLoanProducts();
         .metric { border-left: 4px solid #0b2f9f; padding: 12px 14px; background: #f7f9ff; border-radius: 8px; margin-bottom: 12px; }
         .metric strong { display: block; color: #0b2f9f; font-size: 1.15rem; }
         .required::after { content: ' *'; color: #e84545; }
-        @media (max-width: 1199px) { .main { padding: 88px 16px 24px; } }
-        @media (max-width: 768px) { .main { padding: 78px 10px 16px; } .company-header img { height: 52px; } }
+        @media (max-width: 1199px) { .main { margin-left: 0; padding: 88px 16px 20px; } }
+        @media (max-width: 768px) { .main { padding: 78px 10px 12px; } .shell { padding: 18px !important; } .company-header img { height: 52px; } }
     </style>
 </head>
 <body>
@@ -68,7 +70,7 @@ $loanProducts = getLoanProducts();
                 <img src="../assets/img/logo.png" alt="Inua Premium Services Logo">
             </div>
 
-            <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-4">
+            <div class="loan-page-heading d-flex justify-content-between align-items-center flex-wrap gap-3 mb-4">
                 <div>
                     <h2 class="mb-1">Loan Application Form</h2>
                     <div class="text-muted">Capture the borrower and facility details for review and processing.</div>
@@ -76,6 +78,7 @@ $loanProducts = getLoanProducts();
                 <a href="index.php" class="btn btn-secondary">Back to Dashboard</a>
             </div>
 
+            <div class="loan-form-scroll">
             <form action="submit_loan_application.php" method="POST" id="loanForm" enctype="multipart/form-data">
                 <div class="row g-4">
                     <div class="col-lg-7">
@@ -150,6 +153,7 @@ $loanProducts = getLoanProducts();
                     </div>
                 </div>
             </form>
+            </div>
         </div>
     </div>
  </main>

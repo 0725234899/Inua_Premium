@@ -96,14 +96,25 @@ function getPayrollExpenseSummary($conn, $payDate) {
 }
 
 function buildStructuredPayrollSummaryPdf(array $records, $period, $payDate, $analytics = null) {
-    $pdf = new TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
+    $pdf = new class('P', 'mm', 'A4', true, 'UTF-8', false) extends TCPDF {
+        public function Footer() {
+            $this->SetY(-15);
+            $this->SetDrawColor(190, 200, 210);
+            $this->Line(15, $this->GetY(), 195, $this->GetY());
+            $this->SetY(-13);
+            $this->SetFont('helvetica', 'I', 8);
+            $this->SetTextColor(100, 116, 139);
+            $this->Cell(0, 8, 'Inua Premium Services | Confidential Payroll Summary | Page ' . $this->getAliasNumPage() . ' of ' . $this->getAliasNbPages(), 0, 0, 'C');
+        }
+    };
     $pdf->SetCreator('Inua Premium Services');
     $pdf->SetAuthor('Inua Premium Services');
     $pdf->SetTitle('Payroll Summary - ' . $period);
     $pdf->SetMargins(15, 15, 15);
-    $pdf->SetAutoPageBreak(false, 15);
+    $pdf->SetAutoPageBreak(true, 22);
+    $pdf->SetFooterMargin(12);
     $pdf->setPrintHeader(false);
-    $pdf->setPrintFooter(false);
+    $pdf->setPrintFooter(true);
     $safe = function ($value) { return htmlspecialchars(trim((string) $value), ENT_QUOTES, 'UTF-8'); };
     $money = function ($value) { return 'KES ' . number_format((float) $value, 2); };
     $stampPath = __DIR__ . '/New Folder/assets/img/company_stamp.JPG';
@@ -140,10 +151,11 @@ function buildStructuredPayrollSummaryPdf(array $records, $period, $payDate, $an
         $pdf->SetTextColor(40, 40, 40);
         $pdf->Ln(2);
     };
-    $footer = function ($page) use ($pdf) {
-        $pdf->Line(15, 270, 195, 270);
-        $pdf->SetFont('helvetica', 'I', 8);
-        $pdf->Cell(0, 5, 'Inua Premium Services | Payroll Summary | Page ' . $page, 0, 1, 'C');
+    $ensureSectionSpace = function ($height, $continuationTitle) use ($pdf, $header) {
+        if ($pdf->GetY() + $height > 270) {
+            $pdf->AddPage();
+            $header($continuationTitle . ' (CONTINUED)');
+        }
     };
     $analyticsRows = $analytics['rows'] ?? [];
     $payrollByStaff = [];
@@ -170,14 +182,17 @@ function buildStructuredPayrollSummaryPdf(array $records, $period, $payDate, $an
     $pdf->Ln(2);
     $section('1. PAYROLL CONTROL TOTALS');
     $pdf->writeHTML('<table border="1" cellpadding="4"><tr bgcolor="#e8edff"><td width="35%"><b>Total staff</b></td><td width="65%">' . count($records) . '</td></tr><tr><td><b>Total gross pay</b></td><td>' . $money($totalGross) . '</td></tr><tr><td><b>Total deductions / advances</b></td><td>' . $money($totalDeductions) . '</td></tr><tr><td><b>Total net pay</b></td><td>' . $money($totalNet) . '</td></tr><tr><td><b>Expenses recorded</b></td><td>' . $money($totalExpenses) . '</td></tr></table>', true, false, true, false, 'L');
+    $ensureSectionSpace(28, 'PAYROLL SUMMARY REPORT');
     $section('2. EXPENSES RECORDED');
     $expenseRows = '';
     foreach (($expenseSummary['rows'] ?? []) as $expense) {
         $expenseRows .= '<tr><td>' . $safe($expense['expense_type']) . '</td><td align="right">' . $safe((string) $expense['entry_count']) . '</td><td align="right">' . $money($expense['total_amount']) . '</td></tr>';
     }
-    $pdf->writeHTML('<table border="1" cellpadding="4"><tr bgcolor="#e8edff"><th width="55%"><b>Expense type</b></th><th width="15%"><b>Count</b></th><th width="30%"><b>Recorded amount</b></th></tr>' . ($expenseRows ?: '<tr><td colspan="3">No expense records were captured for this pay period.</td></tr>') . '<tr bgcolor="#f1f5f9"><td><b>TOTAL</b></td><td></td><td align="right"><b>' . $money($totalExpenses) . '</b></td></tr></table>', true, false, true, false, 'L');
+    $pdf->writeHTML('<table border="1" cellpadding="4"><thead><tr bgcolor="#e8edff"><th width="55%"><b>Expense type</b></th><th width="15%"><b>Count</b></th><th width="30%"><b>Recorded amount</b></th></tr></thead><tbody>' . ($expenseRows ?: '<tr><td colspan="3">No expense records were captured for this pay period.</td></tr>') . '<tr bgcolor="#f1f5f9"><td><b>TOTAL</b></td><td></td><td align="right"><b>' . $money($totalExpenses) . '</b></td></tr></tbody></table>', true, false, true, false, 'L');
+    $ensureSectionSpace(32, 'PAYROLL SUMMARY REPORT');
     $section('3. PAYROLL BY REGION');
     foreach ($regions as $regionName => $regionRecords) {
+        $ensureSectionSpace(34, 'PAYROLL BY REGION');
         $regionGross = array_sum(array_map('floatval', array_column($regionRecords, 'gross_pay')));
         $regionNet = array_sum(array_map('floatval', array_column($regionRecords, 'net_pay')));
         $pdf->SetFont('helvetica', 'B', 9);
@@ -186,10 +201,9 @@ function buildStructuredPayrollSummaryPdf(array $records, $period, $payDate, $an
         foreach ($regionRecords as $record) {
             $rows .= '<tr><td>' . $safe($record['staff_name']) . '</td><td>' . $safe($record['role_name'] ?? $record['staff_role'] ?? '-') . '</td><td>' . $safe(($record['staff_phone'] ?? $record['phone'] ?? '') ?: '-') . '</td><td>' . $safe($record['pay_period']) . '</td><td align="right">' . $money($record['gross_pay']) . '</td><td align="right">' . $money($record['total_deductions']) . '</td><td align="right">' . $money($record['net_pay']) . '</td></tr>';
         }
-        $pdf->writeHTML('<table border="1" cellpadding="3"><tr bgcolor="#e8edff"><th width="22%"><b>Staff member</b></th><th width="12%"><b>Role</b></th><th width="18%"><b>Phone</b></th><th width="15%"><b>Period</b></th><th width="14%"><b>Gross pay</b></th><th width="14%"><b>Deductions</b></th><th width="14%"><b>Net pay</b></th></tr>' . $rows . '<tr bgcolor="#f1f5f9"><td colspan="4"><b>Region total</b></td><td align="right"><b>' . $money($regionGross) . '</b></td><td></td><td align="right"><b>' . $money($regionNet) . '</b></td></tr></table>', true, false, true, false, 'L');
+        $pdf->writeHTML('<table border="1" cellpadding="3"><thead><tr bgcolor="#e8edff"><th width="22%"><b>Staff member</b></th><th width="12%"><b>Role</b></th><th width="18%"><b>Phone</b></th><th width="15%"><b>Period</b></th><th width="14%"><b>Gross pay</b></th><th width="14%"><b>Deductions</b></th><th width="14%"><b>Net pay</b></th></tr></thead><tbody>' . $rows . '<tr bgcolor="#f1f5f9"><td colspan="4"><b>Region total</b></td><td align="right"><b>' . $money($regionGross) . '</b></td><td></td><td align="right"><b>' . $money($regionNet) . '</b></td></tr></tbody></table>', true, false, true, false, 'L');
         $pdf->Ln(2);
     }
-    $footer(1);
 
     $pdf->AddPage();
     $header('STAFF PAYROLL AND PERFORMANCE COMPARISON');
@@ -206,14 +220,13 @@ function buildStructuredPayrollSummaryPdf(array $records, $period, $payDate, $an
         $roleName = $payroll['role_name'] ?? $performance['role_name'] ?? ($payroll['staff_role'] ?? '');
         $comparisonRows .= '<tr><td>' . $safe($performance['name']) . '</td><td>' . $safe($roleName ?: '-') . '</td><td>' . $safe($payroll ? (($payroll['staff_phone'] ?? $payroll['phone'] ?? '') ?: '-') : (($performance['phone'] ?? '') ?: '-')) . '</td><td align="right">' . ($payroll ? $money($payroll['gross_pay']) : '-') . '</td><td align="right">' . $money($performance['disbursed']) . '</td><td align="right">' . $money($performance['interest']) . '</td><td align="right">' . $money($performance['repayments']) . '</td><td align="right">' . $money($performance['loanBook']) . '</td></tr>';
     }
-    $pdf->writeHTML('<table border="1" cellpadding="3"><tr bgcolor="#e8edff"><th width="18%"><b>Staff member</b></th><th width="12%"><b>Role</b></th><th width="14%"><b>Phone</b></th><th width="12%"><b>Gross pay</b></th><th width="12%"><b>Disbursed</b></th><th width="12%"><b>Interest</b></th><th width="12%"><b>Collected</b></th><th width="12%"><b>Loan book</b></th></tr>' . ($comparisonRows ?: '<tr><td colspan="8">No performance records available.</td></tr>') . '</table>', true, false, true, false, 'L');
+    $pdf->writeHTML('<table border="1" cellpadding="3"><thead><tr bgcolor="#e8edff"><th width="18%"><b>Staff member</b></th><th width="12%"><b>Role</b></th><th width="14%"><b>Phone</b></th><th width="12%"><b>Gross pay</b></th><th width="12%"><b>Disbursed</b></th><th width="12%"><b>Interest</b></th><th width="12%"><b>Collected</b></th><th width="12%"><b>Loan book</b></th></tr></thead><tbody>' . ($comparisonRows ?: '<tr><td colspan="8">No performance records available.</td></tr>') . '</tbody></table>', true, false, true, false, 'L');
     $pdf->Ln(3);
     $pdf->SetFont('helvetica', '', 8.7);
     $pdf->MultiCell(0, 5, 'This comparison places payroll cost beside key role outputs for the corresponding performance period. Management should consider role, portfolio quality, customer service, documentation, arrears, and operational responsibilities before drawing conclusions from financial measures alone.', 0, 'L');
+    $ensureSectionSpace(48, 'STAFF PAYROLL AND PERFORMANCE COMPARISON');
     $section('5. PERFORMANCE REVIEW NOTES');
     $pdf->writeHTML('<table border="1" cellpadding="4"><tr><td width="35%"><b>Review question</b></td><td width="65%"><b>Management discussion</b></td></tr><tr><td>Payroll cost versus output</td><td>Is compensation supported by appropriate disbursement, interest, collections, service, and control performance?</td></tr><tr><td>Underperformance</td><td>Which staff require coaching, a performance plan, workload support, or documented corrective action?</td></tr><tr><td>Data quality</td><td>Are staff assignments, payroll records, advances, collections, and loan performance records complete and current?</td></tr></table>', true, false, true, false, 'L');
-    $footer(2);
-
     $pdf->AddPage();
     $header('ADVANCES ALLOCATED AND MANAGEMENT REVIEW');
     $section('6. ADVANCES ALLOCATED TO STAFF');
@@ -228,7 +241,8 @@ function buildStructuredPayrollSummaryPdf(array $records, $period, $payDate, $an
             $advanceRows .= '<tr><td>' . $safe($advance['loan_officer_name']) . '</td><td align="right">' . $money($advance['amount']) . '</td><td align="right">' . $money($advance['balance']) . '</td><td align="right">' . $money($advance['monthly_deduction']) . '</td></tr>';
         }
     }
-    $pdf->writeHTML('<table border="1" cellpadding="4"><tr bgcolor="#e8edff"><th width="40%"><b>Staff member</b></th><th width="20%"><b>Allocated</b></th><th width="20%"><b>Balance</b></th><th width="20%"><b>Monthly deduction</b></th></tr>' . ($advanceRows ?: '<tr><td colspan="4">No staff advances recorded.</td></tr>') . '<tr bgcolor="#f1f5f9"><td><b>TOTAL</b></td><td align="right"><b>' . $money($advanceTotals['amount']) . '</b></td><td align="right"><b>' . $money($advanceTotals['balance']) . '</b></td><td align="right"><b>' . $money($advanceTotals['deduction']) . '</b></td></tr></table>', true, false, true, false, 'L');
+    $pdf->writeHTML('<table border="1" cellpadding="4"><thead><tr bgcolor="#e8edff"><th width="40%"><b>Staff member</b></th><th width="20%"><b>Allocated</b></th><th width="20%"><b>Balance</b></th><th width="20%"><b>Monthly deduction</b></th></tr></thead><tbody>' . ($advanceRows ?: '<tr><td colspan="4">No staff advances recorded.</td></tr>') . '<tr bgcolor="#f1f5f9"><td><b>TOTAL</b></td><td align="right"><b>' . $money($advanceTotals['amount']) . '</b></td><td align="right"><b>' . $money($advanceTotals['balance']) . '</b></td><td align="right"><b>' . $money($advanceTotals['deduction']) . '</b></td></tr></tbody></table>', true, false, true, false, 'L');
+    $ensureSectionSpace(30, 'ADVANCES ALLOCATED AND MANAGEMENT REVIEW');
     $section('7. MANAGEMENT ACTIONS');
     $pdf->writeHTML('<table border="1" cellpadding="4"><tr><td width="8%">1</td><td width="92%">Review staff whose advances, deductions, payroll cost, and performance require a documented management discussion.</td></tr><tr><td>2</td><td>Confirm advance balances and deductions are reflected accurately in payroll and staff statements.</td></tr><tr><td>3</td><td>Use the payroll-performance comparison as a review aid, not as the sole basis for disciplinary or remuneration decisions.</td></tr></table>', true, false, true, false, 'L');
     $pdf->Ln(8);
@@ -244,7 +258,6 @@ function buildStructuredPayrollSummaryPdf(array $records, $period, $payDate, $an
     $pdf->Ln(8);
     $pdf->Cell(90, 6, 'Manager signature: _____________________', 0, 0, 'L');
     $pdf->Cell(0, 6, 'Next review: ____/____/________', 0, 1, 'L');
-    $footer(3);
     return $pdf->Output('', 'S');
 }
 

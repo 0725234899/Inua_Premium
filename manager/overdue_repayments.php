@@ -274,64 +274,127 @@ function generate_arrears_pdf($rows, $total_overdue, $total_overdue_count, $loan
     $pdf->SetCreator('Inua Premium Services');
     $pdf->SetAuthor('Inua Premium Services');
     $pdf->SetTitle('Arrears List Report');
-    $pdf->SetMargins(10, 15, 10);
-    $pdf->SetAutoPageBreak(true, 15);
+    $pdf->setPrintHeader(false);
+    $pdf->setPrintFooter(false);
+    $leftMargin = 12;
+    $rightMargin = 12;
+    $pdf->SetMargins($leftMargin, 15, $rightMargin);
+    $pdf->SetAutoPageBreak(true, 20);
     $pdf->AddPage();
 
-    $pdf->SetTextColor(56, 152, 219);
-    $pdf->SetFont('helvetica', 'B', 16);
-    $pdf->SetY(10);
-    $pdf->Cell(0, 8, 'Inua Premium Services', 0, 1, 'C');
-    $pdf->SetFont('helvetica', 'B', 14);
-    $pdf->Cell(0, 8, 'Arrears List', 0, 1, 'C');
-    $pdf->SetTextColor(33, 37, 41);
-    $pdf->SetFont('helvetica', '', 10);
-    $pdf->Cell(0, 6, 'Loan Officer: ' . $loan_officer_label, 0, 1, 'C');
-    $pdf->Cell(0, 6, 'Day Filter: ' . $day_label, 0, 1, 'C');
-    $pdf->Ln(3);
+    $contentWidth = $pdf->getPageWidth() - ($leftMargin + $rightMargin);
+    $logoPath = __DIR__ . '/../assets/img/logo.png';
+    if (file_exists($logoPath)) {
+        $pdf->Image($logoPath, $leftMargin, 10, 22, 0, 'PNG', '', 'T', false, 300, '', false, false, 0, false, false, false);
+    }
+
+    $pdf->SetTextColor(15, 76, 129);
+    $pdf->SetFont('helvetica', 'B', 18);
+    $pdf->SetXY($leftMargin + 28, 10);
+    $pdf->Cell(0, 8, 'Inua Premium Services', 0, 1, 'L');
+    $pdf->SetFont('helvetica', 'I', 9);
+    $pdf->SetXY($leftMargin + 28, 18);
+    $pdf->Cell(0, 6, 'Arrears List Report', 0, 1, 'L');
 
     $pdf->SetTextColor(33, 37, 41);
-    $pdf->SetFont('helvetica', 'B', 10);
-    $pdf->SetX(110);
-    $pdf->Cell(80, 6, 'Total Arrears: KSH ' . number_format($total_overdue, 2), 0, 1, 'R');
-    $pdf->SetX(110);
-    $pdf->Cell(80, 6, 'Total Clients in Arrears: ' . $total_overdue_count, 0, 1, 'R');
-    $pdf->Ln(2);
+    $pdf->SetFont('helvetica', '', 9);
+    $pdf->SetXY($leftMargin, 30);
+    $pdf->Cell(0, 5, 'Loan Officer: ' . $loan_officer_label, 0, 1, 'L');
+    $pdf->SetXY($leftMargin, 35);
+    $pdf->Cell(0, 5, 'Day Filter: ' . $day_label, 0, 1, 'L');
+    $pdf->SetDrawColor(15, 76, 129);
+    $pdf->SetLineWidth(0.35);
+    $pdf->Line($leftMargin, 42, $leftMargin + $contentWidth, 42);
 
+    $totalOutstanding = array_sum(array_map('floatval', array_column($rows, 'outstanding_loan_balance')));
+    $days = array_map('intval', array_column($rows, 'days_in_arrears'));
+    $maximumDays = $days ? max($days) : 0;
+    $averageDays = $days ? array_sum($days) / count($days) : 0;
+    $metricWidth = ($contentWidth - 20) / 3;
+    $metricLabels = [
+        ['Total Arrears', 'KSH ' . number_format((float) $total_overdue, 2)],
+        ['Clients in Arrears', (string) (int) $total_overdue_count],
+        ['Outstanding Loan Balance', 'KSH ' . number_format($totalOutstanding, 2)],
+        ['Longest Arrears', $maximumDays . ' days'],
+        ['Average Arrears', number_format($averageDays, 1) . ' days'],
+        ['Report Date', date('d/m/Y')],
+    ];
+    $pdf->SetFillColor(239, 246, 255);
+    $pdf->SetTextColor(15, 76, 129);
+    $pdf->SetFont('helvetica', 'B', 8);
+    $startY = 48;
+    foreach ($metricLabels as $index => $metric) {
+        $col = $index % 3;
+        $rowIndex = intdiv($index, 3);
+        $x = $leftMargin + ($col * ($metricWidth + 10));
+        $y = $startY + ($rowIndex * 16);
+        $pdf->SetXY($x, $y);
+        $pdf->MultiCell($metricWidth, 6, $metric[0] . "\n" . $metric[1], 1, 'C', true, 0);
+    }
+
+    $pdf->SetY($startY + 34);
+    $columnRatios = [0.25, 0.09, 0.07, 0.12, 0.12, 0.35];
+    $colWidths = [];
+    $assignedWidth = 0;
+    foreach ($columnRatios as $index => $ratio) {
+        $colWidths[$index] = $index === count($columnRatios) - 1
+            ? $contentWidth - $assignedWidth
+            : round($contentWidth * $ratio, 2);
+        $assignedWidth += $colWidths[$index];
+    }
+    $headers = ['Borrower', 'Phone', 'Days', 'Outstanding Balance', 'Arrears', 'Client Comments'];
+    $tableHeaderHeight = 8;
+    $printTableHeader = function () use ($pdf, $headers, $colWidths, $leftMargin, $tableHeaderHeight) {
+        $pdf->SetFillColor(56, 152, 219);
+        $pdf->SetTextColor(255, 255, 255);
+        $pdf->SetFont('helvetica', 'B', 9);
+        $pdf->SetX($leftMargin);
+        foreach ($headers as $index => $header) {
+            $pdf->Cell($colWidths[$index], $tableHeaderHeight, $header, 1, 0, 'C', true);
+        }
+        $pdf->Ln();
+        $pdf->SetTextColor(33, 37, 41);
+        $pdf->SetFont('helvetica', '', 8.5);
+    };
+    $printTableHeader();
+    $pageBreakTrigger = $pdf->getPageHeight() - $pdf->getBreakMargin();
     $pdf->SetFillColor(56, 152, 219);
-    $pdf->SetTextColor(255, 255, 255);
-    $pdf->SetFont('helvetica', 'B', 10);
-    $pdf->Cell(58, 8, 'Borrower', 1, 0, 'L', true);
-    $pdf->Cell(20, 8, 'Phone', 1, 0, 'L', true);
-    $pdf->Cell(15, 8, 'Days', 1, 0, 'L', true);
-    $pdf->Cell(22, 8, 'OLB', 1, 0, 'R', true);
-    $pdf->Cell(22, 8, 'Arrears', 1, 0, 'R', true);
-    $pdf->Cell(95, 8, 'Client Comments', 1, 1, 'C', true);
-
-    $pdf->SetFillColor(255, 255, 255);
-    $pdf->SetTextColor(33, 37, 41);
-    $pdf->SetFont('helvetica', '', 8.5);
     if (!empty($rows)) {
         foreach ($rows as $row) {
             $borrower_name = trim((string) ($row['borrower_name'] ?? '')) ?: 'N/A';
             $phone_number = trim((string) ($row['phone_number'] ?? '')) ?: 'N/A';
-            $comment_text = ' ';
+            $cellValues = [
+                $borrower_name,
+                $phone_number,
+                (int) ($row['days_in_arrears'] ?? 0) . 'd',
+                'KSH ' . number_format((float) ($row['outstanding_loan_balance'] ?? 0), 2),
+                'KSH ' . number_format((float) ($row['total_overdue'] ?? 0), 2),
+                '',
+            ];
+            $maxLines = 1;
+            foreach ($cellValues as $index => $value) {
+                $maxLines = max($maxLines, $pdf->getNumLines($value, $colWidths[$index]));
+            }
+            $rowHeight = max(7, $maxLines * 4);
+            if ($pdf->GetY() + $rowHeight > $pageBreakTrigger) {
+                $pdf->AddPage();
+                $printTableHeader();
+            }
 
-            $pdf->Cell(58, 7, $borrower_name, 1, 0, 'L');
-            $pdf->Cell(20, 7, $phone_number, 1, 0, 'L');
-            $pdf->Cell(15, 7, (int) $row['days_in_arrears'] . 'd', 1, 0, 'L');
-            $pdf->Cell(22, 7, 'KSH ' . number_format((float) $row['outstanding_loan_balance'], 2), 1, 0, 'R');
-            $pdf->Cell(22, 7, 'KSH ' . number_format((float) $row['total_overdue'], 2), 1, 0, 'R');
-            $pdf->Cell(95, 7, $comment_text, 1, 1, 'L');
+            $pdf->SetX($leftMargin);
+            foreach ($cellValues as $index => $value) {
+                $alignment = in_array($index, [2, 3, 4], true) ? 'R' : 'L';
+                $pdf->MultiCell($colWidths[$index], $rowHeight, $value, 1, $alignment, false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
+            }
+            $pdf->Ln();
         }
     } else {
-        $pdf->Cell(0, 8, 'No arrears found.', 1, 1, 'C');
+        $pdf->SetX($leftMargin);
+        $pdf->Cell($contentWidth, 8, 'No arrears found.', 1, 1, 'C');
     }
 
     $pdf->Ln(4);
-    $pdf->SetFillColor(248, 249, 250);
-    $pdf->SetDrawColor(56, 152, 219);
-    $pdf->SetTextColor(56, 152, 219);
+    $pdf->SetTextColor(15, 76, 129);
     $pdf->SetFont('helvetica', 'I', 8);
     $pdf->Cell(0, 6, 'Powered by AntonTech', 0, 1, 'C');
 
@@ -542,6 +605,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
     }
 }
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_bulk_email'])) {
+    $sender_email = function_exists('getConfiguredSenderEmail') ? getConfiguredSenderEmail() : '';
+    $officersResult = $conn->query("SELECT id, email, name AS full_name FROM users WHERE role_id = '2' AND email IS NOT NULL AND TRIM(email) <> '' ORDER BY name ASC");
+    $recipients = [];
+    if ($officersResult) {
+        while ($officer = $officersResult->fetch_assoc()) {
+            $email = trim((string) ($officer['email'] ?? ''));
+            if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $recipients[(int) $officer['id']] = [
+                    'id' => (int) $officer['id'],
+                    'email' => $email,
+                    'name' => trim((string) ($officer['full_name'] ?? '')),
+                ];
+            }
+        }
+    }
+
+    if ($sender_email === '') {
+        $email_status = 'warning';
+        $email_message = 'Please configure the sender email and app password in the email settings page before sending reports.';
+    } elseif (empty($recipients)) {
+        $email_status = 'warning';
+        $email_message = 'No loan officers with valid email addresses were found.';
+    } else {
+        $sent_count = 0;
+        $failed_count = 0;
+        foreach ($recipients as $recipient) {
+            try {
+                $officerReport = fetch_arrears_report_data($conn, $recipient['email'], 'all');
+                $officerArrears = $officerReport['rows'] ?? [];
+                $officerTotal = (float) ($officerReport['total_overdue'] ?? 0);
+                $officerCount = (int) ($officerReport['total_overdue_count'] ?? 0);
+                $officerName = $recipient['name'] !== '' ? $recipient['name'] : 'Loan Officer';
+                $officerLabel = 'Loan officer: ' . htmlspecialchars($officerName, ENT_QUOTES, 'UTF-8');
+                $dayLabel = 'All days';
+                $pdfContent = generate_arrears_pdf($officerArrears, $officerTotal, $officerCount, $officerName, $dayLabel);
+                $subject = 'Arrears Report - ' . $officerName;
+                $body = '<p>Dear ' . htmlspecialchars($officerName, ENT_QUOTES, 'UTF-8') . ',</p><p>Please find the attached arrears report for your assigned portfolio.</p><p><strong>Total Arrears:</strong> KSH ' . number_format($officerTotal, 2) . '<br><strong>Clients in Arrears:</strong> ' . $officerCount . '</p><p>This report was generated automatically by Inua Premium Services.</p>';
+                $filename = 'arrears_report_officer_' . $recipient['id'] . '_' . date('Ymd_His') . '.pdf';
+                send_arrears_pdf_email($recipient['email'], $subject, $body, $pdfContent, $filename);
+                $sent_count++;
+            } catch (Throwable $e) {
+                $failed_count++;
+                error_log('Bulk arrears email failed for ' . $recipient['email'] . ': ' . $e->getMessage());
+            }
+        }
+
+        if ($sent_count > 0) {
+            $email_status = $failed_count > 0 ? 'warning' : 'success';
+            $email_message = 'Personalized arrears reports sent to ' . $sent_count . ' of ' . count($recipients) . ' loan officers.';
+        } else {
+            $email_status = 'danger';
+            $email_message = 'Unable to send the arrears reports. Please review the SMTP configuration.';
+        }
+    }
+}
+
 if ((PHP_SAPI === 'cli' && isset($argv[1]) && $argv[1] === 'auto') || (isset($_GET['mode']) && $_GET['mode'] === 'auto')) {
     $officer_sql = "SELECT email, name AS full_name FROM users WHERE role_id = '2' ORDER BY name";
     $stmt_officers_auto = $conn->prepare($officer_sql);
@@ -624,8 +744,6 @@ if ((PHP_SAPI === 'cli' && isset($argv[1]) && $argv[1] === 'auto') || (isset($_G
         @media (max-width: 768px) { .main { margin-left: 0; padding: 20px 12px 40px; } .report-shell { padding: 16px 12px; } .report-header { align-items: flex-start; flex-direction: column; gap: 14px; margin: -16px -12px 16px; padding: 20px; } }
         @media (max-width: 520px) { .site-letterhead { padding: 0 12px; } .site-letterhead-brand { font-size: 18px; } .site-letterhead-brand img { height: 32px; } .site-letterhead-logout { font-size: 15px; } }
     </style>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
 </head>
 <body>
     <header class="site-letterhead">
@@ -647,7 +765,10 @@ if ((PHP_SAPI === 'cli' && isset($argv[1]) && $argv[1] === 'auto') || (isset($_G
                 <input type="hidden" name="day" value="<?= htmlspecialchars($selected_day); ?>">
                 <button type="submit" class="btn btn-outline-danger">Send Email</button>
             </form>
-            <button id="downloadArrearsList" class="btn btn-danger">Download Arrears List</button>
+            <form method="post" class="d-inline-block">
+                <input type="hidden" name="send_bulk_email" value="1">
+                <button type="submit" class="btn btn-danger">Send Bulk Mail</button>
+            </form>
         </div>
     </div>
         <?php if (!empty($email_message)): ?>
@@ -770,93 +891,6 @@ if ((PHP_SAPI === 'cli' && isset($argv[1]) && $argv[1] === 'auto') || (isset($_G
                     const match = Array.from(cells).some(cell => normalizeSearchText(cell.textContent).includes(filter));
                     row.style.display = match ? '' : 'none';
                 });
-            });
-        });
-    </script>
-    <script>
-        document.addEventListener('DOMContentLoaded', function () {
-            function downloadTableAsPDF(tableId, title) {
-                const { jsPDF } = window.jspdf;
-                const doc = new jsPDF();
-
-                // Add logo
-                const logoPath = "/Inua_Premium_services/assets/img/logo.png";
-                const img = new Image();
-                img.src = logoPath;
-
-                img.onload = function () {
-                    const pageWidth = doc.internal.pageSize.getWidth();
-                    const logoWidth = 40;
-                    const logoHeight = 25;
-                    const logoX = (pageWidth - logoWidth) / 2; // Center the logo
-                    const logoY = 10;
-
-                    doc.addImage(img, 'PNG', logoX, logoY, logoWidth, logoHeight);
-
-                    // Add loan officer's email if selected
-                    const loanOfficerEmail = "<?= ($selected_officer !== 'all') ? htmlspecialchars($selected_officer) : 'All Loan Officers'; ?>";
-                    doc.setFontSize(12);
-                    doc.setFont('helvetica', 'normal');
-                    doc.text(`Loan Officer: ${loanOfficerEmail}`, pageWidth / 2, logoY + logoHeight + 5, { align: 'center' });
-
-                    // Add title
-                    const documentTitle = `Arrears List - ${loanOfficerEmail}`;
-                    doc.setFontSize(18);
-                    doc.setFont('helvetica', 'bold');
-                    doc.text(documentTitle, pageWidth / 2, logoY + logoHeight + 15, { align: 'center' });
-
-                    // Add underline
-                    doc.setDrawColor(0); // Black color
-                    doc.setLineWidth(0.5);
-                    doc.line(10, logoY + logoHeight + 17, pageWidth - 10, logoY + logoHeight + 17);
-
-                    // Add total overdue summary
-                    const summaryY = logoY + logoHeight + 25;
-                    doc.setFontSize(12);
-                    doc.text(`Total Arrears: KSH <?= number_format($total_overdue, 2); ?>`, 10, summaryY);
-                    doc.text(`Total Clients in Arrears: <?= $total_overdue_count; ?>`, 10, summaryY + 7);
-
-                    // Extract table data
-                    const table = document.getElementById(tableId);
-                    const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
-                    const rows = Array.from(table.querySelectorAll('tbody tr')).map(row =>
-                        Array.from(row.querySelectorAll('td')).map((td, index) => {
-                            const headerText = headers[index]?.toLowerCase() || '';
-                            return headerText.includes('amount') || headerText.includes('balance')
-                                ? { content: td.textContent.trim(), styles: { halign: 'right' } }
-                                : td.textContent.trim();
-                        })
-                    );
-
-                    // Add table to PDF
-                    doc.autoTable({
-                        head: [headers],
-                        body: rows,
-                        startY: summaryY + 15, // Start below the summary
-                        margin: { left: 10, right: 10 },
-                        headStyles: { fillColor: [232, 69, 69], textColor: [255, 255, 255] },
-                        bodyStyles: { fontSize: 10 },
-                        styles: { overflow: 'linebreak' },
-                    });
-
-                    // Add footer
-                    const footerY = doc.internal.pageSize.getHeight() - 10;
-                    doc.setFontSize(10);
-                    doc.setFont('helvetica', 'italic');
-                    doc.setTextColor(135, 206, 235); // Sky blue color
-                    doc.text('Powered by AntonTech', pageWidth / 2, footerY, { align: 'center' });
-
-                    // Save the PDF
-                    doc.save(`${documentTitle.replace(/\s+/g, '_')}.pdf`);
-                };
-
-                img.onerror = function () {
-                    alert("Failed to load the logo. Please check the logo path.");
-                };
-            }
-
-            document.getElementById('downloadArrearsList').addEventListener('click', function () {
-                downloadTableAsPDF('arrearsListTable', 'Arrears List');
             });
         });
     </script>

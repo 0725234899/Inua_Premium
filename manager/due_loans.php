@@ -289,6 +289,14 @@ $result_officers->data_seek(0);
 
 // Get selected loan officer (if any)
 $selected_officer = isset($_GET['officer_id']) ? $_GET['officer_id'] : 'all';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_bulk_email'])) {
+    $selected_day = 'all';
+    $selected_area = 'all';
+    $selected_officer = 'all';
+    $day_filter = '';
+    $area_filter = '';
+    $officer_filter = '';
+}
 $officer_filter = ($selected_officer !== 'all') ? "AND borrowers.loan_officer = (SELECT email FROM users WHERE id = ?)" : "";
 $portfolio_metrics = [
     'total_loan_book' => 0.0,
@@ -322,6 +330,7 @@ FROM (
       AND b.loan_officer = (SELECT email FROM users WHERE id = ?)
     GROUP BY la.borrower
 ) portfolio";
+$officer_portfolio_metrics_sql = $portfolio_metrics_sql;
 
 if ($selected_officer === 'all') {
     $portfolio_metrics_sql = "SELECT
@@ -391,6 +400,8 @@ $cleared_loan_filter = "AND NOT EXISTS (
 $sql_due_loans = "SELECT 
                     borrowers.full_name AS borrower_name, 
                     borrowers.mobile AS phone_number, 
+                    users.id AS loan_officer_id,
+                    users.email AS loan_officer_email,
                     loan_applications.id AS loan_id, 
                     loan_applications.total_amount AS total_disbursed, 
                     (SELECT SUM(r2.paid) FROM repayments r2 WHERE r2.loan_id = loan_applications.id) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0) AS total_paid,
@@ -471,6 +482,8 @@ while ($row = $result_due_loans->fetch_assoc()) {
                 $loan_groups[$loan_id] = [
                     'borrower_name' => $row['borrower_name'],
                     'phone_number' => $row['phone_number'],
+                    'loan_officer_id' => (int) $row['loan_officer_id'],
+                    'loan_officer_email' => $row['loan_officer_email'],
                     'loan_id' => $loan_id,
                     'total_disbursed' => (float) $row['total_disbursed'],
                     'total_paid' => (float) $row['total_paid'],
@@ -492,6 +505,8 @@ while ($row = $result_due_loans->fetch_assoc()) {
             $individual_due_loans[] = [
                 'borrower_name' => $row['borrower_name'],
                 'phone_number' => $row['phone_number'],
+                'loan_officer_id' => (int) $row['loan_officer_id'],
+                'loan_officer_email' => $row['loan_officer_email'],
                 'loan_id' => $loan_id,
                 'total_disbursed' => (float) $row['total_disbursed'],
                 'total_paid' => (float) $row['total_paid'],
@@ -512,12 +527,34 @@ usort($processed_due_loans, function ($a, $b) {
 
 $email_message = '';
 $email_status = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['send_email']) || isset($_POST['send_bulk_email']))) {
+    $send_bulk = isset($_POST['send_bulk_email']);
     $sender_email = getConfiguredSenderEmail();
-    $recipient_email = ($selected_officer !== 'all' && isset($officer_email_map[$selected_officer]) && !empty($officer_email_map[$selected_officer]))
-        ? $officer_email_map[$selected_officer]
-        : $sender_email;
-    $officer_display_name = ($selected_officer !== 'all' && isset($officer_name_map[$selected_officer]))
+    $recipients = [];
+    if ($send_bulk) {
+        $allOfficers = $conn->query("SELECT id, name AS full_name, email FROM users WHERE role_id = '2' AND email IS NOT NULL AND TRIM(email) <> '' ORDER BY name ASC");
+        if ($allOfficers) {
+            while ($officer = $allOfficers->fetch_assoc()) {
+                $email = trim((string) ($officer['email'] ?? ''));
+                if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    $recipients[(int) $officer['id']] = [
+                        'id' => (int) $officer['id'],
+                        'email' => $email,
+                        'name' => trim((string) ($officer['full_name'] ?? ''))
+                    ];
+                }
+            }
+        }
+    } else {
+        $recipient_email = ($selected_officer !== 'all' && isset($officer_email_map[$selected_officer]) && !empty($officer_email_map[$selected_officer]))
+            ? $officer_email_map[$selected_officer]
+            : $sender_email;
+        if (filter_var($recipient_email, FILTER_VALIDATE_EMAIL)) {
+            $recipients[strtolower($recipient_email)] = ['email' => $recipient_email, 'name' => ''];
+        }
+    }
+
+    $officer_display_name = !$send_bulk && $selected_officer !== 'all' && isset($officer_name_map[$selected_officer])
         ? $officer_name_map[$selected_officer]
         : 'All Loan Officers';
     $day_label = ($selected_day !== 'all') ? htmlspecialchars($selected_day) : 'All days';
@@ -525,16 +562,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
     $greetName = ($selected_officer !== 'all' && isset($officer_name_map[$selected_officer])) ? $officer_name_map[$selected_officer] : 'Team';
     $body = '<p>Dear ' . htmlspecialchars($greetName) . ',</p><p>Please find the attached due loans report for <strong>' . htmlspecialchars($officer_display_name) . '</strong> and <strong>' . htmlspecialchars($day_label) . '</strong>.</p><p>This report was generated automatically by Inua Premium Services.</p>';
 
-    try {
-        $pdf_content = generate_due_loans_pdf($processed_due_loans, $officer_display_name, $day_label, $portfolio_metrics);
-        $filename = 'due_loans_report_' . date('Ymd_His') . '.pdf';
-        send_pdf_email($recipient_email, $subject, $body, $pdf_content, $filename);
-        $email_status = 'success';
-        $email_message = 'Due loans PDF sent successfully to ' . $recipient_email . '.';
-    } catch (Exception $e) {
-        error_log('Due loans email send failed: ' . $e->getMessage());
-        $email_status = 'danger';
-        $email_message = 'Unable to send the due loans PDF email. Please review the SMTP configuration.';
+    if ($sender_email === '') {
+        $email_status = 'warning';
+        $email_message = 'Please configure the sender email and app password before sending reports.';
+    } elseif (empty($recipients)) {
+        $email_status = 'warning';
+        $email_message = $send_bulk ? 'No loan officers with valid email addresses were found.' : 'No valid recipient email address was found.';
+    } else {
+        $sent_count = 0;
+        $failed_count = 0;
+        if ($send_bulk) {
+            foreach ($recipients as $recipient) {
+                try {
+                    $recipientRows = array_values(array_filter($processed_due_loans, function ($row) use ($recipient) {
+                        return (int) ($row['loan_officer_id'] ?? 0) === (int) $recipient['id'];
+                    }));
+
+                    $recipientMetrics = [
+                        'total_loan_book' => 0.0,
+                        'total_performing_book' => 0.0,
+                        'total_arrears' => 0.0,
+                        'total_active_customers' => 0,
+                        'total_customers_in_arrears' => 0,
+                        'total_par_percentage' => 0.0,
+                        'customer_arrears_percentage' => 0.0,
+                    ];
+                    $metricsStmt = $conn->prepare($officer_portfolio_metrics_sql);
+                    if (!$metricsStmt) {
+                        throw new Exception('Unable to prepare officer portfolio metrics.');
+                    }
+                    $officerId = (int) $recipient['id'];
+                    $metricsStmt->bind_param('i', $officerId);
+                    $metricsStmt->execute();
+                    $metricsRow = $metricsStmt->get_result()->fetch_assoc() ?: [];
+                    $metricsStmt->close();
+                    $recipientMetrics['total_loan_book'] = (float) ($metricsRow['total_loan_book'] ?? 0);
+                    $recipientMetrics['total_arrears'] = (float) ($metricsRow['total_arrears'] ?? 0);
+                    $recipientMetrics['total_active_customers'] = (int) ($metricsRow['total_active_customers'] ?? 0);
+                    $recipientMetrics['total_customers_in_arrears'] = (int) ($metricsRow['total_customers_in_arrears'] ?? 0);
+                    $recipientMetrics['total_performing_book'] = max(0, $recipientMetrics['total_loan_book'] - $recipientMetrics['total_arrears']);
+                    $recipientMetrics['total_par_percentage'] = $recipientMetrics['total_loan_book'] > 0
+                        ? ($recipientMetrics['total_arrears'] / $recipientMetrics['total_loan_book']) * 100
+                        : 0;
+                    $recipientMetrics['customer_arrears_percentage'] = $recipientMetrics['total_active_customers'] > 0
+                        ? ($recipientMetrics['total_customers_in_arrears'] / $recipientMetrics['total_active_customers']) * 100
+                        : 0;
+
+                    $recipientName = $recipient['name'] !== '' ? $recipient['name'] : 'Loan Officer';
+                    $recipientDayLabel = 'All days';
+                    $recipientBody = '<p>Dear ' . htmlspecialchars($recipientName) . ',</p><p>Please find the attached due loans report for your assigned portfolio.</p><p>This report was generated automatically by Inua Premium Services.</p>';
+                    $pdfContent = generate_due_loans_pdf($recipientRows, $recipientName, $recipientDayLabel, $recipientMetrics);
+                    $filename = 'due_loans_report_officer_' . (int) $recipient['id'] . '_' . date('Ymd_His') . '.pdf';
+                    send_pdf_email($recipient['email'], 'Due Loans Report - ' . $recipientName, $recipientBody, $pdfContent, $filename);
+                    $sent_count++;
+                } catch (Throwable $e) {
+                    $failed_count++;
+                    error_log('Due loans bulk email failed for ' . $recipient['email'] . ': ' . $e->getMessage());
+                }
+            }
+        } else {
+            try {
+                $pdf_content = generate_due_loans_pdf($processed_due_loans, $officer_display_name, $day_label, $portfolio_metrics);
+                $filename = 'due_loans_report_' . date('Ymd_His') . '.pdf';
+                send_pdf_email($recipients[array_key_first($recipients)]['email'], $subject, $body, $pdf_content, $filename);
+                $sent_count = 1;
+            } catch (Throwable $e) {
+                $failed_count = 1;
+                error_log('Due loans email send failed: ' . $e->getMessage());
+            }
+        }
+
+        if ($sent_count > 0) {
+            $email_status = $failed_count > 0 ? 'warning' : 'success';
+            $email_message = $send_bulk
+                ? 'Personalized due loans reports sent to ' . $sent_count . ' of ' . count($recipients) . ' loan officers.'
+                : 'Due loans PDF sent successfully to ' . $recipients[array_key_first($recipients)]['email'] . '.';
+        } else {
+            $email_status = 'danger';
+            $email_message = 'Unable to send the due loans PDF. Please review the SMTP configuration.';
+        }
     }
 }
 ?>
@@ -551,8 +657,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
     <link href="assets/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
     <link href="assets/css/style.css" rel="stylesheet">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
     <style>
         :root { --ink: #172331; --muted: #687582; --line: #dbe3e8; --paper: #ffffff; --canvas: #f2f5f6; --teal: #147d78; --gold: #c7973e; }
         body { background: var(--canvas); color: var(--ink); font-family: "Trebuchet MS", Arial, sans-serif; }
@@ -619,9 +723,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
                     <i class="bi bi-envelope"></i> Send Email
                 </button>
             </form>
-            <button id="downloadDueLoansPdf" class="btn btn-success">
-                <i class="bi bi-download"></i> Download PDF
-            </button>
+            <form method="post" class="d-inline-block">
+                <input type="hidden" name="send_bulk_email" value="1">
+                <button type="submit" class="btn btn-success">
+                    <i class="bi bi-envelope-at"></i> Send Bulk Mail
+                </button>
+            </form>
             <input type="text" id="searchInput" placeholder="Search by borrower or phone..." class="form-control" style="width: 300px;">
         </div>
     </div>
@@ -755,61 +862,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_email'])) {
             });
         }
 
-        const downloadButton = document.getElementById('downloadDueLoansPdf');
-        if (downloadButton) {
-            downloadButton.addEventListener('click', function () {
-                const { jsPDF } = window.jspdf;
-                const doc = new jsPDF('landscape');
-                const logoPath = '../assets/img/logo.png';
-                const img = new Image();
-
-                function renderPdf(includeLogo) {
-                    const pageWidth = doc.internal.pageSize.getWidth();
-                    const logoWidth = 28;
-                    const logoHeight = 18;
-                    const logoX = 14;
-                    const logoY = 10;
-
-                    if (includeLogo) {
-                        doc.addImage(img, 'PNG', logoX, logoY, logoWidth, logoHeight);
-                    }
-
-                    doc.setFontSize(16);
-                    doc.setFont('helvetica', 'bold');
-                    doc.text('Due Loans Report', pageWidth / 2, 18, { align: 'center' });
-                    doc.setFontSize(10);
-                    doc.setFont('helvetica', 'normal');
-                    doc.text('Generated on ' + new Date().toLocaleDateString(), pageWidth - 14, 18, { align: 'right' });
-
-                    const table = document.querySelector('.table');
-                    const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
-                    const rows = Array.from(table.querySelectorAll('tbody tr'))
-                        .filter(row => row.style.display !== 'none')
-                        .map(row => Array.from(row.querySelectorAll('td')).map(td => td.textContent.trim()));
-
-                    doc.autoTable({
-                        head: [headers],
-                        body: rows,
-                        startY: 35,
-                        styles: { fontSize: 8, cellPadding: 2 },
-                        headStyles: { fillColor: [0, 123, 255], textColor: [255, 255, 255] },
-                        alternateRowStyles: { fillColor: [248, 249, 250] }
-                    });
-
-                    doc.save('due_loans_report.pdf');
-                }
-
-                img.onload = function () {
-                    renderPdf(true);
-                };
-
-                img.onerror = function () {
-                    renderPdf(false);
-                };
-
-                img.src = logoPath;
-            });
-        }
     });
 </script>
 <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
