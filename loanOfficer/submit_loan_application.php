@@ -58,10 +58,18 @@ switch ($interest_method) {
 
 $total_amount_inclusive = $principal + $total_interest + $processing_fee + $registration_fee;
 $total_amount=$principal + $total_interest;
-// Prepare SQL to insert loan application
+// Older databases may not yet have the interest_calculation column.
+$columnStmt = $conn->query("SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'loan_applications' AND COLUMN_NAME = 'interest_calculation'");
+if ($columnStmt === false) {
+    throw new RuntimeException('Unable to check the loan_applications schema.');
+}
+$hasInterestCalculationColumn = (int) $columnStmt->fetchColumn() > 0;
+
+$interestCalculationColumn = $hasInterestCalculationColumn ? ', interest_calculation' : '';
+$interestCalculationValue = $hasInterestCalculationColumn ? ', :interest_calculation' : '';
 $sql = "INSERT INTO loan_applications 
-    (borrower, loan_product, principal, loan_release_date, interest, interest_method, interest_calculation, loan_interest, loan_duration, loan_duration_unit, repayment_cycle, number_of_repayments, processing_fee, registration_fee, loan_status, total_amount,total_amount_inclusive) 
-    VALUES (:borrower, :loan_product, :principal, :loan_release_date, :interest, :interest_method, :interest_calculation, :loan_interest, :loan_duration, :loan_duration_unit, :repayment_cycle, :number_of_repayments, :processing_fee, :registration_fee, :loan_status, :total_amount,:total_amount_inclusive)";
+    (borrower, loan_product, principal, loan_release_date, interest, interest_method{$interestCalculationColumn}, loan_interest, loan_duration, loan_duration_unit, repayment_cycle, number_of_repayments, processing_fee, registration_fee, loan_status, total_amount, total_amount_inclusive) 
+    VALUES (:borrower, :loan_product, :principal, :loan_release_date, :interest, :interest_method{$interestCalculationValue}, :loan_interest, :loan_duration, :loan_duration_unit, :repayment_cycle, :number_of_repayments, :processing_fee, :registration_fee, :loan_status, :total_amount, :total_amount_inclusive)";
 
 $stmt = $conn->prepare($sql);
 $stmt->bindValue(':borrower', $borrower, PDO::PARAM_STR);
@@ -70,9 +78,12 @@ $stmt->bindValue(':principal', $principal, PDO::PARAM_STR);
 $stmt->bindValue(':loan_release_date', $loan_release_date, PDO::PARAM_STR);
 $stmt->bindValue(':interest', $interest, PDO::PARAM_STR);
 $stmt->bindValue(':interest_method', $interest_method, PDO::PARAM_STR);
-$stmt->bindValue(':interest_calculation', $interest_calculation, PDO::PARAM_STR);
+if ($hasInterestCalculationColumn) {
+    $stmt->bindValue(':interest_calculation', $interest_calculation, PDO::PARAM_STR);
+}
 $stmt->bindValue(':loan_interest', $loan_interest_percentage, PDO::PARAM_STR);
 $stmt->bindValue(':loan_duration', $loan_duration, PDO::PARAM_INT);
+$stmt->bindValue(':loan_duration_unit', $loan_duration_unit, PDO::PARAM_STR);
 $stmt->bindValue(':repayment_cycle', $repayment_cycle, PDO::PARAM_STR);
 $stmt->bindValue(':number_of_repayments', $number_of_repayments, PDO::PARAM_INT);
 $stmt->bindValue(':processing_fee', $processing_fee, PDO::PARAM_STR);
@@ -166,37 +177,49 @@ if (!isset($principal_amount)) {
 }
 
 $principal = number_format($principal_amount, 2);
-$email=$_SESSION['email'];
-// Fetch recipient phone number
-$sqlLoanOfficer = "SELECT name FROM users WHERE email = '$email'";
-$stmtLoanOfficer = $conn->prepare($sqlLoanOfficer);
-$stmtLoanOfficer->execute();
-$resultLoanOfficer = $stmtLoanOfficer->fetch(PDO::FETCH_ASSOC);
-$name=$resultLoanOfficer['name'];
+$officerStmt = $conn->prepare('SELECT name FROM users WHERE email = :email LIMIT 1');
+$officerStmt->execute([':email' => $_SESSION['email']]);
+$officerName = (string) ($officerStmt->fetchColumn() ?: 'A loan officer');
 
-$sqlRecipient = "SELECT phone FROM users WHERE role_id = 4";
-$stmtRecipient = $conn->prepare($sqlRecipient);
-$stmtRecipient->execute();
-$resultRecipient = $stmtRecipient->fetch(PDO::FETCH_ASSOC);
+$borrowerStmt = $conn->prepare('SELECT full_name FROM borrowers WHERE id = :borrower LIMIT 1');
+$borrowerStmt->execute([':borrower' => (int) $borrower]);
+$borrowerName = (string) ($borrowerStmt->fetchColumn() ?: 'a borrower');
 
-if ($resultRecipient) {
-    $recipient = $resultRecipient['phone'];
-    // Ensure sendMessage function exists
-    if (function_exists('sendMessage')) {
-        $message = "A new loan application of $principal from loan officer by the name  $name has been submitted. Please review and approve it.";
-        echo $name;
-       // $message = "A new loan application of $principal from  has been submitted. Please review and approve it.";
-     sendMessage($recipient, $message);
-    } else {
-        die("Error: sendMessage() function is not defined.");
+$recipientStmt = $conn->query("SELECT DISTINCT phone FROM users WHERE role_id = 4 AND phone IS NOT NULL AND TRIM(phone) <> ''");
+$recipients = $recipientStmt ? array_values(array_filter(array_map('trim', $recipientStmt->fetchAll(PDO::FETCH_COLUMN)))) : [];
+
+if ($recipients && function_exists('sendMessage')) {
+    $message = "Approval requested: loan application #{$loan_id} for {$borrowerName}, KSH {$principal}, submitted by {$officerName}. Please review and approve.";
+    try {
+        sendMessage($recipients, $message);
+        $smsNotificationFailed = false;
+    } catch (Throwable $exception) {
+        error_log('Loan application SMS notification failed (' . get_class($exception) . ', code ' . $exception->getCode() . '): ' . $exception->getMessage());
+        if ($exception instanceof PDOException) {
+            $smsNotificationError = 'The SMS settings could not be read from the database. Check the database connection and try again.';
+        } elseif ($exception instanceof RuntimeException || $exception instanceof InvalidArgumentException || $exception instanceof UnexpectedValueException) {
+            $smsNotificationError = $exception->getMessage();
+        } else {
+            $smsNotificationError = 'SMS failed with ' . get_class($exception) . ' (code ' . $exception->getCode() . '). Check the server error log.';
+        }
+        $smsNotificationFailed = true;
     }
 } else {
-    die("Error: No recipient found with role_id = 4.");
+    $smsNotificationFailed = true;
+    if (!$recipients) {
+        $smsNotificationError = 'No manager account with a phone number was found. Add a phone number to a manager account (role ID 4) and try again.';
+        error_log('Loan application SMS notification failed: no manager phone found for users with role_id = 4.');
+    } else {
+        $smsNotificationError = 'The SMS sender is unavailable. Check the server configuration.';
+        error_log('Loan application SMS notification failed: sendMessage() is not defined.');
+    }
 }
 ?>
 
 <script>
-    alert("Loan application successful");
+    alert(<?php echo json_encode($smsNotificationFailed
+        ? 'Loan application submitted, but SMS could not be sent. ' . ($smsNotificationError ?? 'Check Admin > SMS Settings and the server error log.')
+        : 'Loan application successful'); ?>);
     location.replace('index.php');
 </script>
 <?php

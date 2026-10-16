@@ -260,6 +260,7 @@
                     </div>
                     
                     <div class="form-group">
+                        <small>Submitting this application sends an approval request by SMS to manager accounts with a phone number on file.</small>
                         <button type="submit" class="btn btn-primary">Submit</button>
                     </div>
                 </form>

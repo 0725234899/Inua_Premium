@@ -494,6 +494,118 @@ function getSettings() {
     return $stmt->fetch();
 }
 
+function ensureApiIntegrationSettingsTable(PDO $connection) {
+    static $initialized = false;
+    if ($initialized) {
+        return;
+    }
+
+    $connection->exec("CREATE TABLE IF NOT EXISTS api_integration_settings (
+        integration VARCHAR(32) PRIMARY KEY,
+        settings_json LONGTEXT NOT NULL,
+        updated_by VARCHAR(255) DEFAULT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    $initialized = true;
+}
+
+function getApiIntegrationSettings($integration) {
+    $integration = strtolower(trim((string) $integration));
+    if (!in_array($integration, ['sms', 'mpesa'], true)) {
+        throw new InvalidArgumentException('Unsupported API integration.');
+    }
+
+    $connection = db_connect();
+    ensureApiIntegrationSettingsTable($connection);
+    $stmt = $connection->prepare('SELECT settings_json FROM api_integration_settings WHERE integration = ? LIMIT 1');
+    $stmt->execute([$integration]);
+    $settingsJson = $stmt->fetchColumn();
+    if ($settingsJson === false) {
+        return [];
+    }
+
+    $settings = json_decode((string) $settingsJson, true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($settings)) {
+        throw new UnexpectedValueException('Stored API integration settings are invalid.');
+    }
+
+    return $settings;
+}
+
+function saveApiIntegrationSettings($integration, array $settings, $updatedBy = null) {
+    $integration = strtolower(trim((string) $integration));
+    if (!in_array($integration, ['sms', 'mpesa'], true)) {
+        throw new InvalidArgumentException('Unsupported API integration.');
+    }
+
+    $connection = db_connect();
+    ensureApiIntegrationSettingsTable($connection);
+    $stmt = $connection->prepare("
+        INSERT INTO api_integration_settings (integration, settings_json, updated_by)
+        VALUES (?, ?, ?)
+        ON DUPLICATE KEY UPDATE settings_json = VALUES(settings_json), updated_by = VALUES(updated_by)
+    ");
+    return $stmt->execute([
+        $integration,
+        json_encode($settings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+        $updatedBy
+    ]);
+}
+
+function getMpesaApiConfig() {
+    $settings = getApiIntegrationSettings('mpesa');
+    $getValue = static function ($settingKey, $environmentKey, $default = '') use ($settings) {
+        $value = trim((string) ($settings[$settingKey] ?? ''));
+        if ($value !== '') {
+            return $value;
+        }
+
+        $value = trim((string) ($_ENV[$environmentKey] ?? getenv($environmentKey) ?: ''));
+        return $value !== '' ? $value : $default;
+    };
+
+    $environment = strtolower($getValue('environment', 'MPESA_ENV', 'sandbox'));
+    if (in_array($environment, ['live', 'prod'], true)) {
+        $environment = 'production';
+    }
+    if (!in_array($environment, ['sandbox', 'production'], true)) {
+        throw new UnexpectedValueException('The configured M-Pesa environment is invalid.');
+    }
+
+    $shortcode = $getValue('shortcode', 'MPESA_SHORTCODE');
+    $c2bResponseType = $getValue('c2b_response_type', 'MPESA_C2B_RESPONSE_TYPE', 'Completed');
+    if (!in_array($c2bResponseType, ['Completed', 'Cancelled'], true)) {
+        throw new UnexpectedValueException('The configured M-Pesa C2B response type is invalid.');
+    }
+
+    $b2cCommandId = $getValue('b2c_command_id', 'MPESA_B2C_COMMAND_ID', 'SalaryPayment');
+    if (!in_array($b2cCommandId, ['SalaryPayment', 'BusinessPayment', 'PromotionPayment'], true)) {
+        throw new UnexpectedValueException('The configured M-Pesa B2C command ID is invalid.');
+    }
+
+    return [
+        'environment' => $environment,
+        'base_url' => $environment === 'production' ? 'https://api.safaricom.co.ke' : 'https://sandbox.safaricom.co.ke',
+        'consumer_key' => $getValue('consumer_key', 'MPESA_CONSUMER_KEY'),
+        'consumer_secret' => $getValue('consumer_secret', 'MPESA_CONSUMER_SECRET'),
+        'shortcode' => $shortcode,
+        'passkey' => $getValue('passkey', 'MPESA_PASSKEY'),
+        'callback_url' => $getValue('callback_url', 'MPESA_CALLBACK_URL'),
+        'account_reference' => $getValue('account_reference', 'MPESA_ACCOUNT_REFERENCE', 'Loan Repayment'),
+        'transaction_description' => $getValue('transaction_description', 'MPESA_TRANSACTION_DESCRIPTION', 'Loan repayment for account'),
+        'c2b_shortcode' => $getValue('c2b_shortcode', 'MPESA_C2B_SHORTCODE', $shortcode),
+        'c2b_validation_url' => $getValue('c2b_validation_url', 'MPESA_C2B_VALIDATION_URL'),
+        'c2b_confirmation_url' => $getValue('c2b_confirmation_url', 'MPESA_C2B_CONFIRMATION_URL'),
+        'c2b_response_type' => $c2bResponseType,
+        'b2c_shortcode' => $getValue('b2c_shortcode', 'MPESA_B2C_SHORTCODE', $shortcode),
+        'b2c_initiator_name' => $getValue('b2c_initiator_name', 'MPESA_B2C_INITIATOR_NAME'),
+        'b2c_security_credential' => $getValue('b2c_security_credential', 'MPESA_B2C_SECURITY_CREDENTIAL'),
+        'b2c_result_url' => $getValue('b2c_result_url', 'MPESA_B2C_RESULT_URL'),
+        'b2c_queue_timeout_url' => $getValue('b2c_queue_timeout_url', 'MPESA_B2C_QUEUE_TIMEOUT_URL'),
+        'b2c_command_id' => $b2cCommandId
+    ];
+}
+
 function normalizeEmailAppPassword($password) {
     return preg_replace('/\s+/', '', trim((string) $password));
 }
@@ -736,18 +848,230 @@ function sendWelcomeEmailToStaff($name, $email, $roleId) {
 function sendMessage($recipient, $message) {
     $text=$message;
     $phone=$recipient;
-    $username = 'inua'; // use 'sandbox' for development in the test environment
-    $apiKey   = 'atsk_e901eb4e7f48e5ebcc5a327516cba2e0213b991c7485d6c64d6f5a05de75a49dba270f32'; // use your sandbox app API key for development in the test environment
-    $AT = new AfricasTalking($username,$apiKey);
+    $username = trim((string) ($_ENV['AFRICASTALKING_USERNAME'] ?? getenv('AFRICASTALKING_USERNAME') ?: ''));
+    $apiKey = trim((string) ($_ENV['AFRICASTALKING_API_KEY'] ?? getenv('AFRICASTALKING_API_KEY') ?: ''));
+    $smsSettings = getApiIntegrationSettings('sms');
+    $provider = strtolower(trim((string) ($smsSettings['provider'] ?? 'africastalking')));
+    $providerConfigs = $smsSettings['providers'] ?? [];
+    if (!is_array($providerConfigs)) {
+        throw new UnexpectedValueException('Stored SMS provider settings are invalid.');
+    }
+
+    if ($provider === 'celcom') {
+        $celcomSettings = $providerConfigs['celcom'] ?? [];
+        if (!is_array($celcomSettings)) {
+            throw new UnexpectedValueException('Stored Celcom Africa settings are invalid.');
+        }
+
+        $partnerId = trim((string) ($celcomSettings['partner_id'] ?? ''));
+        $celcomApiKey = trim((string) ($celcomSettings['api_key'] ?? ''));
+        $shortcode = trim((string) ($celcomSettings['shortcode'] ?? ''));
+        if ($partnerId === '' || $celcomApiKey === '' || $shortcode === '') {
+            throw new RuntimeException('Celcom Africa SMS settings are incomplete.');
+        }
+        if (!function_exists('curl_init')) {
+            throw new RuntimeException('The PHP cURL extension is required to send SMS through Celcom Africa.');
+        }
+
+        $recipients = is_array($phone) ? $phone : [$phone];
+        $mobileNumbers = array_filter(array_map(static function ($number) {
+            return trim((string) $number);
+        }, $recipients), static function ($number) {
+            return $number !== '';
+        });
+        $mobile = implode(',', $mobileNumbers);
+        if ($mobile === '' || trim((string) $text) === '') {
+            throw new InvalidArgumentException('A recipient and message are required to send SMS.');
+        }
+
+        $requestBody = json_encode([
+            'apikey' => $celcomApiKey,
+            'partnerID' => $partnerId,
+            'message' => $text,
+            'shortcode' => $shortcode,
+            'mobile' => $mobile
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $curl = curl_init('https://isms.celcomafrica.com/api/services/sendsms/');
+        if ($curl === false) {
+            throw new RuntimeException('Unable to initialize the Celcom Africa SMS request.');
+        }
+
+        $optionsSet = curl_setopt_array($curl, [
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'],
+            CURLOPT_POSTFIELDS => $requestBody,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 30
+        ]);
+        if (!$optionsSet) {
+            curl_close($curl);
+            throw new RuntimeException('Unable to configure the Celcom Africa SMS request.');
+        }
+
+        $responseBody = curl_exec($curl);
+        $httpStatus = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
+        $curlError = $responseBody === false ? curl_error($curl) : '';
+        curl_close($curl);
+
+        if ($responseBody === false) {
+            error_log('Celcom Africa SMS request failed: ' . $curlError);
+            throw new RuntimeException('Celcom Africa SMS request failed due to a network error.');
+        }
+        if ($httpStatus < 200 || $httpStatus >= 300) {
+            error_log('Celcom Africa SMS request failed with HTTP status ' . $httpStatus . '.');
+            throw new RuntimeException('Celcom Africa SMS request failed with HTTP status ' . $httpStatus . '.');
+        }
+
+        $responseData = json_decode($responseBody, true);
+        if (!is_array($responseData) || !is_array($responseData['responses'] ?? null) || $responseData['responses'] === []) {
+            error_log('Celcom Africa returned an unexpected SMS response.');
+            throw new RuntimeException('Celcom Africa returned an unexpected SMS response.');
+        }
+        foreach ($responseData['responses'] as $providerResponse) {
+            if (!is_array($providerResponse)) {
+                throw new RuntimeException('Celcom Africa returned an invalid SMS response.');
+            }
+            $responseCode = $providerResponse['response-code'] ?? $providerResponse['respose-code'] ?? null;
+            if (!is_numeric($responseCode) || (int) $responseCode !== 200) {
+                $responseCode = is_scalar($responseCode) ? (string) $responseCode : 'unknown';
+                error_log('Celcom Africa rejected an SMS request with response code ' . $responseCode . '.');
+                throw new RuntimeException('Celcom Africa rejected the SMS request (response code ' . $responseCode . ').');
+            }
+        }
+
+        return $responseData;
+    }
+
+    if ($provider !== 'africastalking') {
+        throw new InvalidArgumentException('The configured SMS provider is not supported.');
+    }
+
+    $africasTalkingSettings = $providerConfigs['africastalking'] ?? [];
+    if (!is_array($africasTalkingSettings)) {
+        throw new UnexpectedValueException('Stored Africa\'s Talking settings are invalid.');
+    }
+    $smsSettings['username'] = $africasTalkingSettings['username'] ?? $smsSettings['username'] ?? null;
+    $smsSettings['api_key'] = $africasTalkingSettings['api_key'] ?? $smsSettings['api_key'] ?? null;
+    $smsSettings['sender_id'] = $africasTalkingSettings['sender_id'] ?? $smsSettings['sender_id'] ?? null;
+    $username = trim((string) ($smsSettings['username'] ?? '')) ?: $username;
+    $apiKey = trim((string) ($smsSettings['api_key'] ?? '')) ?: $apiKey;
+    $senderId = trim((string) ($smsSettings['sender_id'] ?? ''));
+    if ($username === '' || $apiKey === '') {
+        throw new RuntimeException('Africa\'s Talking SMS credentials are not configured. Set them under Admin > SMS Settings.');
+    }
+
+    $recipients = is_array($phone) ? $phone : [$phone];
+    $recipients = array_values(array_filter(array_map(static function ($number) {
+        $number = preg_replace('/[\s().-]+/', '', trim((string) $number));
+        if (strpos($number, '00') === 0) {
+            $number = '+' . substr($number, 2);
+        } elseif (preg_match('/^0[17]\d{8}$/', $number)) {
+            $number = '+254' . substr($number, 1);
+        } elseif (preg_match('/^254[17]\d{8}$/', $number)) {
+            $number = '+' . $number;
+        } elseif (preg_match('/^[17]\d{8}$/', $number)) {
+            $number = '+254' . $number;
+        }
+        return $number;
+    }, $recipients), static function ($number) {
+        return $number !== '';
+    }));
+    if ($recipients === []) {
+        throw new InvalidArgumentException('No valid SMS recipient phone numbers were provided.');
+    }
+
+    $AT = new AfricasTalking($username, $apiKey);
     
     // Get one of the services
     $sms      = $AT->sms();
     
     // Use the service
-    $result   = $sms->send([
-        'to'      => $phone,
+    $smsPayload = [
+        'to'      => $recipients,
         'message' => $text
-    ]);
+    ];
+    if ($senderId !== '') {
+        $smsPayload['from'] = $senderId;
+    }
+
+    try {
+        $response = $sms->send($smsPayload);
+    } catch (\GuzzleHttp\Exception\RequestException $exception) {
+        $httpStatus = $exception->getResponse() ? $exception->getResponse()->getStatusCode() : null;
+        if ($httpStatus === 401) {
+            throw new RuntimeException('Africa\'s Talking rejected the SMS credentials (HTTP 401). Update the username and API key under Admin > SMS Settings.', 401, $exception);
+        }
+        if ($httpStatus !== null) {
+            throw new RuntimeException('Africa\'s Talking rejected the SMS request (HTTP ' . $httpStatus . '). Check the provider account and SMS settings.', $httpStatus, $exception);
+        }
+        throw $exception;
+    }
+
+    if (!is_array($response) || ($response['status'] ?? '') !== 'success') {
+        throw new RuntimeException('Africa\'s Talking returned an unsuccessful SMS response.');
+    }
+
+    $responseData = $response['data'] ?? null;
+    if (is_string($responseData)) {
+        $decodedResponseData = json_decode($responseData);
+        if (json_last_error() === JSON_ERROR_NONE) {
+            $responseData = $decodedResponseData;
+        }
+    }
+    $getResponseField = static function ($data, $field) {
+        if (is_object($data)) {
+            foreach (get_object_vars($data) as $key => $value) {
+                if (strcasecmp((string) $key, $field) === 0) {
+                    return $value;
+                }
+            }
+        } elseif (is_array($data)) {
+            foreach ($data as $key => $value) {
+                if (strcasecmp((string) $key, $field) === 0) {
+                    return $value;
+                }
+            }
+        }
+        return null;
+    };
+    $smsMessageData = $getResponseField($responseData, 'SMSMessageData');
+    if ($smsMessageData === null) {
+        $smsMessageData = $responseData;
+    }
+    $providerRecipients = $getResponseField($smsMessageData, 'Recipients');
+    if ($providerRecipients instanceof Traversable) {
+        $providerRecipients = iterator_to_array($providerRecipients, false);
+    } elseif (is_object($providerRecipients)) {
+        $providerRecipients = [$providerRecipients];
+    }
+
+    if (!is_array($providerRecipients) || $providerRecipients === []) {
+        $providerMessage = $getResponseField($smsMessageData, 'Message');
+        $providerMessage = is_scalar($providerMessage) ? trim((string) $providerMessage) : '';
+        if (preg_match('/Sent\s+to\s+(\d+)\s*\/\s*(\d+)/i', $providerMessage, $sentCounts) && $sentCounts[1] === $sentCounts[2] && (int) $sentCounts[2] > 0) {
+            return $response;
+        }
+        $responseKeys = is_object($responseData)
+            ? implode(',', array_keys(get_object_vars($responseData)))
+            : (is_array($responseData) ? implode(',', array_keys($responseData)) : gettype($responseData));
+        error_log('Africa\'s Talking SMS response contained no recipient results; provider message: ' . ($providerMessage !== '' ? substr($providerMessage, 0, 300) : 'none') . '; response fields: ' . $responseKeys);
+        $failureDetail = $providerMessage !== ''
+            ? ' Provider response: ' . substr($providerMessage, 0, 300)
+            : ' The provider response did not contain a result message.';
+        throw new RuntimeException('Africa\'s Talking returned no recipient delivery results.' . $failureDetail . ' Check that the manager phone number is valid and internationally formatted, and review the provider dashboard.');
+    }
+
+    foreach ($providerRecipients as $recipientResult) {
+        $deliveryStatus = strtolower(trim((string) ($getResponseField($recipientResult, 'status') ?? '')));
+        $statusCode = (int) ($getResponseField($recipientResult, 'statusCode') ?? 0);
+        if ($deliveryStatus !== 'success' && !in_array($statusCode, [100, 101], true)) {
+            $providerStatus = $deliveryStatus !== '' ? $deliveryStatus : ($statusCode > 0 ? (string) $statusCode : 'unknown');
+            throw new RuntimeException('Africa\'s Talking did not accept delivery to one or more recipients (provider status: ' . $providerStatus . '). Check the phone number format and provider account.');
+        }
+    }
+
+    return $response;
 }
 function savelogs() {
     // Implement log saving functionality

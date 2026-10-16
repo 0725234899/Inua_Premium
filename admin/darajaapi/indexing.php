@@ -14,19 +14,22 @@ if(isset($_POST['deposit'])) {
     $phone = '254'.(int)$phone;
   }
   date_default_timezone_set('Africa/Nairobi');
-  $processrequestUrl = 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
+  $processrequestUrl = $mpesaApiConfig['base_url'] . '/mpesa/stkpush/v1/processrequest';
   $callbackurl = ''; //Fill with your callback url for stk push use your website url or Ngrok url
   $passkey = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919";
   $BusinessShortCode = '174379';
+  $callbackurl = $mpesaApiConfig['callback_url'] !== '' ? $mpesaApiConfig['callback_url'] : $callbackurl;
+  $passkey = $mpesaApiConfig['passkey'] !== '' ? $mpesaApiConfig['passkey'] : $passkey;
+  $BusinessShortCode = $mpesaApiConfig['shortcode'] !== '' ? $mpesaApiConfig['shortcode'] : $BusinessShortCode;
   $Timestamp = date('YmdHis');
   // ENCRIPT  DATA TO GET PASSWORD
   $Password = base64_encode($BusinessShortCode . $passkey . $Timestamp);
  //phone number to receive the stk push
   $money =$amount;
   $PartyA = $phone;
-  $PartyB = '254702502952';
+  $PartyB = $BusinessShortCode;
   $AccountReference = $accountnumber;
-  $TransactionDesc = 'stkpush test';
+  $TransactionDesc = $mpesaApiConfig['transaction_description'];
   $Amount = $money;
   $stkpushheader = ['Content-Type:application/json', 'Authorization:Bearer ' . $access_token];
   //INITIATE CURL

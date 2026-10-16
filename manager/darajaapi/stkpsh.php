@@ -6,7 +6,7 @@ include 'dbcon.php'; // Ensure this file includes your database connection detai
 $phne = $_POST['phone'];
 $amount = $_POST['amount'];
 // CONSTANTS
-$processrequestUrl = 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
+$processrequestUrl = $mpesaApiConfig['base_url'] . '/mpesa/stkpush/v1/processrequest';
 $callbackurl = 'https://eminently-rare-pegasus.ngrok-free.app/Ace-cleaners/cleaning-services-website/darajaapi/clbk.php'; // Replace with your actual callback URL
 $passkey = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919";
 $BusinessShortCode = '174379';
@@ -17,6 +17,12 @@ $PartyB = '254708374149';
 $AccountReference = 'Inua Premium';
 $TransactionDesc = 'stkpush test';
 $Amount = $money;
+$callbackurl = $mpesaApiConfig['callback_url'] !== '' ? $mpesaApiConfig['callback_url'] : $callbackurl;
+$passkey = $mpesaApiConfig['passkey'] !== '' ? $mpesaApiConfig['passkey'] : $passkey;
+$BusinessShortCode = $mpesaApiConfig['shortcode'] !== '' ? $mpesaApiConfig['shortcode'] : $BusinessShortCode;
+$PartyB = $BusinessShortCode;
+$AccountReference = $mpesaApiConfig['account_reference'];
+$TransactionDesc = $mpesaApiConfig['transaction_description'];
 
 // TIMESTAMP
 $Timestamp = date('YmdHis');

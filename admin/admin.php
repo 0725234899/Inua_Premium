@@ -150,6 +150,8 @@ include '../includes/sidebar.php';
                     <li><a href="account_settings.php">Account Settings</a></li>
                     <li><a href="company_settings.php">Company Settings</a></li>
                     <li><a href="email-accounts.php">Email Settings</a></li>
+                    <li><a href="sms_settings.php">SMS Settings</a></li>
+                    <li><a href="bank_mpesa_api_settings.php">Bank/M-Pesa API Settings</a></li>
                 </ul>
                 <ul>
                     <h3>Manage Staff</h3>

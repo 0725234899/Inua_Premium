@@ -2,7 +2,7 @@
 include 'accessToken.php';
 
 // Constants
-$processRequestUrl = 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
+$processRequestUrl = $mpesaApiConfig['base_url'] . '/mpesa/stkpush/v1/processrequest';
 $callbackUrl = 'https://eminently-rare-pegasus.ngrok-free.app/Ace-cleaners/cleaning-services-website/darajaapi/callback.php';
 $passkey = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919";
 $businessShortCode = '174379';
@@ -13,6 +13,12 @@ $partyB = '174379'; // Business shortcode as PartyB
 $accountReference = 'UMESKIA SOFTWARES';
 $transactionDesc = 'stkpush test';
 $amount = $money;
+$callbackUrl = $mpesaApiConfig['callback_url'] !== '' ? $mpesaApiConfig['callback_url'] : $callbackUrl;
+$passkey = $mpesaApiConfig['passkey'] !== '' ? $mpesaApiConfig['passkey'] : $passkey;
+$businessShortCode = $mpesaApiConfig['shortcode'] !== '' ? $mpesaApiConfig['shortcode'] : $businessShortCode;
+$partyB = $businessShortCode;
+$accountReference = $mpesaApiConfig['account_reference'];
+$transactionDesc = $mpesaApiConfig['transaction_description'];
 
 // Timestamp
 $timestamp = date('YmdHis');

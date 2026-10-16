@@ -1,10 +1,15 @@
 <?php
 include 'accessToken.php';
-$stimulateTransactionUrl = 'https://sandbox.safaricom.co.ke/mpesa/c2b/v1/simulate';
+if ($mpesaApiConfig['environment'] !== 'sandbox') {
+    http_response_code(400);
+    exit('C2B transaction simulation is only available in the sandbox environment.');
+}
+$stimulateTransactionUrl = $mpesaApiConfig['base_url'] . '/mpesa/c2b/v1/simulate';
 $BusinessShortCode  = '174379';
 $amount     = '1';
 $phone     = "254713927050";
 $BillRefNumber    = '';
+$BusinessShortCode = $mpesaApiConfig['c2b_shortcode'] !== '' ? $mpesaApiConfig['c2b_shortcode'] : $BusinessShortCode;
 $curl = curl_init();
 curl_setopt($curl, CURLOPT_URL, $stimulateTransactionUrl);
 curl_setopt($curl, CURLOPT_HTTPHEADER, array('Content-Type:application/json', 'Authorization:Bearer ' . $access_token));

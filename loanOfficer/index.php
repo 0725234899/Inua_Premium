@@ -184,139 +184,256 @@ while ($row = $result_recent_repayments->fetch_assoc()) {
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
+        :root {
+            --bg: #edf6ff;
+            --panel: #ffffff;
+            --panel-border: #dfeaf7;
+            --primary: #0d6efd;
+            --primary-dark: #0a58ca;
+            --text: #1a2433;
+            --muted: #5d6d7a;
+            --shadow: 0 12px 30px rgba(15, 76, 130, 0.08);
+        }
+
         body {
             font-family: 'Poppins', sans-serif;
-            background-color: #e3f2fd; /* Sky-blue background */
+            background: var(--bg);
+            color: var(--text);
             margin: 0;
-            padding: 0;
+            padding-top: 70px;
         }
+
+        .admin-page {
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            position: fixed;
+            top: 70px;
+            left: 0;
+            bottom: 0;
+            width: 250px;
+            background: #f8f9fa;
+            border-right: 1px solid var(--panel-border);
+            padding: 18px 14px;
+            overflow-y: auto;
+            z-index: 100;
+            box-shadow: inset -1px 0 0 rgba(18, 45, 89, 0.05);
+        }
+
+        .sidebar .nav-link {
+            color: #27364a;
+            border-radius: 10px;
+            padding: 10px 12px;
+            margin-bottom: 6px;
+            font-weight: 500;
+        }
+
+        .sidebar .nav-link:hover,
+        .sidebar .nav-link.active {
+            background: linear-gradient(90deg, rgba(13, 110, 253, 0.1), rgba(13, 110, 253, 0.18));
+            color: var(--primary-dark);
+        }
+
+        .main {
+            margin-left: 250px;
+            padding: 24px 28px 40px;
+        }
+
+        .page-header {
+            background: linear-gradient(90deg, rgba(13, 110, 253, 0.12), rgba(0, 198, 255, 0.08));
+            border: 1px solid var(--panel-border);
+            border-radius: 14px;
+            box-shadow: var(--shadow);
+            padding: 22px 26px;
+            margin-bottom: 24px;
+        }
+
+        .page-header h1 {
+            margin: 0;
+            font-size: clamp(1.8rem, 2vw, 2.2rem);
+            font-weight: 700;
+            color: #11253f;
+        }
+
         .dashboard-metrics {
             display: flex;
             flex-wrap: wrap;
-            justify-content: flex-end; /* Align metrics to the right edge */
-            gap: 15px; /* Gap between metrics */
-            margin-top: 20px;
-            margin-right: 20px; /* Slightly touch the right edge */
+            gap: 18px;
+            margin-top: 4px;
+            margin-bottom: 24px;
         }
+
         .metric {
-            background-color: #ffffff;
-            border: 1px solid #90caf9;
-            border-radius: 10px;
-            padding: 10px; /* Reduced padding */
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: 14px;
+            box-shadow: var(--shadow);
+            padding: 18px 16px;
+            min-height: 132px;
+            min-width: 180px;
+            flex: 1 1 180px;
             text-align: center;
-            width: 180px; /* Reduced width for uniformity */
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-            transition: transform 0.3s ease-in-out;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            text-decoration: none;
+            color: inherit;
         }
-        .metric.loan-book {
-            width: 150px; /* Further reduced size for Loan Book metric */
-        }
+
         .metric:hover {
-            transform: scale(1.05);
+            transform: translateY(-2px);
+            box-shadow: 0 14px 24px rgba(15, 76, 130, 0.12);
         }
+
         .metric h2 {
-            font-size: 18px; /* Reduced font size */
-            font-weight: bold;
-            color: #1976d2;
+            margin: 0 0 8px;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--primary-dark);
         }
+
         .metric p {
-            font-size: 14px; /* Reduced font size */
-            color: #424242;
-        }
-        .chart-container {
-            width: 100%;
-            max-width: 700px; /* Reduced max width */
-            margin: 20px auto; /* Reduced margin */
-            background-color: #ffffff;
-            padding: 15px; /* Reduced padding */
-            border-radius: 10px;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-        }
-        .header {
-            padding: 10px 0;
-            text-align: center;
-        }
-        .header h1 {
             margin: 0;
-            font-size: 24px; /* Reduced font size */
-            color: #000; /* Removed theme color */
+            font-size: 0.92rem;
+            color: var(--muted);
+            font-weight: 600;
         }
-        @media (max-width: 768px) {
-            .metric {
-                flex: 1 1 100%; /* Stack metrics vertically on smaller screens */
-            }
+
+        .metric.loan-book {
+            min-width: 150px;
         }
+
+        .chart-container {
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: 14px;
+            padding: 18px;
+            box-shadow: var(--shadow);
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 24px;
+        }
+
+        .chart-container > div {
+            flex: 1 1 320px;
+            max-width: 420px;
+        }
+
         .marquee-box {
-            background-color: #f8f9fa;
-            padding: 8px; /* Reduced padding */
-            font-weight: bold;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            font-size: 14px; /* Slightly smaller font size */
+            background: #ffffff;
+            border: 1px solid var(--panel-border);
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            padding: 10px 12px;
+            margin-bottom: 20px;
+            font-size: 0.92rem;
+            color: #304459;
         }
 
-        .blinking {
-            font-weight: bold;
-            color: #28a745;
-            animation: blink 10s infinite;
-        }
-
-        @keyframes blink {
-            0%, 100% {
-                opacity: 1;
+        @media (max-width: 991px) {
+            body {
+                padding-top: 66px;
             }
-            50% {
-                opacity: 0;
+
+            .sidebar {
+                width: min(82vw, 260px);
+                transform: translateX(-110%);
+                transition: transform 0.3s ease;
+                z-index: 1040;
+            }
+
+            .sidebar.collapsed {
+                transform: translateX(0);
+            }
+
+            .main {
+                margin-left: 0;
+                padding: 18px 14px 28px;
+            }
+
+            .page-header {
+                padding: 18px 18px;
+            }
+
+            .dashboard-metrics {
+                gap: 12px;
+            }
+
+            .metric {
+                flex: 1 1 calc(50% - 12px);
+                min-width: 140px;
+            }
+        }
+
+        @media (max-width: 600px) {
+            .page-header h1 {
+                font-size: 1.5rem;
+                text-align: center;
+            }
+
+            .metric {
+                flex: 1 1 100%;
+                min-width: 100%;
+                min-height: 112px;
+            }
+
+            .metric h2 {
+                font-size: 1.25rem;
+            }
+
+            .chart-container {
+                padding: 12px;
+            }
+
+            .chart-container > div {
+                flex: 1 1 100%;
+                max-width: 100%;
+            }
+
+            .marquee-box {
+                font-size: 0.82rem;
+                padding: 8px 10px;
             }
         }
     </style>
 </head>
-<body>
-<?php 
-    include '../includes/functions.php';
-    include 'includes/header.php'; 
-?>
-<div class="sidebar">
-    <?php include '../includes/sidebar.php'; ?>
-</div>
+<body class="admin-page">
+<?php include '../includes/functions.php'; ?>
+<?php include 'includes/header.php'; ?>
+<?php include '../includes/sidebar.php'; ?>
+
 <main class="main">
-    <div class="header">
+    <div class="page-header">
         <h1>Loan Officer Dashboard</h1>
     </div>
-    <div class="container mt-4">
-        <div class="d-flex justify-content-between align-items-center">
-            <h1 class="text-center"></h1>
-            <!-- Removed the blinking repayments section -->
-        </div>
 
-        <!-- Combined Marquee for Arrears and Clients Due Today -->
-        <marquee behavior="scroll" direction="left" scrollamount="3" class="marquee-box mt-3">
+    <div class="container-fluid px-0">
+        <marquee behavior="scroll" direction="left" scrollamount="3" class="marquee-box">
             <?php while ($row = $result_clients_in_arrears_details->fetch_assoc()): ?>
-                <span style="color: red;">
+                <span style="color: #d32f2f; margin-right: 26px;">
                     <?= htmlspecialchars($row['client_name']) . " (Arrears: KSH " . number_format($row['arrears_amount'], 2) . ")"; ?>
-                </span> &nbsp;&nbsp;&nbsp;
+                </span>
             <?php endwhile; ?>
             <?php while ($row = $result_clients_due_today->fetch_assoc()): ?>
-                <span style="color: green;">
+                <span style="color: #1b8f5a; margin-right: 26px;">
                     <?= htmlspecialchars($row['client_name']) . " (Due Today: KSH " . number_format($row['due_amount'], 2) . ")"; ?>
-                </span> &nbsp;&nbsp;&nbsp;
+                </span>
             <?php endwhile; ?>
         </marquee>
 
         <div class="dashboard-metrics">
-            <!-- Metrics -->
-            <a href="overdue_repayments.php"><div class="metric">
+            <a href="overdue_repayments.php" class="metric">
                 <h2>KSH <?php echo number_format(ceil($total_overdue_amount)); ?></h2>
                 <p>Total Arrears</p>
-            </div></a>
-            <a href="approved-loans.php"><div class="metric">
+            </a>
+            <a href="approved-loans.php" class="metric">
                 <h2>KSH <?php echo number_format(ceil($total_loan_amount)); ?></h2>
                 <p>Total Disbursed Loans</p>
-            </div></a>
-            <a href="performingBook.php"><div class="metric">
+            </a>
+            <a href="performingBook.php" class="metric">
                 <h2>KSH <?php echo number_format(ceil($performing_book)); ?></h2>
                 <p>Performing Book</p>
-            </div></a>
+            </a>
             <div class="metric loan-book">
                 <h2>KSH <?php echo number_format(ceil($loan_book)); ?></h2>
                 <p>Loan Book</p>
@@ -333,76 +450,70 @@ while ($row = $result_recent_repayments->fetch_assoc()) {
                 <h2><?php echo $clients_in_arrears; ?></h2>
                 <p>Clients in Arrears</p>
             </div>
-            <a href="due_loans.php"><div class="metric">
+            <a href="due_loans.php" class="metric">
                 <h2>KSH <?php echo number_format(ceil($total_due_loans)); ?></h2>
                 <p>Due Loans</p>
-            </div></a>
+            </a>
         </div>
 
-        <div class="chart-container mt-5 d-flex flex-wrap justify-content-center">
-            <!-- Pie Chart for PAR -->
-            <div style="flex: 1; min-width: 300px; max-width: 400px;">
+        <div class="chart-container mt-4">
+            <div>
                 <canvas id="parPieChart" style="width: 100%; height: 300px;"></canvas>
             </div>
-            <!-- Bar Chart for Loan Metrics -->
-            <div style="flex: 1; min-width: 300px; max-width: 400px;">
+            <div>
                 <canvas id="loanChart" style="width: 100%; height: 300px;"></canvas>
             </div>
         </div>
     </div>
 </main>
 
-<footer class="text-center mt-5">
-    <p><em>Powered by AntonTech</em></p>
-</footer>
 <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
 <script src="assets/js/main.js"></script>
 <script>
     document.addEventListener('DOMContentLoaded', function () {
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
-
-        // Add logo
-        const logoPath = "/Inua_Premium_services/assets/img/logo.png";
-        const img = new Image();
-        img.src = logoPath;
-
-        img.onload = function () {
-            // Center the logo
-            const logoWidth = 50;
-            const logoHeight = 30;
-            const pageWidth = doc.internal.pageSize.getWidth();
-            const logoX = (pageWidth - logoWidth) / 2;
-            doc.addImage(img, 'PNG', logoX, 10, logoWidth, logoHeight);
-
-            // Add company name below the logo
-            doc.setFontSize(14);
-            doc.text('Inua Premium Services', 10, 50);
-
-            // Add "Loan Officer Dashboard" title
-            doc.setFontSize(18);
-            doc.text('Loan Officer Dashboard', pageWidth / 2, 50, { align: 'center' });
-
-            // Add borrower's name section with wrapping for long names
-            doc.setFontSize(14);
-            const borrowerName = '<?php echo htmlspecialchars($row["borrower_name"] ?? "N/A"); ?>';
-            const maxWidth = doc.internal.pageSize.getWidth() - 40; // Leave margins
-            doc.text('Borrower:', 10, 60);
-            doc.text(borrowerName, 40, 60, { maxWidth: maxWidth, align: 'left' }); // Wrap text to fit within maxWidth
-
-            // Add footer with sky blue text
-            doc.setFontSize(10);
-            doc.setFont('helvetica', 'italic');
-            doc.setTextColor(135, 206, 235); // Sky blue color
-            doc.text('Powered by AntonTech', pageWidth / 2, doc.internal.pageSize.getHeight() - 10, { align: 'center' });
-
-            // Save the PDF
-            doc.save('Loan_Officer_Dashboard.pdf');
+        const canvasConfig = {
+            responsive: true,
+            maintainAspectRatio: false
         };
 
-        img.onerror = function () {
-            alert("Failed to load the logo. Please check the logo path.");
-        };
+        if (window.Chart) {
+            new Chart(document.getElementById('parPieChart'), {
+                type: 'pie',
+                data: {
+                    labels: ['Portfolio at Risk', 'Healthy Portfolio'],
+                    datasets: [{
+                        data: [<?php echo max(0, min(100, $par)); ?>, <?php echo max(0, 100 - min(100, $par)); ?>],
+                        backgroundColor: ['#ff6b6b', '#4dabf7']
+                    }]
+                },
+                options: canvasConfig
+            });
+
+            new Chart(document.getElementById('loanChart'), {
+                type: 'bar',
+                data: {
+                    labels: ['Total Loans', 'Total Overdue', 'Performing Book', 'Due Today'],
+                    datasets: [{
+                        label: 'KSH',
+                        data: [
+                            <?php echo (float) $total_loan_amount; ?>,
+                            <?php echo (float) $total_overdue_amount; ?>,
+                            <?php echo (float) $performing_book; ?>,
+                            <?php echo (float) $total_due_loans; ?>
+                        ],
+                        backgroundColor: ['#4dabf7', '#ff8c69', '#63c76a', '#ffc857']
+                    }]
+                },
+                options: {
+                    ...canvasConfig,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
     });
 </script>
 </body>

@@ -394,6 +394,64 @@ function sendCombinedStaffNotification($loan_id, $amount_paid, $conn) {
     }
 }
 
+function sendClientPaymentSms($loan_id, $amount_paid, $payment_date, $conn) {
+    $detailsStmt = $conn->prepare("SELECT b.mobile
+                                   FROM loan_applications la
+                                   INNER JOIN borrowers b ON la.borrower = b.id
+                                   WHERE la.id = ?
+                                   LIMIT 1");
+    if (!$detailsStmt) {
+        throw new RuntimeException('Unable to prepare client payment SMS details query: ' . $conn->error);
+    }
+    $detailsStmt->bind_param('i', $loan_id);
+    if (!$detailsStmt->execute()) {
+        $error = $detailsStmt->error;
+        $detailsStmt->close();
+        throw new RuntimeException('Unable to load client payment SMS details: ' . $error);
+    }
+    $client = $detailsStmt->get_result()->fetch_assoc();
+    $detailsStmt->close();
+
+    if (!$client || trim((string) ($client['mobile'] ?? '')) === '') {
+        throw new RuntimeException('The borrower has no mobile phone number saved.');
+    }
+
+    $balanceStmt = $conn->prepare("SELECT
+        COALESCE(SUM(GREATEST(COALESCE(amount, 0) - COALESCE(paid, 0), 0)), 0) AS outstanding_balance,
+        COALESCE(SUM(CASE
+            WHEN repayment_date <= ? THEN GREATEST(COALESCE(amount, 0) - COALESCE(paid, 0), 0)
+            ELSE 0
+        END), 0) AS due_balance,
+        COALESCE(SUM(CASE
+            WHEN repayment_date < CURDATE() THEN GREATEST(COALESCE(amount, 0) - COALESCE(paid, 0), 0)
+            ELSE 0
+        END), 0) AS overdue_balance
+        FROM repayments
+        WHERE loan_id = ?");
+    if (!$balanceStmt) {
+        throw new RuntimeException('Unable to prepare client payment balance query: ' . $conn->error);
+    }
+    $balanceStmt->bind_param('si', $payment_date, $loan_id);
+    if (!$balanceStmt->execute()) {
+        $error = $balanceStmt->error;
+        $balanceStmt->close();
+        throw new RuntimeException('Unable to calculate client payment balances: ' . $error);
+    }
+    $balances = $balanceStmt->get_result()->fetch_assoc() ?: [];
+    $balanceStmt->close();
+
+    $smsText = 'Confirmed, your loan repayment of KES ' . number_format($amount_paid, 2) . ' has been received. '
+        . 'Remaining amount due as of ' . date('d/m/Y', strtotime($payment_date)) . ': KES ' . number_format((float) ($balances['due_balance'] ?? 0), 2) . '. '
+        . 'Overdue amount: KES ' . number_format((float) ($balances['overdue_balance'] ?? 0), 2) . '. '
+        . 'Outstanding loan balance: KES ' . number_format((float) ($balances['outstanding_balance'] ?? 0), 2) . '.';
+
+    if (!function_exists('sendMessage')) {
+        throw new RuntimeException('SMS sending is unavailable on this server.');
+    }
+
+    return sendMessage($client['mobile'], $smsText);
+}
+
 // Repayment functionality
 if (isset($_POST['repay'])) {
     $loan_id = $_POST['loan_id'];
@@ -407,27 +465,38 @@ if (isset($_POST['repay'])) {
 
     if ($amount_paid > 0) {
         $amount_paid = floatval($amount_paid); // Ensure proper numeric type
-        $message = distributeRepayment($loan_id, $amount_paid, $conn, $payment_date);
+        $distributedAmount = 0.0;
+        $message = distributeRepayment($loan_id, $amount_paid, $conn, $payment_date, $distributedAmount);
 
-        $insertPayment = "INSERT INTO payment_date_records (loan_id, PaymentDate, Amount) VALUES (?, ?, ?)";
-        $insert_stmt = $conn->prepare($insertPayment);
-        if (!$insert_stmt) {
-            $message .= "<div class='alert alert-danger text-center'>Error preparing payment record: " . htmlspecialchars($conn->error) . "</div>";
-        } else {
-            $insert_stmt->bind_param("isd", $loan_id, $payment_date, $amount_paid);
-            if (!$insert_stmt->execute()) {
-                $message .= "<div class='alert alert-danger text-center'>Error saving payment record: " . htmlspecialchars($insert_stmt->error) . "</div>";
+        if ($distributedAmount > 0) {
+            $insertPayment = "INSERT INTO payment_date_records (loan_id, PaymentDate, Amount) VALUES (?, ?, ?)";
+            $insert_stmt = $conn->prepare($insertPayment);
+            if (!$insert_stmt) {
+                $message .= "<div class='alert alert-danger text-center'>Error preparing payment record: " . htmlspecialchars($conn->error) . "</div>";
             } else {
-                $message .= "<div class='alert alert-info text-center'>Payment record saved successfully.</div>";
+                $insert_stmt->bind_param("isd", $loan_id, $payment_date, $distributedAmount);
+                if (!$insert_stmt->execute()) {
+                    $message .= "<div class='alert alert-danger text-center'>Error saving payment record: " . htmlspecialchars($insert_stmt->error) . "</div>";
+                } else {
+                    $message .= "<div class='alert alert-info text-center'>Payment record saved successfully.</div>";
+                }
+                $insert_stmt->close();
             }
-            $insert_stmt->close();
-        }
+
+            try {
+                sendClientPaymentSms($loan_id, $distributedAmount, $payment_date, $conn);
+                $message .= "<div class='alert alert-success text-center'>Payment confirmation SMS sent to the client.</div>";
+            } catch (Throwable $exception) {
+                error_log('Client payment SMS failed (' . get_class($exception) . ', code ' . $exception->getCode() . '): ' . $exception->getMessage());
+                $message .= "<div class='alert alert-warning text-center'>Payment was recorded, but the client SMS could not be sent. " . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8') . "</div>";
+            }
 
             // Send a single combined email to the loan officer that includes
             // the payment-received notification + payslip-style payment record
-            $message .= sendCombinedStaffNotification($loan_id, $amount_paid, $conn);
+            $message .= sendCombinedStaffNotification($loan_id, $distributedAmount, $conn);
             // Also send payment receipt to the client (borrower) formatted like payslip
-            $message .= sendPaymentRecordToClient($loan_id, $amount_paid, $conn);
+            $message .= sendPaymentRecordToClient($loan_id, $distributedAmount, $conn);
+        }
     } else {
         $message = "<div class='alert alert-warning text-center'>Please enter a valid amount.</div>";
     }
@@ -480,8 +549,18 @@ if (isset($_POST['bulk_repay'])) {
 
         // Apply the repayment distribution
         $amount = floatval($amount); // Ensure proper numeric type
-        $msg = distributeRepayment($loan_id, $amount, $conn, $payment_date);
+        $distributedAmount = 0.0;
+        $msg = distributeRepayment($loan_id, $amount, $conn, $payment_date, $distributedAmount);
         $bulk_messages[] = $msg;
+        if ($distributedAmount > 0) {
+            try {
+                sendClientPaymentSms($loan_id, $distributedAmount, $payment_date, $conn);
+                $bulk_messages[] = "<div class='alert alert-success'>Payment confirmation SMS sent to " . htmlspecialchars($mobile) . ".</div>";
+            } catch (Throwable $exception) {
+                error_log('Bulk client payment SMS failed (' . get_class($exception) . ', code ' . $exception->getCode() . '): ' . $exception->getMessage());
+                $bulk_messages[] = "<div class='alert alert-warning'>Payment was recorded for " . htmlspecialchars($mobile) . ", but SMS could not be sent: " . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8') . "</div>";
+            }
+        }
 
         // Record payment date entry
         $ins = $conn->prepare("INSERT INTO payment_date_records (loan_id, PaymentDate, Amount) VALUES (?, ?, ?)");
@@ -507,7 +586,8 @@ if (isset($_POST['bulk_repay'])) {
 }
 
 // Function to distribute repayment
-function distributeRepayment($loan_id, $amount_paid, $conn, $payment_date) {
+function distributeRepayment($loan_id, $amount_paid, $conn, $payment_date, &$distributedAmount = null) {
+    $distributedAmount = 0.0;
     $sql = "SELECT * FROM repayments WHERE loan_id = ? AND COALESCE(paid, 0) < amount ORDER BY repayment_date ASC";
     
     $stmt = $conn->prepare($sql);
@@ -560,14 +640,16 @@ function distributeRepayment($loan_id, $amount_paid, $conn, $payment_date) {
         $update_stmt = $conn->prepare($update_sql);
         if ($update_stmt) {
             $update_stmt->bind_param("dsi", $new_amount_paid, $payment_date, $installment_id);
-            $update_stmt->execute();
+            $updated = $update_stmt->execute();
             $update_stmt->close();
+            if ($updated) {
+                $total_distributed += $applied_amount;
+            }
         }
-        
-        $total_distributed += $applied_amount;
     }
     
     $stmt->close();
+    $distributedAmount = $total_distributed;
 
     // Fetch the updated outstanding loan balance
     $outstanding_sql = "SELECT SUM(amount - COALESCE(paid, 0)) AS outstanding_balance FROM repayments WHERE loan_id = ?";

@@ -18,6 +18,10 @@ class AfricasTalking
 	protected $tokenClient;
 
 	public $baseUrl;
+	public $baseDomain;
+	public $paymentsUrl;
+	public $checkoutTokenUrl;
+	public $paymentsClient;
 	protected $contentUrl;
 	protected $voiceUrl;
 	protected $paymentUrl;

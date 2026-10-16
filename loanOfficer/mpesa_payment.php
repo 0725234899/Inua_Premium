@@ -9,6 +9,8 @@ ini_set('display_errors', 1);
 require 'vendor/autoload.php';
 $dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
 $dotenv->load();
+require_once __DIR__ . '/../includes/functions.php';
+$mpesaApiConfig = getMpesaApiConfig();
 
 // Database connection
 $servername = "localhost";
@@ -23,20 +25,24 @@ if ($conn->connect_error) {
 
 // Configuration
 $config = [
-    "env"              => $_ENV['MPESA_ENV'],
-    "BusinessShortCode"=> $_ENV['MPESA_SHORTCODE'],
-    "consumerKey"      => $_ENV['MPESA_CONSUMER_KEY'],
-    "consumerSecret"   => $_ENV['MPESA_CONSUMER_SECRET'],
-    "passkey"          => $_ENV['MPESA_PASSKEY'],
-    "CallBackURL"      => "https://yourdomain.com/callback.php",
-    "AccountReference" => "Loan Repayment",
-    "TransactionDesc"  => "Loan repayment for account"
+    "baseUrl"          => $mpesaApiConfig['base_url'],
+    "BusinessShortCode"=> $mpesaApiConfig['shortcode'],
+    "consumerKey"      => $mpesaApiConfig['consumer_key'],
+    "consumerSecret"   => $mpesaApiConfig['consumer_secret'],
+    "passkey"          => $mpesaApiConfig['passkey'],
+    "CallBackURL"      => $mpesaApiConfig['callback_url'],
+    "AccountReference" => $mpesaApiConfig['account_reference'],
+    "TransactionDesc"  => $mpesaApiConfig['transaction_description']
 ];
 
 // Function to get access token
 function generateAccessToken($config) {
+    if ($config['consumerKey'] === '' || $config['consumerSecret'] === '') {
+        return ["error" => "Configure M-Pesa consumer credentials before requesting a payment."];
+    }
+
     $credentials = base64_encode($config['consumerKey'] . ':' . $config['consumerSecret']);
-    $url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials";
+    $url = $config['baseUrl'] . "/oauth/v1/generate?grant_type=client_credentials";
 
     $curl = curl_init($url);
     curl_setopt($curl, CURLOPT_HTTPHEADER, ['Authorization: Basic ' . $credentials]);
@@ -62,12 +68,16 @@ function formatPhoneNumber($phone) {
 
 // Function to initiate STK Push
 function initiateSTKPush($config, $phoneNumber, $amount, $orderNo, $conn) {
+    if ($config['BusinessShortCode'] === '' || $config['passkey'] === '' || $config['CallBackURL'] === '') {
+        return ["error" => "Configure the M-Pesa Express shortcode, passkey, and callback URL before requesting a payment."];
+    }
+
     $accessToken = generateAccessToken($config);
     if (isset($accessToken['error'])) {
         return $accessToken;
     }
 
-    $url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest";
+    $url = $config['baseUrl'] . "/mpesa/stkpush/v1/processrequest";
     $timestamp = date('YmdHis');
     $password = base64_encode($config['BusinessShortCode'] . $config['passkey'] . $timestamp);
 

@@ -37,6 +37,8 @@ $conn->query("CREATE TABLE IF NOT EXISTS penalty_actions (
 $message = '';
 $messageType = '';
 $selectedOfficer = trim($_POST['officer_email'] ?? $_GET['officer'] ?? '');
+$selectedLoanId = (int) ($_POST['loan_id'] ?? 0);
+$amountInput = trim((string) ($_POST['amount'] ?? ''));
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $actionType = $_POST['action'] ?? '';
@@ -74,8 +76,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $editStmt->close();
         }
     } else {
-    $loanId = (int) ($_POST['loan_id'] ?? 0);
-    $amount = round((float) ($_POST['amount'] ?? 0), 2);
+    $loanId = $selectedLoanId;
+    $amount = round((float) $amountInput, 2);
     $note = trim($_POST['note'] ?? '');
 
     if ($loanId <= 0 || $amount <= 0) {
@@ -105,15 +107,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                INNER JOIN borrowers b ON l.borrower = b.id
                                WHERE CONVERT(b.loan_officer USING utf8mb4) COLLATE utf8mb4_general_ci = CONVERT(? USING utf8mb4) COLLATE utf8mb4_general_ci
                            ), 0)
-                           - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.officer_email = ?), 0)
+                           - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa
+                                       WHERE CONVERT(pa.officer_email USING utf8mb4) COLLATE utf8mb4_general_ci = CONVERT(? USING utf8mb4) COLLATE utf8mb4_general_ci), 0)
                        ) AS available_penalty";
         $poolStmt = $conn->prepare($poolSql);
         $poolStmt->bind_param('ss', $selectedOfficer, $selectedOfficer);
         $poolStmt->execute();
         $availablePool = (float) ($poolStmt->get_result()->fetch_assoc()['available_penalty'] ?? 0);
 
-        if (!$loan || $loan['officer_email'] !== $selectedOfficer) {
+        if (!$loan || strcasecmp((string) $loan['officer_email'], $selectedOfficer) !== 0) {
             $message = 'The selected client is not assigned to the selected loan officer.';
+            $messageType = 'error';
+        } elseif ($amount > round($availablePool, 2)) {
+            $message = "The selected loan officer's available balance is low. Available balance: KSH " . number_format(max(0, $availablePool), 2) . '.';
             $messageType = 'error';
         } else {
             $insertSql = "INSERT INTO penalty_actions (loan_id, borrower_id, officer_email, officer_name, amount, note, acted_by)
@@ -246,15 +252,15 @@ $actionsResult = $conn->query("SELECT pa.*, b.full_name AS borrower_name
                 <select class="form-select" name="loan_id" id="loan_id" required>
                     <option value="">Select client loan</option>
                     <?php foreach ($loans as $loan): ?>
-                        <option class="loan-option" value="<?php echo (int) $loan['id']; ?>" data-officer="<?php echo htmlspecialchars($loan['officer_email'], ENT_QUOTES, 'UTF-8'); ?>" data-remaining="<?php echo (float) $loan['remaining_penalty']; ?>"><?php echo htmlspecialchars($loan['borrower_name']); ?> - Loan #<?php echo (int) $loan['id']; ?> - Arrears KSH <?php echo number_format((float) $loan['arrears'], 2); ?></option>
+                        <option class="loan-option" value="<?php echo (int) $loan['id']; ?>" data-officer="<?php echo htmlspecialchars($loan['officer_email'], ENT_QUOTES, 'UTF-8'); ?>" data-remaining="<?php echo (float) $loan['remaining_penalty']; ?>" <?php echo $selectedLoanId === (int) $loan['id'] ? 'selected' : ''; ?>><?php echo htmlspecialchars($loan['borrower_name']); ?> - Loan #<?php echo (int) $loan['id']; ?> - Arrears KSH <?php echo number_format((float) $loan['arrears'], 2); ?></option>
                     <?php endforeach; ?>
                 </select>
                 <small id="loanPenalty" class="text-muted"></small>
             </div>
             <div class="col-md-4">
                 <label class="form-label" for="amount">Amount to Write Off</label>
-                <input class="form-control" type="number" name="amount" id="amount" step="0.01" required>
-                <small class="text-muted">Enter the penalty amount to write off.</small>
+                <input class="form-control" type="number" name="amount" id="amount" min="0.01" step="0.01" value="<?php echo htmlspecialchars($amountInput, ENT_QUOTES, 'UTF-8'); ?>" required>
+                <small id="amountLimit" class="text-muted" aria-live="polite">Select a loan officer and client loan to see the maximum write-off amount.</small>
             </div>
             <div class="col-12">
                 <label class="form-label" for="note">Action Note</label>
@@ -302,25 +308,62 @@ $actionsResult = $conn->query("SELECT pa.*, b.full_name AS borrower_name
         const amount = document.getElementById('amount');
         const pool = document.getElementById('officerPool');
         const loanPenalty = document.getElementById('loanPenalty');
-        function refreshOptions() {
-            const selected = officer.value;
+        const amountLimit = document.getElementById('amountLimit');
+        function formatAmount(value) {
+            return Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+        function updateAmountLimit() {
             const officerOption = officer.options[officer.selectedIndex];
-            pool.textContent = officerOption && officerOption.dataset.available ? 'Available pool: KSH ' + Number(officerOption.dataset.available).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '';
+            const loanOption = loan.selectedOptions[0];
+            const hasMatchingLoan = Boolean(loanOption && loanOption.dataset.officer && loanOption.dataset.officer.toLowerCase() === officer.value.toLowerCase() && !loanOption.disabled);
+            const hasSelections = officer.value !== '' && loan.value !== '' && hasMatchingLoan;
+            const officerAvailable = hasSelections ? Number(officerOption.dataset.available) : 0;
+            const maximum = hasSelections ? Math.max(0, officerAvailable) : 0;
+            let helperText = 'Select a loan officer and client loan to see the maximum write-off amount.';
+
+            if (hasSelections) {
+                amount.max = maximum.toFixed(2);
+                if (officerAvailable <= 0) {
+                    helperText = "The selected loan officer's available balance is low. No funds are currently available.";
+                } else {
+                    helperText = "Maximum write-off: KSH " + formatAmount(maximum) + " (based on the selected loan officer's available balance).";
+                }
+            } else {
+                amount.removeAttribute('max');
+            }
+
+            let validationMessage = '';
+            const enteredAmount = Number(amount.value);
+            if (hasSelections && amount.value !== '' && Number.isFinite(enteredAmount) && enteredAmount > officerAvailable + 0.000001) {
+                validationMessage = "The selected loan officer's available balance is too low. Maximum available: KSH " + formatAmount(officerAvailable) + '.';
+            }
+
+            amount.setCustomValidity(validationMessage);
+            amountLimit.textContent = validationMessage || helperText;
+            amountLimit.classList.toggle('text-danger', validationMessage !== '' || (hasSelections && maximum <= 0));
+            amountLimit.classList.toggle('text-muted', validationMessage === '' && (!hasSelections || maximum > 0));
+        }
+        function refreshOptions() {
+            const selected = officer.value.toLowerCase();
+            const officerOption = officer.options[officer.selectedIndex];
+            pool.textContent = officerOption && officerOption.dataset.available !== undefined ? 'Available pool: KSH ' + formatAmount(officerOption.dataset.available) : '';
             Array.from(loan.options).forEach(option => {
                 if (!option.dataset.officer) return;
-                const matchesOfficer = selected !== '' && option.dataset.officer === selected;
+                const matchesOfficer = selected !== '' && option.dataset.officer.toLowerCase() === selected;
                 option.hidden = !matchesOfficer;
                 option.disabled = !matchesOfficer;
             });
             if (!loan.value || !loan.selectedOptions[0] || loan.selectedOptions[0].disabled) loan.value = '';
             loanPenalty.textContent = '';
+            updateAmountLimit();
         }
         officer.addEventListener('change', refreshOptions);
         loan.addEventListener('change', function () {
             const option = loan.selectedOptions[0];
-            if (!option || !option.dataset.remaining) return;
-            loanPenalty.textContent = 'Client penalty available: KSH ' + Number(option.dataset.remaining).toLocaleString(undefined, { minimumFractionDigits: 2 });
+            loanPenalty.textContent = option && option.dataset.remaining !== undefined ? 'Current client loan penalty (informational): KSH ' + formatAmount(option.dataset.remaining) : '';
+            updateAmountLimit();
         });
+        amount.addEventListener('input', updateAmountLimit);
         refreshOptions();
 
         document.querySelectorAll('.edit-action-btn').forEach(button => {

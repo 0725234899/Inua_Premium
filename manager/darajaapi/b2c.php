@@ -1,7 +1,11 @@
 <?php
 include 'accessToken.php';
-include 'securitycridential.php';
-$b2c_url = 'https://sandbox.safaricom.co.ke/mpesa/b2c/v1/paymentrequest';
+if ($mpesaApiConfig['b2c_security_credential'] !== '') {
+    $SecurityCredential = $mpesaApiConfig['b2c_security_credential'];
+} else {
+    include 'securitycridential.php';
+}
+$b2c_url = $mpesaApiConfig['base_url'] . '/mpesa/b2c/v1/paymentrequest';
 $InitiatorName = 'testapi';
 $pass = "Safaricom999!*!";
 $BusinessShortCode = "600999";
@@ -16,6 +20,12 @@ $Remarks = 'Umeskia Withdrawal';
 $QueueTimeOutURL = 'https://1c95-105-161-14-223.ngrok-free.app/MPEsa-Daraja-Api/b2cCallbackurl.php';
 $ResultURL = 'https://1c95-105-161-14-223.ngrok-free.app/MPEsa-Daraja-Api/dataMaxcallbackurl.php';
 $Occasion = 'Online Payment';
+$InitiatorName = $mpesaApiConfig['b2c_initiator_name'] !== '' ? $mpesaApiConfig['b2c_initiator_name'] : $InitiatorName;
+$BusinessShortCode = $mpesaApiConfig['b2c_shortcode'] !== '' ? $mpesaApiConfig['b2c_shortcode'] : $BusinessShortCode;
+$PartyA = $BusinessShortCode;
+$CommandID = $mpesaApiConfig['b2c_command_id'];
+$QueueTimeOutURL = $mpesaApiConfig['b2c_queue_timeout_url'] !== '' ? $mpesaApiConfig['b2c_queue_timeout_url'] : $QueueTimeOutURL;
+$ResultURL = $mpesaApiConfig['b2c_result_url'] !== '' ? $mpesaApiConfig['b2c_result_url'] : $ResultURL;
 /* Main B2C Request to the API */
 $curl = curl_init();
 curl_setopt($curl, CURLOPT_URL, $b2c_url);

@@ -2,10 +2,12 @@
 //INCLUDE ACCESS TOKEN FILE 
 include 'accessToken.php';
 date_default_timezone_set('Africa/Nairobi');
-$query_url = 'https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query';
+$query_url = $mpesaApiConfig['base_url'] . '/mpesa/stkpushquery/v1/query';
 $BusinessShortCode = '174379';
 $Timestamp = date('YmdHis');
 $passkey = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919";
+$BusinessShortCode = $mpesaApiConfig['shortcode'] !== '' ? $mpesaApiConfig['shortcode'] : $BusinessShortCode;
+$passkey = $mpesaApiConfig['passkey'] !== '' ? $mpesaApiConfig['passkey'] : $passkey;
 // ENCRIPT  DATA TO GET PASSWORD
 $Password = base64_encode($BusinessShortCode . $passkey . $Timestamp);
 
