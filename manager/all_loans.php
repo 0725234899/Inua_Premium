@@ -108,9 +108,14 @@
 </head>
 
 <body>
-    <?php 
+    <?php
+    use PHPMailer\PHPMailer\PHPMailer;
+
+    require_once __DIR__ . '/PHPMailer/src/PHPMailer.php';
+    require_once __DIR__ . '/PHPMailer/src/Exception.php';
+    require_once __DIR__ . '/PHPMailer/src/SMTP.php';
     include '../includes/functions.php';
-    include 'includes/header.php'; 
+    include 'includes/header.php';
     ?>
     <div class="sidebar">
         <?php include '../includes/sidebar.php'; ?>
@@ -118,12 +123,175 @@
     <?php
     include 'db.php';
 
+    function ensureLoanApprovalTimestampColumn($conn) {
+        $result = $conn->query("SHOW COLUMNS FROM loan_applications LIKE 'approved_at'");
+        if (!$result) {
+            throw new RuntimeException('Unable to check the loan approval timestamp column.');
+        }
+
+        if ($result->num_rows === 0 && !$conn->query("ALTER TABLE loan_applications ADD COLUMN approved_at DATETIME NULL DEFAULT NULL")) {
+            throw new RuntimeException('Unable to add the loan approval timestamp column: ' . $conn->error);
+        }
+    }
+
+    function getLoanApprovalNotificationDetails($conn, $loanId) {
+        $stmt = $conn->prepare(
+            "SELECT la.id AS loan_id, la.principal, la.total_amount, la.number_of_repayments,
+                    la.repayment_cycle, la.loan_release_date, la.loan_duration,
+                    la.loan_duration_unit, b.full_name AS borrower_name,
+                    b.loan_officer AS officer_email, COALESCE(u.name, '') AS officer_name,
+                    (SELECT MAX(r.repayment_date) FROM repayments r WHERE r.loan_id = la.id) AS scheduled_maturity_date
+             FROM loan_applications la
+             INNER JOIN borrowers b ON b.id = la.borrower
+             LEFT JOIN users u ON u.email = b.loan_officer
+             WHERE la.id = ?
+             LIMIT 1"
+        );
+        if (!$stmt) {
+            throw new RuntimeException('Unable to prepare loan approval notification details.');
+        }
+
+        $stmt->bind_param('i', $loanId);
+        if (!$stmt->execute()) {
+            $stmt->close();
+            throw new RuntimeException('Unable to retrieve loan approval notification details.');
+        }
+
+        $details = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$details) {
+            throw new RuntimeException('Approved loan details were not found for email notification.');
+        }
+
+        return $details;
+    }
+
+    function getTodaysLoanApprovalTotals($conn) {
+        $result = $conn->query(
+            "SELECT COALESCE(SUM(COALESCE(principal, 0)), 0) AS total_principal,
+                    COALESCE(SUM(COALESCE(total_amount, 0) - COALESCE(principal, 0)), 0) AS total_projected_interest
+             FROM loan_applications
+             WHERE loan_status = 'approved'
+               AND approved_at >= CURDATE()
+               AND approved_at < CURDATE() + INTERVAL 1 DAY"
+        );
+        if (!$result) {
+            throw new RuntimeException('Unable to calculate today’s approved-loan totals.');
+        }
+
+        return $result->fetch_assoc();
+    }
+
+    function buildLoanApprovalEmailBody($recipientName, $details, $installmentAmount, $maturityDate, $managerTotals = null, $includeProjectedInterest = true) {
+        $escape = static function ($value) {
+            return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+        };
+        $cycle = strtolower(trim((string) ($details['repayment_cycle'] ?? '')));
+        $cycleLabel = $cycle !== '' ? ucfirst($cycle) : 'Installment';
+        $logoPath = __DIR__ . '/../assets/img/logo.png';
+
+        $body = '<html><body style="margin:0;padding:0;font-family:Inter,Arial,sans-serif;background:#eaf5ff;color:#0f172a;">';
+        $body .= '<table width="100%" cellpadding="0" cellspacing="0" style="background:#eaf5ff;padding:24px;"><tr><td align="center">';
+        $body .= '<table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#fff;border-radius:24px;overflow:hidden;border:1px solid #dbeafe;">';
+        $body .= '<tr><td style="padding:28px 32px;background:#0ea5e9;color:#fff;text-align:center;">';
+        if (file_exists($logoPath)) {
+            $body .= '<img src="cid:company_logo" alt="Company Logo" width="96" style="display:block;margin:0 auto 18px;">';
+        }
+        $body .= '<h1 style="margin:0;font-size:26px;">Inua Premium Services</h1>';
+        $body .= '<p style="margin:10px 0 0;font-size:15px;color:#dbeafe;">Loan Approval Notice</p></td></tr>';
+        $body .= '<tr><td style="padding:24px 32px 8px;">';
+        $body .= '<p style="margin:0;font-size:14px;color:#475569;">Dear ' . $escape($recipientName) . ',</p>';
+        $body .= '<p style="margin:8px 0 0;font-size:14px;color:#475569;">Loan ' . $escape($details['loan_id']) . ' for ' . $escape($details['borrower_name']) . ' has been approved.</p>';
+        $body .= '</td></tr><tr><td style="padding:16px 32px 28px;">';
+        $body .= '<table width="100%" cellpadding="8" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;">';
+        $body .= '<tr style="background:#f1f5f9;"><td><strong>Principal Amount</strong></td><td align="right">KES ' . number_format((float) $details['principal'], 2) . '</td></tr>';
+        $body .= '<tr><td><strong>Total Amount</strong></td><td align="right">KES ' . number_format((float) $details['total_amount'], 2) . '</td></tr>';
+        $body .= '<tr style="background:#f8fafc;"><td><strong>' . $escape($cycleLabel) . ' Installment Amount</strong></td><td align="right">KES ' . number_format($installmentAmount, 2) . '</td></tr>';
+        if ($includeProjectedInterest) {
+            $body .= '<tr><td><strong>Projected Interest</strong></td><td align="right">KES ' . number_format(max(0, (float) $details['total_amount'] - (float) $details['principal']), 2) . '</td></tr>';
+        }
+        $body .= '<tr style="background:#f8fafc;"><td><strong>Projected Maturity Date</strong></td><td align="right">' . $escape($maturityDate) . '</td></tr>';
+        $body .= '</table>';
+        if ($managerTotals !== null) {
+            $body .= '<div style="margin-top:18px;padding:14px 16px;background:#f0f4f8;border:1px solid #e2e8f0;border-radius:8px;">';
+            $body .= 'Today\'s Total Principal: KES ' . number_format((float) $managerTotals['total_principal'], 2) . '<br>';
+            $body .= ' Today\'s Total Projected Interest: KES ' . number_format((float) $managerTotals['total_projected_interest'], 2);
+            $body .= '</div>';
+        }
+        $body .= '<p style="margin:18px 0 0;font-size:12px;color:#64748b;">This is an automated loan approval notification from Inua Premium Services.</p>';
+        $body .= '</td></tr></table></td></tr></table></body></html>';
+
+        return $body;
+    }
+
+    function sendLoanApprovalEmail($emailCredentials, $recipientEmail, $recipientName, $subject, $body) {
+        if (empty($emailCredentials['sender_email']) || empty($emailCredentials['sender_app_password'])) {
+            throw new RuntimeException('Manager payroll email settings are not configured. Configure the sender email and app password in Payroll Settings.');
+        }
+        if (!filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
+            throw new RuntimeException('The notification recipient does not have a valid email address.');
+        }
+
+        $mail = new PHPMailer(true);
+        $mail->SMTPOptions = [
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false,
+                'allow_self_signed' => true,
+            ],
+        ];
+        $smtpSettings = getPayrollSmtpSettings($emailCredentials['sender_email']);
+        $mail->isSMTP();
+        $mail->Host = $smtpSettings['host'];
+        $mail->SMTPAuth = true;
+        $mail->Username = $emailCredentials['sender_email'];
+        $mail->Password = $emailCredentials['sender_app_password'];
+        $mail->SMTPSecure = $smtpSettings['encryption'];
+        $mail->SMTPAutoTLS = true;
+        $mail->Port = $smtpSettings['port'];
+        $mail->CharSet = 'UTF-8';
+        $mail->setFrom($emailCredentials['sender_email'], 'Inua Premium Services');
+        $mail->addReplyTo($emailCredentials['sender_email'], 'Inua Premium Services');
+        $mail->addAddress($recipientEmail, $recipientName);
+        $mail->isHTML(true);
+        $mail->Subject = $subject;
+        $logoPath = __DIR__ . '/../assets/img/logo.png';
+        if (file_exists($logoPath)) {
+            $mail->addEmbeddedImage($logoPath, 'company_logo');
+        }
+        $mail->Body = $body;
+        $mail->AltBody = strip_tags(str_replace(['<br>', '<br/>', '</p>'], "\n", $body));
+        $mail->send();
+    }
+
     function updateLoanStatus($loan_id, $status) {
         global $conn;
-        $sql = "UPDATE loan_applications SET loan_status = ? WHERE id = ?";
+        $sql = "UPDATE loan_applications
+                SET loan_status = ?,
+                    approved_at = CASE WHEN ? = 'approved' THEN CURRENT_TIMESTAMP ELSE NULL END
+                WHERE id = ?";
         $stmt = $conn->prepare($sql);
-        $stmt->bind_param("si", $status, $loan_id);
+        $stmt->bind_param("ssi", $status, $status, $loan_id);
         return $stmt->execute();
+    }
+
+    function getLoanStatus($conn, $loan_id) {
+        $stmt = $conn->prepare("SELECT loan_status FROM loan_applications WHERE id = ? LIMIT 1");
+        if (!$stmt) {
+            throw new RuntimeException('Unable to prepare loan status lookup.');
+        }
+
+        $stmt->bind_param('i', $loan_id);
+        if (!$stmt->execute()) {
+            $stmt->close();
+            throw new RuntimeException('Unable to retrieve loan status.');
+        }
+
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        return strtolower(trim((string) ($row['loan_status'] ?? '')));
     }
 
     function getBorrowers($conn) {
@@ -456,6 +624,7 @@
 
     $borrowers = getBorrowers($conn);
     $loanProducts = getLoanProducts();
+    ensureLoanApprovalTimestampColumn($conn);
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $loan_id = isset($_POST['loan_id']) ? (int)$_POST['loan_id'] : 0;
@@ -464,13 +633,93 @@
         if ($action === 'approve' || $action === 'deny') {
             $status = ($action === 'approve') ? 'approved' : 'declined';
             $scheduleSynced = true;
+            $wasPending = false;
 
             if ($action === 'approve') {
-                $scheduleSynced = syncLoanRepaymentSchedule($conn, $loan_id);
+                try {
+                    $wasPending = getLoanStatus($conn, $loan_id) === 'pending';
+                    $scheduleSynced = syncLoanRepaymentSchedule($conn, $loan_id);
+                } catch (Throwable $e) {
+                    error_log('Loan status check failed before approval for loan ' . $loan_id . ': ' . $e->getMessage());
+                    $scheduleSynced = false;
+                }
             }
 
             if ($scheduleSynced && updateLoanStatus($loan_id, $status)) {
-                echo "<div class='alert alert-success'>Loan $action successfully.</div>";
+                if ($action === 'approve' && $wasPending) {
+                    try {
+                        $loanDetails = getLoanApprovalNotificationDetails($conn, $loan_id);
+                        $managerEmail = trim((string) ($_SESSION['email'] ?? ''));
+                        $managerName = trim((string) ($_SESSION['name'] ?? 'Manager'));
+                        $managerName = $managerName !== '' ? $managerName : 'Manager';
+                        $emailCredentials = getPayrollEmailAccount();
+                        $numberOfRepayments = (int) ($loanDetails['number_of_repayments'] ?? 0);
+                        $installmentAmount = $numberOfRepayments > 0
+                            ? (float) $loanDetails['total_amount'] / $numberOfRepayments
+                            : (float) $loanDetails['total_amount'];
+                        $maturityDate = !empty($loanDetails['scheduled_maturity_date'])
+                            ? new DateTime($loanDetails['scheduled_maturity_date'])
+                            : getMaturityDate(
+                                $loanDetails['loan_release_date'],
+                                $loanDetails['loan_duration'],
+                                $loanDetails['loan_duration_unit'] ?? 'months'
+                            );
+                        $maturityDateDisplay = $maturityDate ? $maturityDate->format('d/m/Y') : 'Not available';
+                        $managerTotals = getTodaysLoanApprovalTotals($conn);
+                        $officerEmail = trim((string) ($loanDetails['officer_email'] ?? ''));
+                        $officerName = trim((string) ($loanDetails['officer_name'] ?? ''));
+
+                        if ($officerEmail !== '') {
+                            try {
+                                $officerBody = buildLoanApprovalEmailBody(
+                                    $officerName !== '' ? $officerName : 'Loan Officer',
+                                    $loanDetails,
+                                    $installmentAmount,
+                                    $maturityDateDisplay,
+                                    null,
+                                    false
+                                );
+                                sendLoanApprovalEmail(
+                                    $emailCredentials,
+                                    $officerEmail,
+                                    $officerName !== '' ? $officerName : 'Loan Officer',
+                                    'Loan Approved - ' . $loanDetails['borrower_name'],
+                                    $officerBody
+                                );
+                            } catch (Throwable $e) {
+                                error_log('Loan approval email to officer failed for loan ' . $loan_id . ': ' . $e->getMessage());
+                            }
+                        }
+
+                        $managerRecipient = filter_var($managerEmail, FILTER_VALIDATE_EMAIL)
+                            ? $managerEmail
+                            : trim((string) ($emailCredentials['sender_email'] ?? ''));
+                        try {
+                            $managerBody = buildLoanApprovalEmailBody(
+                                $managerName,
+                                $loanDetails,
+                                $installmentAmount,
+                                $maturityDateDisplay,
+                                $managerTotals
+                            );
+                            sendLoanApprovalEmail(
+                                $emailCredentials,
+                                $managerRecipient,
+                                $managerName,
+                                'Loan Approved - Manager Summary - ' . $loanDetails['borrower_name'],
+                                $managerBody
+                            );
+                        } catch (Throwable $e) {
+                            error_log('Loan approval email to manager failed for loan ' . $loan_id . ': ' . $e->getMessage());
+                        }
+                    } catch (Throwable $e) {
+                        error_log('Loan approval notification preparation failed for loan ' . $loan_id . ': ' . $e->getMessage());
+                    }
+
+                    echo "<div class='alert alert-success text-center'>Loan approved successfully.</div>";
+                } else {
+                    echo "<div class='alert alert-success'>Loan already approved.</div>";
+                }
             } else {
                 echo "<div class='alert alert-danger'>Failed to $action the loan.</div>";
             }

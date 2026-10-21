@@ -244,6 +244,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $rollover_date = $_POST['rollover_date'] ?? null;
     $rollover_duration = isset($_POST['rollover_duration']) ? (int)$_POST['rollover_duration'] : 0;
     $rollover_duration_unit = $_POST['rollover_duration_unit'] ?? 'months';
+    $valid_duration_units = ['days', 'weeks', 'months', 'years'];
 
     if ($loan_id > 0) {
         $loanRowResult = $conn->query("SELECT * FROM loan_applications WHERE id = $loan_id");
@@ -256,7 +257,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $interest_amount = (float)($loanRow['total_amount'] - $loanRow['principal']);
             $remaining_balance = max(0, (float)$loanRow['total_amount'] - $total_paid);
 
-            if ($total_paid >= $interest_amount && $remaining_balance > 0 && $rollover_date !== null && $rollover_duration > 0) {
+            if ($total_paid >= $interest_amount && $remaining_balance > 0 && $rollover_date !== null && $rollover_duration > 0 && in_array($rollover_duration_unit, $valid_duration_units, true)) {
                 $newLoanDetails = calculateLoanDetails(
                     $remaining_balance,
                     (float)$loanRow['loan_interest'], 
@@ -284,7 +285,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $stmt = $conn->prepare("INSERT INTO loan_applications (borrower, loan_product, principal, loan_release_date, interest, interest_method, loan_interest, loan_duration, loan_duration_unit, repayment_cycle, number_of_repayments, processing_fee, registration_fee, loan_status, total_amount, total_amount_inclusive) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)");
                 if ($stmt) {
                     $stmt->bind_param(
-                        "isdsdsisdiddddd",
+                        "isdsdsdissidddd",
                         $borrowerId,
                         $loanProductName,
                         $newPrincipal,

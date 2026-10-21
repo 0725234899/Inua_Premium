@@ -8,7 +8,6 @@ use PHPMailer\PHPMailer\Exception;
 require_once __DIR__ . '/PHPMailer/src/PHPMailer.php';
 require_once __DIR__ . '/PHPMailer/src/Exception.php';
 require_once __DIR__ . '/PHPMailer/src/SMTP.php';
-require_once __DIR__ . '/TCPDF/tcpdf.php';
 
 $conn->query("CREATE TABLE IF NOT EXISTS advances (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -18,34 +17,28 @@ $conn->query("CREATE TABLE IF NOT EXISTS advances (
     amount DECIMAL(12,2) NOT NULL,
     balance DECIMAL(12,2) NOT NULL,
     start_date DATE NOT NULL,
+    booking_date DATE DEFAULT NULL,
     monthly_deduction DECIMAL(12,2) NOT NULL DEFAULT 0.00,
     duration_months INT NOT NULL DEFAULT 1,
     recorded_by INT DEFAULT NULL,
     recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
 
-$conn->query("CREATE TABLE IF NOT EXISTS advance_templates (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    title VARCHAR(255) NOT NULL,
-    amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
-    monthly_deduction DECIMAL(12,2) NOT NULL DEFAULT 0.00,
-    start_date DATE NOT NULL,
-    created_by INT DEFAULT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
-
-$templateAmountCheck = $conn->query("SHOW COLUMNS FROM advance_templates LIKE 'amount'");
-if ($templateAmountCheck && $templateAmountCheck->num_rows === 0) {
-    $conn->query("ALTER TABLE advance_templates ADD COLUMN amount DECIMAL(12,2) NOT NULL DEFAULT 0.00 AFTER title");
-}
-$templateStartDateCheck = $conn->query("SHOW COLUMNS FROM advance_templates LIKE 'start_date'");
-if ($templateStartDateCheck && $templateStartDateCheck->num_rows === 0) {
-    $conn->query("ALTER TABLE advance_templates ADD COLUMN start_date DATE NULL AFTER monthly_deduction");
-}
-
 $advanceDurationCheck = $conn->query("SHOW COLUMNS FROM advances LIKE 'duration_months'");
 if ($advanceDurationCheck && $advanceDurationCheck->num_rows === 0) {
     $conn->query("ALTER TABLE advances ADD COLUMN duration_months INT NOT NULL DEFAULT 1");
+}
+$bookingDateCheck = $conn->query("SHOW COLUMNS FROM advances LIKE 'booking_date'");
+if (!$bookingDateCheck) {
+    throw new RuntimeException('Unable to check the advance booking date column: ' . $conn->error);
+}
+if ($bookingDateCheck->num_rows === 0) {
+    if (!$conn->query("ALTER TABLE advances ADD COLUMN booking_date DATE NULL AFTER start_date")) {
+        throw new RuntimeException('Unable to add the advance booking date column: ' . $conn->error);
+    }
+}
+if (!$conn->query("UPDATE advances SET booking_date = DATE(recorded_at) WHERE booking_date IS NULL")) {
+    throw new RuntimeException('Unable to populate existing advance booking dates: ' . $conn->error);
 }
 
 $conn->query("CREATE TABLE IF NOT EXISTS advance_repayments (
@@ -68,60 +61,77 @@ $conn->query("CREATE TABLE IF NOT EXISTS advance_repayment_schedule (
 
 $messages = [];
 
-function generate_advance_schedule_pdf($loan_officer_name, $amount, $duration, $monthly, $start_date, $scheduleRows) {
-    $pdf = new TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
-    $pdf->SetCreator('Inua Premium Services');
-    $pdf->SetAuthor('Inua Premium Services');
-    $pdf->SetTitle('Advance Repayment Schedule');
-    $pdf->SetMargins(15, 20, 15);
-    $pdf->SetAutoPageBreak(true, 20);
-    $pdf->AddPage();
+function get_advance_schedule_date($startDate, $monthOffset) {
+    $anchorDate = new DateTimeImmutable($startDate);
+    $dayOfMonth = (int) $anchorDate->format('j');
+    $targetMonth = $anchorDate->modify('first day of this month')->modify('+' . (int) $monthOffset . ' months');
 
-    $pdf->SetFont('helvetica', 'B', 16);
-    $pdf->Cell(0, 8, 'Advance Repayment Schedule', 0, 1, 'C');
-    $pdf->Ln(4);
-
-    $pdf->SetFont('helvetica', '', 10);
-    $pdf->Cell(0, 6, 'Loan Officer: ' . $loan_officer_name, 0, 1);
-    $pdf->Cell(0, 6, 'Advance Amount: KES ' . number_format($amount, 2), 0, 1);
-    $pdf->Cell(0, 6, 'Duration: ' . intval($duration) . ' months', 0, 1);
-    $pdf->Cell(0, 6, 'Monthly Deduction: KES ' . number_format($monthly, 2), 0, 1);
-    $pdf->Cell(0, 6, 'Start Date: ' . date('d-m-Y', strtotime($start_date)), 0, 1);
-    $pdf->Ln(6);
-
-    $pdf->SetFont('helvetica', 'B', 11);
-    $pdf->SetFillColor(232, 69, 69);
-    $pdf->SetTextColor(255, 255, 255);
-    $pdf->Cell(45, 8, 'Amount Due', 1, 0, 'C', 1);
-    $pdf->Cell(45, 8, 'Amount Deducted', 1, 0, 'C', 1);
-    $pdf->Cell(45, 8, 'Balance', 1, 0, 'C', 1);
-    $pdf->Cell(45, 8, 'Repayment Date', 1, 1, 'C', 1);
-
-    $pdf->SetTextColor(33, 37, 41);
-    $pdf->SetFont('helvetica', '', 10);
-    foreach ($scheduleRows as $row) {
-        $rowBalance = isset($row['balance']) ? $row['balance'] : 0.00;
-        $rowPaid = isset($row['paid']) ? $row['paid'] : 0.00;
-        $rowDue = isset($row['amount_due']) ? $row['amount_due'] : 0.00;
-        $pdf->Cell(45, 8, 'KES ' . number_format($rowDue, 2), 1, 0, 'R');
-        $pdf->Cell(45, 8, 'KES ' . number_format($rowPaid, 2), 1, 0, 'R');
-        $pdf->Cell(45, 8, 'KES ' . number_format($rowBalance, 2), 1, 0, 'R');
-        $pdf->Cell(45, 8, $row['repayment_date'] ?? '', 1, 1, 'C');
-    }
-
-    $pdf->Ln(6);
-    $pdf->SetFont('helvetica', 'I', 8);
-    $pdf->SetTextColor(56, 152, 219);
-    $pdf->Cell(0, 6, 'Generated by Inua Premium Services', 0, 1, 'C');
-
-    return $pdf->Output('', 'S');
+    return $targetMonth
+        ->setDate(
+            (int) $targetMonth->format('Y'),
+            (int) $targetMonth->format('m'),
+            min($dayOfMonth, (int) $targetMonth->format('t'))
+        )
+        ->format('Y-m-d');
 }
 
-function send_pdf_email($recipient_email, $subject, $body, $pdf_content, $filename) {
+function build_advance_email_body($subject, $body, $advanceDetails, $scheduleRows) {
+    $escape = static function ($value) {
+        return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+    };
+    $logoPath = __DIR__ . '/../assets/img/logo.png';
+    $html = '<html><body style="margin:0;padding:0;font-family:Inter,Arial,sans-serif;background:#eaf5ff;color:#0f172a;">';
+    $html .= '<table width="100%" cellpadding="0" cellspacing="0" style="background:#eaf5ff;padding:24px;"><tr><td align="center">';
+    $html .= '<table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#fff;border-radius:24px;overflow:hidden;border:1px solid #dbeafe;">';
+    $html .= '<tr><td style="padding:28px 32px;background:#0ea5e9;color:#fff;text-align:center;">';
+    if (file_exists($logoPath)) {
+        $html .= '<img src="cid:company_logo" alt="Company Logo" width="96" style="display:block;margin:0 auto 18px;">';
+    }
+    $html .= '<h1 style="margin:0;font-size:26px;">Inua Premium Services</h1>';
+    $html .= '<p style="margin:10px 0 0;font-size:15px;color:#dbeafe;">' . $escape($subject) . '</p></td></tr>';
+    $html .= '<tr><td style="padding:24px 32px 28px;font-size:14px;line-height:1.6;color:#475569;">';
+    $html .= $body;
+
+    if ($advanceDetails) {
+        $html .= '<h3 style="margin:18px 0 8px;color:#0f172a;">Advance Details</h3>';
+        $html .= '<table width="100%" cellpadding="8" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;">';
+        $html .= '<tr style="background:#f1f5f9;"><td><strong>Advance Amount</strong></td><td align="right">KES ' . number_format((float) ($advanceDetails['amount'] ?? 0), 2) . '</td></tr>';
+        $html .= '<tr><td><strong>Current Balance</strong></td><td align="right">KES ' . number_format((float) ($advanceDetails['balance'] ?? 0), 2) . '</td></tr>';
+        $html .= '<tr style="background:#f8fafc;"><td><strong>Monthly Deduction</strong></td><td align="right">KES ' . number_format((float) ($advanceDetails['monthly_deduction'] ?? 0), 2) . '</td></tr>';
+        $html .= '<tr><td><strong>Booking Date</strong></td><td align="right">' . $escape(!empty($advanceDetails['booking_date']) ? date('d-m-Y', strtotime($advanceDetails['booking_date'])) : '') . '</td></tr>';
+        $html .= '<tr><td><strong>Schedule Start Date</strong></td><td align="right">' . $escape(!empty($advanceDetails['start_date']) ? date('d-m-Y', strtotime($advanceDetails['start_date'])) : '') . '</td></tr>';
+        $html .= '</table>';
+    }
+
+    if ($scheduleRows) {
+        $html .= '<h3 style="margin:18px 0 8px;color:#0f172a;">Repayment Schedule</h3>';
+        $html .= '<table width="100%" cellpadding="7" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;font-size:13px;">';
+        $html .= '<tr style="background:#f1f5f9;"><th align="left">Installment</th><th align="right">Amount Due</th><th align="right">Amount Paid</th><th align="right">Balance</th><th align="right">Due Date</th></tr>';
+        foreach ($scheduleRows as $index => $row) {
+            $html .= '<tr style="background:' . ($index % 2 === 0 ? '#ffffff' : '#f8fafc') . ';">';
+            $html .= '<td>' . ($index + 1) . '</td>';
+            $html .= '<td align="right">KES ' . number_format((float) ($row['amount_due'] ?? 0), 2) . '</td>';
+            $html .= '<td align="right">KES ' . number_format((float) ($row['paid'] ?? 0), 2) . '</td>';
+            $html .= '<td align="right">KES ' . number_format((float) ($row['balance'] ?? 0), 2) . '</td>';
+            $html .= '<td align="right">' . $escape($row['repayment_date'] ?? '') . '</td></tr>';
+        }
+        $html .= '</table>';
+    }
+
+    $html .= '<p style="margin:18px 0 0;font-size:12px;color:#64748b;">This is an automated advance notification from Inua Premium Services.</p>';
+    $html .= '</td></tr></table></td></tr></table></body></html>';
+
+    return $html;
+}
+
+function send_advance_email($recipient_email, $subject, $body, $advanceDetails = [], $scheduleRows = []) {
     try {
-        $emailCredentials = getEmailAccount();
-        if (empty($emailCredentials['sender_email']) || empty($emailCredentials['app_password'])) {
-            throw new Exception('Email settings are not configured.');
+        $emailCredentials = getPayrollEmailAccount();
+        if (empty($emailCredentials['sender_email']) || empty($emailCredentials['sender_app_password'])) {
+            throw new Exception('Manager payroll email settings are not configured. Configure the sender email and app password in Payroll Settings.');
+        }
+        if (!filter_var($recipient_email, FILTER_VALIDATE_EMAIL)) {
+            throw new Exception('The loan officer does not have a valid email address.');
         }
 
         $mail = new PHPMailer(true);
@@ -134,20 +144,26 @@ function send_pdf_email($recipient_email, $subject, $body, $pdf_content, $filena
         ];
         $mail->SMTPDebug = 0;
         $mail->isSMTP();
-        $mail->Host = 'smtp.gmail.com';
-        $mail->Port = 587;
-        $mail->SMTPSecure = 'tls';
+        $smtpSettings = getPayrollSmtpSettings($emailCredentials['sender_email']);
+        $mail->Host = $smtpSettings['host'];
+        $mail->Port = $smtpSettings['port'];
+        $mail->SMTPSecure = $smtpSettings['encryption'];
+        $mail->SMTPAutoTLS = true;
         $mail->SMTPAuth = true;
         $mail->Username = $emailCredentials['sender_email'];
-        $mail->Password = $emailCredentials['app_password'];
+        $mail->Password = $emailCredentials['sender_app_password'];
         $mail->CharSet = 'UTF-8';
         $mail->setFrom($emailCredentials['sender_email'], 'Inua Premium Services');
+        $mail->addReplyTo($emailCredentials['sender_email'], 'Inua Premium Services');
         $mail->addAddress($recipient_email);
         $mail->isHTML(true);
         $mail->Subject = $subject;
-        $mail->Body = $body;
-        $mail->AltBody = strip_tags($body);
-        $mail->addStringAttachment($pdf_content, $filename, 'base64', 'application/pdf');
+        $logoPath = __DIR__ . '/../assets/img/logo.png';
+        if (file_exists($logoPath)) {
+            $mail->addEmbeddedImage($logoPath, 'company_logo');
+        }
+        $mail->Body = build_advance_email_body($subject, $body, $advanceDetails, $scheduleRows);
+        $mail->AltBody = strip_tags(str_replace(['<br>', '<br/>', '</p>'], "\n", $body));
         $mail->send();
         return true;
     } catch (Exception $e) {
@@ -158,37 +174,28 @@ function send_pdf_email($recipient_email, $subject, $body, $pdf_content, $filena
 
 // Handlers
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Create template
-    if (isset($_POST['create_template'])) {
-        $title = trim($_POST['title']);
-        $amount = floatval($_POST['template_amount'] ?? 0);
-        $monthly = floatval($_POST['monthly_deduction']);
-        $start_date = $_POST['template_start_date'] ?? date('Y-m-d');
-        $created_by = $_SESSION['user_id'] ?? null;
-
-        $stmt = $conn->prepare("INSERT INTO advance_templates (title, amount, monthly_deduction, start_date, created_by) VALUES (?, ?, ?, ?, ?)");
-        $stmt->bind_param('sddsi', $title, $amount, $monthly, $start_date, $created_by);
-        if ($stmt->execute()) {
-            $messages[] = 'Template created.';
-        } else {
-            $messages[] = 'Error creating template: ' . $conn->error;
-        }
-        $stmt->close();
-    }
-
     // Book advance
     if (isset($_POST['book_advance'])) {
         $loan_officer_id = (int) $_POST['loan_officer_id'];
-        $template_id = !empty($_POST['template_id']) ? (int) $_POST['template_id'] : null;
-        $amount = floatval($_POST['amount']);
-        $monthly = floatval($_POST['monthly_deduction']);
-        if ($amount > 0 && $monthly > 0) {
-            $duration = max(1, min(36, (int) ceil($amount / $monthly)));
+        $amount = round((float) $_POST['amount'], 2);
+        $monthly = round((float) $_POST['monthly_deduction'], 2);
+        $booking_date = trim((string) ($_POST['booking_date'] ?? ''));
+        $bookingDateObject = DateTimeImmutable::createFromFormat('!Y-m-d', $booking_date);
+        $bookingDateErrors = DateTimeImmutable::getLastErrors();
+        if (
+            !$bookingDateObject
+            || ($bookingDateErrors !== false && ($bookingDateErrors['warning_count'] > 0 || $bookingDateErrors['error_count'] > 0))
+            || $bookingDateObject->format('Y-m-d') !== $booking_date
+        ) {
+            $messages[] = 'Please select a valid advance booking date.';
         } else {
-            $duration = 1;
-        }
-        $start_date = $_POST['start_date'];
-        $recorded_by = $_SESSION['user_id'] ?? null;
+            if ($amount > 0 && $monthly > 0) {
+                $duration = max(1, min(36, (int) ceil($amount / $monthly)));
+            } else {
+                $duration = 1;
+            }
+            $start_date = $_POST['start_date'];
+            $recorded_by = $_SESSION['user_id'] ?? null;
 
         // get officer name and email
         $res = $conn->prepare("SELECT name, email FROM users WHERE id = ? LIMIT 1");
@@ -206,8 +213,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $duration = 1;
             }
             $balance = $amount;
-            $stmt = $conn->prepare("INSERT INTO advances (loan_officer_id, loan_officer_name, template_id, amount, balance, start_date, monthly_deduction, duration_months, recorded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->bind_param('isiddsiii', $loan_officer_id, $loan_officer_name, $template_id, $amount, $balance, $start_date, $monthly, $duration, $recorded_by);
+            $stmt = $conn->prepare("INSERT INTO advances (loan_officer_id, loan_officer_name, amount, balance, start_date, booking_date, monthly_deduction, duration_months, recorded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->bind_param('isddssdii', $loan_officer_id, $loan_officer_name, $amount, $balance, $start_date, $booking_date, $monthly, $duration, $recorded_by);
             if ($stmt->execute()) {
                 $advance_id = $conn->insert_id;
                 $messages[] = 'Advance booked successfully.';
@@ -215,48 +222,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Generate repayment schedule
                 $installment = $monthly;
                 $last_amount = round($amount - $monthly * ($duration - 1), 2);
-                $due_date = new DateTime($start_date);
+                $scheduleRows = [];
+                $runningBalance = $amount;
                 $scheduleStmt = $conn->prepare("INSERT INTO advance_repayment_schedule (advance_id, due_amount, due_date, status) VALUES (?, ?, ?, 'pending')");
                 for ($i = 0; $i < $duration; $i++) {
-                    if ($i > 0) {
-                        $due_date->modify('+1 month');
-                    }
                     $due_amount = ($i === $duration - 1) ? $last_amount : $installment;
-                    $due_date_str = $due_date->format('Y-m-d');
+                    $due_date_str = get_advance_schedule_date($start_date, $i);
                     $scheduleStmt->bind_param('ids', $advance_id, $due_amount, $due_date_str);
                     $scheduleStmt->execute();
+                    $runningBalance = max(0, round($runningBalance - $due_amount, 2));
+                    $scheduleRows[] = [
+                        'amount_due' => $due_amount,
+                        'paid' => 0.00,
+                        'balance' => $runningBalance,
+                        'repayment_date' => date('d-m-Y', strtotime($due_date_str))
+                    ];
                 }
                 $scheduleStmt->close();
 
                 // Send schedule by email
                 if (!empty($loan_officer_email)) {
-                    $scheduleRows = [];
-                    $due_date = new DateTime($start_date);
-                    $runningBalance = $amount;
-                    for ($i = 0; $i < $duration; $i++) {
-                        if ($i > 0) {
-                            $due_date->modify('+1 month');
-                        }
-                        $due_amount = ($i === $duration - 1) ? $last_amount : $installment;
-                        $runningBalance -= $due_amount;
-                        $scheduleRows[] = [
-                            'amount_due' => $due_amount,
-                            'paid' => 0.00,
-                            'balance' => max(0, $runningBalance),
-                            'repayment_date' => $due_date->format('d-m-Y')
-                        ];
-                    }
-                    $pdfContent = generate_advance_schedule_pdf(
-                        $loan_officer_name,
-                        $amount,
-                        $duration,
-                        $monthly,
-                        $start_date,
-                        $scheduleRows
-                    );
                     $subject = 'Advance Repayment Schedule';
-                    $body = 'Dear ' . htmlspecialchars($loan_officer_name) . ',<br><br>Please find attached your advance repayment schedule.';
-                    if (send_pdf_email($loan_officer_email, $subject, $body, $pdfContent, 'advance_schedule.pdf')) {
+                    $body = 'Dear ' . htmlspecialchars($loan_officer_name) . ',<br><br>Please find your advance repayment schedule below.';
+                    $advanceDetails = [
+                        'amount' => $amount,
+                        'balance' => $balance,
+                        'monthly_deduction' => $monthly,
+                        'start_date' => $start_date,
+                        'booking_date' => $booking_date
+                    ];
+                    if (send_advance_email($loan_officer_email, $subject, $body, $advanceDetails, $scheduleRows)) {
                         $messages[] = 'Schedule sent to loan officer email.';
                     } else {
                         $messages[] = 'Advance booked, but email send failed.';
@@ -269,15 +264,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $stmt->close();
         }
+        }
     }
 
     // Update advance
     if (isset($_POST['update_advance']) && !empty($_POST['edit_advance_id'])) {
         $advance_id = (int) $_POST['edit_advance_id'];
         $loan_officer_id = (int) $_POST['loan_officer_id'];
-        $template_id = !empty($_POST['template_id']) ? (int) $_POST['template_id'] : null;
-        $amount = floatval($_POST['amount']);
-        $monthly = floatval($_POST['monthly_deduction']);
+        $amount = round((float) $_POST['amount'], 2);
+        $monthly = round((float) $_POST['monthly_deduction'], 2);
         $duration = ($amount > 0 && $monthly > 0)
             ? max(1, min(36, (int) ceil($amount / $monthly)))
             : 1;
@@ -302,8 +297,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $paidQ->close();
 
             $balance = max(0, $amount - $total_paid);
-            $upd = $conn->prepare("UPDATE advances SET loan_officer_id = ?, loan_officer_name = ?, template_id = ?, amount = ?, balance = ?, start_date = ?, monthly_deduction = ?, duration_months = ?, recorded_by = ? WHERE id = ?");
-            $upd->bind_param('isiddsiiii', $loan_officer_id, $loan_officer_name, $template_id, $amount, $balance, $start_date, $monthly, $duration, $recorded_by, $advance_id);
+            $upd = $conn->prepare("UPDATE advances SET loan_officer_id = ?, loan_officer_name = ?, amount = ?, balance = ?, start_date = ?, monthly_deduction = ?, duration_months = ?, recorded_by = ? WHERE id = ?");
+            $upd->bind_param('isddsdiii', $loan_officer_id, $loan_officer_name, $amount, $balance, $start_date, $monthly, $duration, $recorded_by, $advance_id);
             if ($upd->execute()) {
                 $messages[] = 'Advance updated successfully.';
                 $del = $conn->prepare("DELETE FROM advance_repayment_schedule WHERE advance_id = ?");
@@ -318,14 +313,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $installment = round($remaining / $duration, 2);
                     }
                     $last_amount = round($remaining - $installment * ($duration - 1), 2);
-                    $due_date = new DateTime($start_date);
                     $scheduleStmt = $conn->prepare("INSERT INTO advance_repayment_schedule (advance_id, due_amount, due_date, status) VALUES (?, ?, ?, 'pending')");
                     for ($i = 0; $i < $duration; $i++) {
-                        if ($i > 0) {
-                            $due_date->modify('+1 month');
-                        }
                         $due_amount = ($i === $duration - 1) ? $last_amount : $installment;
-                        $due_date_str = $due_date->format('Y-m-d');
+                        $due_date_str = get_advance_schedule_date($start_date, $i);
                         $scheduleStmt->bind_param('ids', $advance_id, $due_amount, $due_date_str);
                         $scheduleStmt->execute();
                     }
@@ -341,7 +332,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Add repayment
     if (isset($_POST['add_repayment'])) {
         $advance_id = (int) $_POST['advance_id'];
-        $rep_amount = floatval($_POST['repayment_amount']);
+        $rep_amount = round((float) $_POST['repayment_amount'], 2);
         $payment_date = $_POST['payment_date'];
         $recorded_by = $_SESSION['user_id'] ?? null;
 
@@ -354,10 +345,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $upd->close();
 
             // get loan officer details and current balance
-            $q = $conn->prepare("SELECT a.loan_officer_name, u.email, a.amount, a.balance FROM advances a LEFT JOIN users u ON a.loan_officer_id = u.id WHERE a.id = ? LIMIT 1");
+            $q = $conn->prepare("SELECT a.loan_officer_name, u.email, a.amount, a.balance, a.monthly_deduction, a.duration_months, a.start_date FROM advances a LEFT JOIN users u ON a.loan_officer_id = u.id WHERE a.id = ? LIMIT 1");
             $q->bind_param('i', $advance_id);
             $q->execute();
-            $q->bind_result($loan_officer_name, $loan_officer_email, $advance_amount, $advance_balance);
+            $q->bind_result($loan_officer_name, $loan_officer_email, $advance_amount, $advance_balance, $advance_monthly_deduction, $advance_duration, $advance_start_date);
             $q->fetch();
             $q->close();
 
@@ -370,7 +361,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'repayment_date' => date('d-m-Y', strtotime($payment_date))
                 ];
 
-                $runningBalance = $advance_balance;
+                $runningBalance = (float) $advance_balance;
                 $scheduleQuery = $conn->prepare("SELECT due_amount, due_date FROM advance_repayment_schedule WHERE advance_id = ? ORDER BY due_date ASC");
                 $scheduleQuery->bind_param('i', $advance_id);
                 $scheduleQuery->execute();
@@ -382,21 +373,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'balance' => max(0, $runningBalance - $row['due_amount']),
                         'repayment_date' => date('d-m-Y', strtotime($row['due_date']))
                     ];
-                    $runningBalance -= $row['due_amount'];
+                    $runningBalance = max(0, round($runningBalance - (float) $row['due_amount'], 2));
                 }
                 $scheduleQuery->close();
 
-                $pdfContent = generate_advance_schedule_pdf(
-                    $loan_officer_name,
-                    $advance_amount,
-                    0,
-                    0,
-                    $payment_date,
-                    $scheduleRows
-                );
                 $subject = 'Advance Payment Applied';
-                $body = 'Dear ' . htmlspecialchars($loan_officer_name) . ',<br><br>Your repayment of KES ' . number_format($rep_amount, 2) . ' has been recorded. Your current balance is KES ' . number_format($advance_balance, 2) . '. Please find the updated schedule attached.';
-                if (send_pdf_email($loan_officer_email, $subject, $body, $pdfContent, 'advance_payment_update.pdf')) {
+                $body = 'Dear ' . htmlspecialchars($loan_officer_name) . ',<br><br>Your repayment of KES ' . number_format($rep_amount, 2) . ' has been recorded. Your current balance is KES ' . number_format($advance_balance, 2) . '. Please find the updated schedule below.';
+                $advanceDetails = [
+                    'amount' => $advance_amount,
+                    'balance' => $advance_balance,
+                    'monthly_deduction' => $advance_monthly_deduction,
+                    'start_date' => $advance_start_date
+                ];
+                if (send_advance_email($loan_officer_email, $subject, $body, $advanceDetails, $scheduleRows)) {
                     $messages[] = 'Repayment added and email sent to loan officer.';
                 } else {
                     $messages[] = 'Repayment added, but email send failed.';
@@ -413,10 +402,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Apply monthly deduction
     if (isset($_POST['apply_deduction'])) {
         $advance_id = (int) $_POST['advance_id'];
-        $q = $conn->prepare("SELECT monthly_deduction, loan_officer_id, loan_officer_name, amount, balance FROM advances WHERE id = ? LIMIT 1");
+        $q = $conn->prepare("SELECT monthly_deduction, loan_officer_id, loan_officer_name, amount, balance, duration_months, start_date FROM advances WHERE id = ? LIMIT 1");
         $q->bind_param('i', $advance_id);
         $q->execute();
-        $q->bind_result($monthly_deduction, $loan_officer_id, $loan_officer_name, $advance_amount, $advance_balance);
+        $q->bind_result($monthly_deduction, $loan_officer_id, $loan_officer_name, $advance_amount, $advance_balance, $advance_duration, $advance_start_date);
         $q->fetch();
         $q->close();
 
@@ -459,21 +448,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'balance' => max(0, $runningBalance - $row['due_amount']),
                             'repayment_date' => date('d-m-Y', strtotime($row['due_date']))
                         ];
-                        $runningBalance -= $row['due_amount'];
+                        $runningBalance = max(0, round($runningBalance - (float) $row['due_amount'], 2));
                     }
                     $scheduleQuery->close();
 
-                    $pdfContent = generate_advance_schedule_pdf(
-                        $loan_officer_name,
-                        $advance_amount,
-                        0,
-                        $monthly_deduction,
-                        $payment_date,
-                        $scheduleRows
-                    );
                     $subject = 'Monthly Advance Deduction Applied';
-                    $body = 'Dear ' . htmlspecialchars($loan_officer_name) . ',<br><br>Your monthly deduction of KES ' . number_format($monthly_deduction, 2) . ' has been applied. Your current balance is KES ' . number_format($advance_balance, 2) . '. Please find the updated repayment schedule attached.';
-                    if (send_pdf_email($loan_officer_email, $subject, $body, $pdfContent, 'advance_deduction_update.pdf')) {
+                    $body = 'Dear ' . htmlspecialchars($loan_officer_name) . ',<br><br>Your monthly deduction of KES ' . number_format($monthly_deduction, 2) . ' has been applied. Your current balance is KES ' . number_format($advance_balance, 2) . '. Please find the updated schedule below.';
+                    $advanceDetails = [
+                        'amount' => $advance_amount,
+                        'balance' => $advance_balance,
+                        'monthly_deduction' => $monthly_deduction,
+                        'start_date' => $advance_start_date
+                    ];
+                    if (send_advance_email($loan_officer_email, $subject, $body, $advanceDetails, $scheduleRows)) {
                         $messages[] = 'Monthly deduction applied and email sent to loan officer.';
                     } else {
                         $messages[] = 'Monthly deduction applied, but email send failed.';
@@ -490,14 +477,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // Delete templates or advances
-    if (isset($_POST['delete_template'])) {
-        $tid = (int) $_POST['template_id'];
-        $stmt = $conn->prepare("DELETE FROM advance_templates WHERE id = ?");
-        $stmt->bind_param('i', $tid);
-        if ($stmt->execute()) $messages[] = 'Template deleted.'; else $messages[] = 'Error deleting template: '.$conn->error;
-        $stmt->close();
-    }
+    // Delete advance
     if (isset($_POST['delete_advance'])) {
         $aid = (int) $_POST['advance_id'];
         $stmt = $conn->prepare("DELETE FROM advance_repayments WHERE advance_id = ?");
@@ -508,11 +488,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->close();
     }
 }
-
-// Fetch data for display
-$templates = [];
-$tres = $conn->query("SELECT * FROM advance_templates ORDER BY id DESC");
-if ($tres) $templates = $tres->fetch_all(MYSQLI_ASSOC);
 
 // Fetch loan officers
 $loan_officers = [];
@@ -532,7 +507,7 @@ if ($lor) {
 <body>
 <div class="container mt-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h1 class="h3 mb-0">Advance Templates & Bookings</h1>
+        <h1 class="h3 mb-0">Advance Bookings</h1>
         <div>
             <a href="view_Advance.php" class="btn btn-info btn-sm">View Booked Advances</a>
             <a href="./index.php" class="btn btn-secondary btn-sm">Back to Home</a>
@@ -544,72 +519,14 @@ if ($lor) {
     <?php endforeach; ?>
 
     <div class="row">
-        <div class="col-md-4">
-            <div class="card mb-4 shadow-sm">
-                <div class="card-header bg-primary text-white">
-                    <h5 class="mb-0">Create Advance Template</h5>
-                </div>
-                <div class="card-body">
-                    <form method="POST">
-                        <div class="mb-3">
-                            <label class="form-label">Template Title</label>
-                            <input class="form-control" name="title" placeholder="e.g. loan officer name" required>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Monthly Deduction</label>
-                            <input class="form-control" name="monthly_deduction" type="number" step="0.01" value="0.00" required>
-                        </div>
-                        <button class="btn btn-primary w-100" name="create_template">Save Template</button>
-                    </form>
-                </div>
-            </div>
-
-            <div class="card shadow-sm">
-                <div class="card-header bg-secondary text-white">
-                    <h5 class="mb-0">Saved Templates</h5>
-                </div>
-                <div class="card-body p-0">
-                    <?php if (count($templates) > 0): ?>
-                        <div class="table-responsive">
-                            <table class="table table-sm mb-0">
-                                <thead>
-                                    <tr>
-                                        <th>Title</th>
-                                        <th>Monthly</th>
-                                        <th>Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($templates as $t): ?>
-                                        <tr>
-                                            <td><?php echo htmlspecialchars($t['title']); ?></td>
-                                            <td><?php echo number_format($t['monthly_deduction'], 2); ?></td>
-                                            <td>
-                                                <form method="POST" style="display:inline-block; margin:0;">
-                                                    <input type="hidden" name="template_id" value="<?php echo $t['id']; ?>">
-                                                    <button class="btn btn-sm btn-danger" name="delete_template" onclick="return confirm('Delete template?')">Delete</button>
-                                                </form>
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    <?php else: ?>
-                        <div class="p-3 text-muted">No templates defined yet.</div>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </div>
-
-        <div class="col-md-8">
+        <div class="col-12">
             <div class="card shadow-sm mb-4">
                 <div class="card-header bg-success text-white">
                     <h5 class="mb-0">Book Advance to Loan Officer</h5>
                 </div>
                 <div class="card-body">
                     <form method="POST" class="row g-3">
-                        <div class="col-md-6">
+                        <div class="col-md-4">
                             <label class="form-label">Loan Officer</label>
                             <select id="loan_officer_id" name="loan_officer_id" class="form-select" required>
                                 <?php foreach ($loan_officers as $lo): ?>
@@ -617,18 +534,13 @@ if ($lor) {
                                 <?php endforeach; ?>
                             </select>
                         </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Template (optional)</label>
-                            <select name="template_id" id="template_id" class="form-select">
-                                <option value="">-- none --</option>
-                                <?php foreach ($templates as $t): ?>
-                                    <option value="<?php echo $t['id']; ?>" data-monthly="<?php echo $t['monthly_deduction']; ?>"><?php echo htmlspecialchars($t['title']); ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
                         <div class="col-md-4">
                             <label class="form-label">Advance Amount</label>
                             <input id="amount" name="amount" class="form-control" type="number" step="0.01" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Booking Date</label>
+                            <input id="booking_date" name="booking_date" class="form-control" type="date" value="<?php echo date('Y-m-d'); ?>" required>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Monthly Deduction</label>
@@ -664,14 +576,9 @@ function updateDuration() {
     document.getElementById('duration_months').value = Math.min(36, Math.max(1, duration));
 }
 
-function editAdvance(id, loanOfficerId, templateId, amount, monthly, duration, startDate) {
+function editAdvance(id, loanOfficerId, amount, monthly, duration, startDate) {
     document.getElementById('edit_advance_id').value = id;
     document.getElementById('loan_officer_id').value = loanOfficerId;
-    var templateSelect = document.getElementById('template_id');
-    templateSelect.value = templateId || '';
-    if (!templateSelect.querySelector('option[value="' + templateSelect.value + '"]')) {
-        templateSelect.selectedIndex = 0;
-    }
     document.getElementById('amount').value = amount;
     document.getElementById('monthly_deduction').value = monthly;
     updateDuration();
@@ -683,7 +590,6 @@ function editAdvance(id, loanOfficerId, templateId, amount, monthly, duration, s
 function cancelEdit() {
     document.getElementById('edit_advance_id').value = '';
     document.getElementById('loan_officer_id').selectedIndex = 0;
-    document.getElementById('template_id').selectedIndex = 0;
     document.getElementById('amount').value = '';
     document.getElementById('monthly_deduction').value = '0.00';
     document.getElementById('duration_months').value = '1';
@@ -692,13 +598,6 @@ function cancelEdit() {
     document.getElementById('update_advance_btn').classList.add('d-none');
     document.getElementById('cancel_edit_btn').classList.add('d-none');
 }
-    document.getElementById('template_id').addEventListener('change', function () {
-        var selected = this.options[this.selectedIndex];
-        var monthly = selected.getAttribute('data-monthly') || '0.00';
-        document.getElementById('monthly_deduction').value = parseFloat(monthly).toFixed(2);
-        updateDuration();
-    });
-
     document.getElementById('amount').addEventListener('input', updateDuration);
     document.getElementById('monthly_deduction').addEventListener('input', updateDuration);
 </script>

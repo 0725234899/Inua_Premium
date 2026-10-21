@@ -5,6 +5,19 @@ if (session_status() === PHP_SESSION_NONE) {
 include 'db.php';
 include '../includes/functions.php';
 
+$bookingDateCheck = $conn->query("SHOW COLUMNS FROM advances LIKE 'booking_date'");
+if (!$bookingDateCheck) {
+    throw new RuntimeException('Unable to check the advance booking date column: ' . $conn->error);
+}
+if ($bookingDateCheck->num_rows === 0) {
+    if (!$conn->query("ALTER TABLE advances ADD COLUMN booking_date DATE NULL AFTER start_date")) {
+        throw new RuntimeException('Unable to add the advance booking date column: ' . $conn->error);
+    }
+}
+if (!$conn->query("UPDATE advances SET booking_date = DATE(recorded_at) WHERE booking_date IS NULL")) {
+    throw new RuntimeException('Unable to populate existing advance booking dates: ' . $conn->error);
+}
+
 if (isset($_POST['update_advance'])) {
     $advanceId = (int) ($_POST['edit_advance_id'] ?? 0);
     $loanOfficerId = (int) ($_POST['loan_officer_id'] ?? 0);
@@ -115,6 +128,7 @@ if ($officerResult) {
                                     <th>Officer</th>
                                     <th>Amount</th>
                                     <th>Balance</th>
+                                    <th>Booking Date</th>
                                     <th>Start</th>
                                     <th>Monthly</th>
                                     <th>Actions</th>
@@ -126,6 +140,7 @@ if ($officerResult) {
                                         <td><?php echo htmlspecialchars($advance['loan_officer_name']); ?></td>
                                         <td><?php echo number_format($advance['amount'], 2); ?> KES</td>
                                         <td><?php echo number_format($advance['balance'], 2); ?> KES</td>
+                                        <td><?php echo !empty($advance['booking_date']) ? date('d-m-Y', strtotime($advance['booking_date'])) : ''; ?></td>
                                         <td><?php echo date('d-m-Y', strtotime($advance['start_date'])); ?></td>
                                         <td><?php echo number_format($advance['monthly_deduction'], 2); ?> KES</td>
                                         <td>
