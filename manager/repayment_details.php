@@ -517,7 +517,7 @@ function calculateDaysOverdueAfterMaturity($projectedMaturityDate, $repaymentRow
 
     $maturityDate = clone $projectedMaturityDate;
     $cumulativePaid = 0.0;
-    $clearingDate = null;
+    $loanClearingDate = null;
 
     foreach ($repaymentRows as $row) {
         $paymentDateValue = $row['repaid_date'] ?? $row['repayment_date'] ?? null;
@@ -526,10 +526,6 @@ function calculateDaysOverdueAfterMaturity($projectedMaturityDate, $repaymentRow
         }
 
         $paymentDate = new DateTime($paymentDateValue);
-        if ($paymentDate < $maturityDate) {
-            continue;
-        }
-
         $paidAmount = (float) ($row['paid'] ?? 0);
         if ($paidAmount <= 0) {
             continue;
@@ -537,16 +533,16 @@ function calculateDaysOverdueAfterMaturity($projectedMaturityDate, $repaymentRow
 
         $cumulativePaid += $paidAmount;
         if ($cumulativePaid >= (float) $totalDue) {
-            $clearingDate = $paymentDate;
+            $loanClearingDate = $paymentDate;
             break;
         }
     }
 
-    if ($clearingDate === null) {
+    if ($loanClearingDate === null || $loanClearingDate <= $maturityDate) {
         return 0;
     }
 
-    return max(0, (int) $maturityDate->diff($clearingDate)->days);
+    return (int) $maturityDate->diff($loanClearingDate)->days;
 }
 
 if (!isset($_GET['loanId']) || !is_numeric($_GET['loanId'])) {
@@ -892,7 +888,7 @@ while ($row = $result_history->fetch_assoc()) {
     ];
 }
 
-$repayment_rows_stmt = $conn->prepare("SELECT amount, paid, repayment_date, repaid_date FROM repayments WHERE loan_id = ? ORDER BY repaid_date ASC, repayment_date ASC");
+$repayment_rows_stmt = $conn->prepare("SELECT amount, paid, repayment_date, repaid_date FROM repayments WHERE loan_id = ? ORDER BY COALESCE(repaid_date, repayment_date) ASC, repayment_date ASC");
 $repayment_rows_stmt->bind_param("i", $loanId);
 $repayment_rows_stmt->execute();
 $repayment_rows_result = $repayment_rows_stmt->get_result();

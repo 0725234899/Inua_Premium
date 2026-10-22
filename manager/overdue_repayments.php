@@ -158,41 +158,105 @@ function calculateDaysInArrearsFromRepaymentSchedule($repaymentRows) {
     return $daysInArrears;
 }
 
-function get_borrower_days_in_arrears($conn, $borrowerId) {
-    $loanStmt = $conn->prepare("SELECT id FROM loan_applications WHERE borrower = ? AND loan_status = 'approved'");
+function get_borrower_overdue_loan($conn, $borrowerId) {
+    $loanStmt = $conn->prepare(
+        "SELECT la.id,
+                GREATEST(
+                    COALESCE(SUM(CASE
+                        WHEN r.repayment_date < CURDATE() THEN COALESCE(r.amount, 0)
+                        ELSE 0
+                    END), 0)
+                    - COALESCE(SUM(COALESCE(r.paid, 0)), 0)
+                    - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = la.id), 0),
+                    0
+                ) AS overdue_amount
+         FROM loan_applications la
+         LEFT JOIN repayments r ON r.loan_id = la.id
+         WHERE la.borrower = ? AND la.loan_status = 'approved'
+         GROUP BY la.id
+         HAVING overdue_amount > 0
+         ORDER BY overdue_amount DESC, la.id DESC
+         LIMIT 1"
+    );
     if (!$loanStmt) {
-        return 0;
+        throw new RuntimeException('Unable to prepare the overdue loan lookup: ' . $conn->error);
     }
 
     $loanStmt->bind_param('i', $borrowerId);
     $loanStmt->execute();
-    $loanResult = $loanStmt->get_result();
+    $loanRow = $loanStmt->get_result()->fetch_assoc();
+    $loanStmt->close();
 
-    $maxDays = 0;
-    while ($loanRow = $loanResult->fetch_assoc()) {
-        $loanId = (int) ($loanRow['id'] ?? 0);
-        if ($loanId <= 0) {
-            continue;
-        }
-
-        $repaymentStmt = $conn->prepare("SELECT repayment_date, amount, paid, repaid_date FROM repayments WHERE loan_id = ? ORDER BY repayment_date ASC");
-        if (!$repaymentStmt) {
-            continue;
-        }
-
-        $repaymentStmt->bind_param('i', $loanId);
-        $repaymentStmt->execute();
-        $repaymentRows = $repaymentStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        $repaymentStmt->close();
-
-        $loanDays = calculateDaysInArrearsFromRepaymentSchedule($repaymentRows);
-        if ($loanDays > $maxDays) {
-            $maxDays = $loanDays;
-        }
+    if (!$loanRow) {
+        return null;
     }
 
-    $loanStmt->close();
-    return $maxDays;
+    $loanId = (int) $loanRow['id'];
+    $repaymentStmt = $conn->prepare(
+        "SELECT repayment_date, amount, paid, repaid_date
+         FROM repayments
+         WHERE loan_id = ?
+         ORDER BY COALESCE(repaid_date, repayment_date) ASC, repayment_date ASC"
+    );
+    if (!$repaymentStmt) {
+        throw new RuntimeException('Unable to prepare the repayment schedule lookup: ' . $conn->error);
+    }
+
+    $repaymentStmt->bind_param('i', $loanId);
+    $repaymentStmt->execute();
+    $repaymentRows = $repaymentStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $repaymentStmt->close();
+
+    $penaltyStmt = $conn->prepare(
+        "SELECT amount, created_at
+         FROM penalty_actions
+         WHERE loan_id = ?
+         ORDER BY created_at DESC"
+    );
+    if (!$penaltyStmt) {
+        throw new RuntimeException('Unable to prepare the penalty write-off lookup: ' . $conn->error);
+    }
+
+    $penaltyStmt->bind_param('i', $loanId);
+    $penaltyStmt->execute();
+    $penaltyResult = $penaltyStmt->get_result();
+    $totalPenaltyWrittenOff = 0.0;
+    $penaltyWriteOffDate = null;
+    while ($penaltyRow = $penaltyResult->fetch_assoc()) {
+        $totalPenaltyWrittenOff += (float) ($penaltyRow['amount'] ?? 0);
+        if ($penaltyWriteOffDate === null && !empty($penaltyRow['created_at'])) {
+            $penaltyWriteOffDate = date('Y-m-d', strtotime($penaltyRow['created_at']));
+        }
+    }
+    $penaltyStmt->close();
+
+    if ($totalPenaltyWrittenOff > 0 && $penaltyWriteOffDate !== null) {
+        $remainingWriteOff = $totalPenaltyWrittenOff;
+        foreach ($repaymentRows as &$repaymentRow) {
+            if ($remainingWriteOff <= 0) {
+                break;
+            }
+
+            $remainingDue = max(
+                0,
+                (float) ($repaymentRow['amount'] ?? 0) - (float) ($repaymentRow['paid'] ?? 0)
+            );
+            if ($remainingDue <= 0) {
+                continue;
+            }
+
+            $creditedAmount = min($remainingWriteOff, $remainingDue);
+            $repaymentRow['paid'] = (float) ($repaymentRow['paid'] ?? 0) + $creditedAmount;
+            $repaymentRow['repaid_date'] = $penaltyWriteOffDate;
+            $remainingWriteOff -= $creditedAmount;
+        }
+        unset($repaymentRow);
+    }
+
+    return [
+        'loan_id' => $loanId,
+        'days_in_arrears' => calculateDaysInArrearsFromRepaymentSchedule($repaymentRows),
+    ];
 }
 
 function fetch_arrears_report_data($conn, $selected_officer = 'all', $selected_day = 'all') {
@@ -247,7 +311,9 @@ function fetch_arrears_report_data($conn, $selected_officer = 'all', $selected_d
     $count = 0;
     while ($row = $result->fetch_assoc()) {
         $borrowerId = (int) ($row['borrower_id'] ?? 0);
-        $row['days_in_arrears'] = get_borrower_days_in_arrears($conn, $borrowerId);
+        $overdueLoan = get_borrower_overdue_loan($conn, $borrowerId);
+        $row['loan_id'] = $overdueLoan['loan_id'] ?? 0;
+        $row['days_in_arrears'] = $overdueLoan['days_in_arrears'] ?? 0;
         $rows[] = $row;
         $total_overdue += (float) $row['total_overdue'];
         $count++;
@@ -551,7 +617,9 @@ $total_overdue = 0;
 $total_overdue_count = 0;
 while ($row = $result_overdue->fetch_assoc()) {
     $borrowerId = (int) ($row['borrower_id'] ?? 0);
-    $row['days_in_arrears'] = get_borrower_days_in_arrears($conn, $borrowerId);
+    $overdueLoan = get_borrower_overdue_loan($conn, $borrowerId);
+    $row['loan_id'] = $overdueLoan['loan_id'] ?? 0;
+    $row['days_in_arrears'] = $overdueLoan['days_in_arrears'] ?? 0;
     $arrears_rows[] = $row;
     $total_overdue += (float) ($row['total_overdue'] ?? 0);
     $total_overdue_count++;
@@ -846,7 +914,15 @@ if ((PHP_SAPI === 'cli' && isset($argv[1]) && $argv[1] === 'auto') || (isset($_G
             <tbody>
                 <?php foreach ($arrears_rows as $row): ?>
                     <tr>
-                        <td><?= htmlspecialchars($row['borrower_name']); ?></td>
+                        <td>
+                            <?php if ((int) ($row['loan_id'] ?? 0) > 0): ?>
+                                <a href="repayment_details.php?loanId=<?= (int) $row['loan_id']; ?>">
+                                    <?= htmlspecialchars($row['borrower_name']); ?>
+                                </a>
+                            <?php else: ?>
+                                <?= htmlspecialchars($row['borrower_name']); ?>
+                            <?php endif; ?>
+                        </td>
                         <td><?= htmlspecialchars($row['phone_number']); ?></td>
                         <td><?= (int) $row['days_in_arrears']; ?> days</td>
                         <td class="text-end">KSH <?= number_format($row['outstanding_loan_balance'], 2); ?></td>

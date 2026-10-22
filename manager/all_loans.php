@@ -134,6 +134,31 @@
         }
     }
 
+    function loanApplicationColumnExists($conn, $columnName) {
+        $stmt = $conn->prepare(
+            "SELECT COUNT(*) AS column_count
+             FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'loan_applications'
+               AND COLUMN_NAME = ?"
+        );
+        if (!$stmt) {
+            throw new RuntimeException('Unable to check loan application columns: ' . $conn->error);
+        }
+
+        $stmt->bind_param('s', $columnName);
+        if (!$stmt->execute()) {
+            $error = $stmt->error;
+            $stmt->close();
+            throw new RuntimeException('Unable to check loan application columns: ' . $error);
+        }
+
+        $exists = (int) ($stmt->get_result()->fetch_assoc()['column_count'] ?? 0) > 0;
+        $stmt->close();
+
+        return $exists;
+    }
+
     function getLoanApprovalNotificationDetails($conn, $loanId) {
         $stmt = $conn->prepare(
             "SELECT la.id AS loan_id, la.principal, la.total_amount, la.number_of_repayments,
@@ -167,6 +192,30 @@
         return $details;
     }
 
+    function getLoanRepaymentScheduleForNotification($conn, $loanId) {
+        $stmt = $conn->prepare(
+            "SELECT repayment_date, amount
+             FROM repayments
+             WHERE loan_id = ?
+             ORDER BY repayment_date ASC"
+        );
+        if (!$stmt) {
+            throw new RuntimeException('Unable to prepare the repayment schedule for loan notification.');
+        }
+
+        $stmt->bind_param('i', $loanId);
+        if (!$stmt->execute()) {
+            $error = $stmt->error;
+            $stmt->close();
+            throw new RuntimeException('Unable to retrieve the repayment schedule for loan notification: ' . $error);
+        }
+
+        $schedule = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        return $schedule;
+    }
+
     function getTodaysLoanApprovalTotals($conn) {
         $result = $conn->query(
             "SELECT COALESCE(SUM(COALESCE(principal, 0)), 0) AS total_principal,
@@ -183,7 +232,7 @@
         return $result->fetch_assoc();
     }
 
-    function buildLoanApprovalEmailBody($recipientName, $details, $installmentAmount, $maturityDate, $managerTotals = null, $includeProjectedInterest = true) {
+    function buildLoanApprovalEmailBody($recipientName, $details, $installmentAmount, $maturityDate, $managerTotals = null, $includeProjectedInterest = true, $repaymentSchedule = []) {
         $escape = static function ($value) {
             return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
         };
@@ -213,6 +262,21 @@
         }
         $body .= '<tr style="background:#f8fafc;"><td><strong>Projected Maturity Date</strong></td><td align="right">' . $escape($maturityDate) . '</td></tr>';
         $body .= '</table>';
+        if (!empty($repaymentSchedule)) {
+            $body .= '<h2 style="margin:24px 0 10px;font-size:18px;color:#0f172a;">Repayment Schedule</h2>';
+            $body .= '<table width="100%" cellpadding="8" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;">';
+            $body .= '<tr style="background:#f1f5f9;"><th align="left" style="border:1px solid #e5e7eb;">Installment</th><th align="left" style="border:1px solid #e5e7eb;">Due Date</th><th align="right" style="border:1px solid #e5e7eb;">Amount</th></tr>';
+            foreach ($repaymentSchedule as $index => $repayment) {
+                $dueDate = !empty($repayment['repayment_date'])
+                    ? date('d/m/Y', strtotime($repayment['repayment_date']))
+                    : 'Not available';
+                $rowStyle = $index % 2 === 0 ? 'background:#f8fafc;' : '';
+                $body .= '<tr style="' . $rowStyle . '"><td style="border:1px solid #e5e7eb;">' . ($index + 1) . '</td>';
+                $body .= '<td style="border:1px solid #e5e7eb;">' . $escape($dueDate) . '</td>';
+                $body .= '<td align="right" style="border:1px solid #e5e7eb;">KES ' . number_format((float) ($repayment['amount'] ?? 0), 2) . '</td></tr>';
+            }
+            $body .= '</table>';
+        }
         if ($managerTotals !== null) {
             $body .= '<div style="margin-top:18px;padding:14px 16px;background:#f0f4f8;border:1px solid #e2e8f0;border-radius:8px;">';
             $body .= 'Today\'s Total Principal: KES ' . number_format((float) $managerTotals['total_principal'], 2) . '<br>';
@@ -671,13 +735,15 @@
 
                         if ($officerEmail !== '') {
                             try {
+                                $repaymentSchedule = getLoanRepaymentScheduleForNotification($conn, $loan_id);
                                 $officerBody = buildLoanApprovalEmailBody(
                                     $officerName !== '' ? $officerName : 'Loan Officer',
                                     $loanDetails,
                                     $installmentAmount,
                                     $maturityDateDisplay,
                                     null,
-                                    false
+                                    false,
+                                    $repaymentSchedule
                                 );
                                 sendLoanApprovalEmail(
                                     $emailCredentials,
@@ -747,6 +813,7 @@
             $total_amount = isset($_POST['total_amount']) ? (float)$_POST['total_amount'] : $loanDetails['total_amount'];
             $total_amount_inclusive = isset($_POST['total_amount_inclusive']) ? (float)$_POST['total_amount_inclusive'] : $loanDetails['total_amount_inclusive'];
             $total_interest = $loanDetails['total_interest'];
+            $hasInterestCalculationColumn = loanApplicationColumnExists($conn, 'interest_calculation');
 
             $statusRow = $conn->query("SELECT loan_status FROM loan_applications WHERE id = $loan_id");
             $currentStatus = 'pending';
@@ -757,9 +824,15 @@
 
             $conn->begin_transaction();
             try {
-                $stmt = $conn->prepare("UPDATE loan_applications SET borrower = ?, loan_product = ?, principal = ?, loan_release_date = ?, interest = ?, interest_method = ?, loan_interest = ?, loan_duration = ?, loan_duration_unit = ?, repayment_cycle = ?, number_of_repayments = ?, processing_fee = ?, registration_fee = ?, loan_status = ?, total_amount = ?, total_amount_inclusive = ? WHERE id = ?");
-                $stmt->bind_param("iidsdsdissiddsddi", $borrower, $loan_product, $principal, $loan_release_date, $loan_interest_percentage, $interest_method, $loan_interest_percentage, $loan_duration, $loan_duration_unit, $repayment_cycle, $number_of_repayments, $processing_fee, $registration_fee, $currentStatus, $total_amount, $total_amount_inclusive, $loan_id);
+                if ($hasInterestCalculationColumn) {
+                    $stmt = $conn->prepare("UPDATE loan_applications SET borrower = ?, loan_product = ?, principal = ?, loan_release_date = ?, interest = ?, interest_method = ?, interest_calculation = ?, loan_interest = ?, loan_duration = ?, loan_duration_unit = ?, repayment_cycle = ?, number_of_repayments = ?, processing_fee = ?, registration_fee = ?, loan_status = ?, total_amount = ?, total_amount_inclusive = ? WHERE id = ?");
+                    $stmt->bind_param("iidsdssdissiddsddi", $borrower, $loan_product, $principal, $loan_release_date, $loan_interest_percentage, $interest_method, $interest_calculation, $loan_interest_percentage, $loan_duration, $loan_duration_unit, $repayment_cycle, $number_of_repayments, $processing_fee, $registration_fee, $currentStatus, $total_amount, $total_amount_inclusive, $loan_id);
+                } else {
+                    $stmt = $conn->prepare("UPDATE loan_applications SET borrower = ?, loan_product = ?, principal = ?, loan_release_date = ?, interest = ?, interest_method = ?, loan_interest = ?, loan_duration = ?, loan_duration_unit = ?, repayment_cycle = ?, number_of_repayments = ?, processing_fee = ?, registration_fee = ?, loan_status = ?, total_amount = ?, total_amount_inclusive = ? WHERE id = ?");
+                    $stmt->bind_param("iidsdsdissiddsddi", $borrower, $loan_product, $principal, $loan_release_date, $loan_interest_percentage, $interest_method, $loan_interest_percentage, $loan_duration, $loan_duration_unit, $repayment_cycle, $number_of_repayments, $processing_fee, $registration_fee, $currentStatus, $total_amount, $total_amount_inclusive, $loan_id);
+                }
                 $stmt->execute();
+                $stmt->close();
 
                 $scheduleUpdated = rebuildRepaymentSchedule($conn, $loan_id, $principal, $total_interest, $repayment_cycle, $number_of_repayments, $loan_release_date, $loan_duration, $loan_duration_unit);
                 if ($scheduleUpdated) {
@@ -826,6 +899,12 @@
     function getLoans($search = '') {
         global $conn;
         $loans = array();
+        $durationUnitSelect = loanApplicationColumnExists($conn, 'loan_duration_unit')
+            ? 'l.loan_duration_unit'
+            : "'months' AS loan_duration_unit";
+        $interestCalculationSelect = loanApplicationColumnExists($conn, 'interest_calculation')
+            ? 'l.interest_calculation'
+            : "'monthly' AS interest_calculation";
 
         $sql = "SELECT 
                     l.id AS loan_id, 
@@ -839,11 +918,15 @@
                     l.loan_product,
                     l.loan_release_date,
                     l.interest_method,
+                    {$interestCalculationSelect},
                     l.loan_interest,
+                    {$durationUnitSelect},
                     l.repayment_cycle,
                     l.processing_fee,
                     l.registration_fee,
                     l.total_amount_inclusive,
+                    COALESCE((SELECT MAX(rm.repayment_date) FROM repayments rm WHERE rm.loan_id = l.id), '') AS projected_maturity_date,
+                    COALESCE((SELECT rs.amount FROM repayments rs WHERE rs.loan_id = l.id ORDER BY rs.repayment_date ASC LIMIT 1), 0) AS repayment_amount,
                     l.loan_status AS status,
                     COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0) AS total_paid,
                     (l.total_amount - l.principal) AS interest_amount
@@ -973,6 +1056,10 @@
                                                                 <input type="date" class="form-control" name="loan_release_date" value="<?= htmlspecialchars($loan['loan_release_date']); ?>" required>
                                                             </div>
                                                             <div class="col-md-6">
+                                                                <label class="form-label">Projected Maturity Date</label>
+                                                                <input type="date" class="form-control" name="projected_maturity_date" value="<?= htmlspecialchars($loan['projected_maturity_date'] ?? ''); ?>" readonly>
+                                                            </div>
+                                                            <div class="col-md-6">
                                                                 <label class="form-label">Interest Method</label>
                                                                 <select class="form-select" name="interest_method" required>
                                                                     <option value="flat_rate" <?= ($loan['interest_method'] == 'flat_rate') ? 'selected' : ''; ?>>Flat Rate</option>
@@ -983,14 +1070,18 @@
                                                             <div class="col-md-6">
                                                                 <label class="form-label">Interest Calculation</label>
                                                                 <select class="form-select" name="interest_calculation" required>
-                                                                    <option value="weekly">Weekly</option>
-                                                                    <option value="monthly" selected>Monthly</option>
-                                                                    <option value="yearly">Yearly</option>
+                                                                    <option value="weekly" <?= (($loan['interest_calculation'] ?? 'monthly') === 'weekly') ? 'selected' : ''; ?>>Weekly</option>
+                                                                    <option value="monthly" <?= (($loan['interest_calculation'] ?? 'monthly') === 'monthly') ? 'selected' : ''; ?>>Monthly</option>
+                                                                    <option value="yearly" <?= (($loan['interest_calculation'] ?? 'monthly') === 'yearly') ? 'selected' : ''; ?>>Yearly</option>
                                                                 </select>
                                                             </div>
                                                             <div class="col-md-6">
                                                                 <label class="form-label">Loan Interest %</label>
                                                                 <input type="number" step="0.01" class="form-control" name="loan_interest_percentage" value="<?= htmlspecialchars($loan['loan_interest']); ?>" required>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                <label class="form-label">Total Interest</label>
+                                                                <input type="number" step="0.01" class="form-control" name="total_interest" value="<?= htmlspecialchars($loan['interest_amount']); ?>" readonly>
                                                             </div>
                                                             <div class="col-md-6">
                                                                 <label class="form-label">Loan Duration</label>
@@ -999,10 +1090,10 @@
                                                             <div class="col-md-6">
                                                                 <label class="form-label">Loan Duration Unit</label>
                                                                 <select class="form-select" name="loan_duration_unit" required>
-                                                                    <option value="days">Days</option>
-                                                                    <option value="weeks">Weeks</option>
-                                                                    <option value="months" selected>Months</option>
-                                                                    <option value="years">Years</option>
+                                                                    <option value="days" <?= (($loan['loan_duration_unit'] ?? 'months') === 'days') ? 'selected' : ''; ?>>Days</option>
+                                                                    <option value="weeks" <?= (($loan['loan_duration_unit'] ?? 'months') === 'weeks') ? 'selected' : ''; ?>>Weeks</option>
+                                                                    <option value="months" <?= (($loan['loan_duration_unit'] ?? 'months') === 'months') ? 'selected' : ''; ?>>Months</option>
+                                                                    <option value="years" <?= (($loan['loan_duration_unit'] ?? 'months') === 'years') ? 'selected' : ''; ?>>Years</option>
                                                                 </select>
                                                             </div>
                                                             <div class="col-md-6">
@@ -1037,7 +1128,7 @@
                                                             </div>
                                                             <div class="col-md-6">
                                                                 <label class="form-label">Repayment Amount Per Cycle</label>
-                                                                <input type="number" step="0.01" class="form-control" name="repayment_amount" readonly>
+                                                                <input type="number" step="0.01" class="form-control" name="repayment_amount" value="<?= htmlspecialchars($loan['repayment_amount']); ?>" readonly>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -1063,6 +1154,7 @@
             const principal = parseFloat(form.querySelector('[name="principal"]').value) || 0;
             const loanDuration = parseFloat(form.querySelector('[name="loan_duration"]').value) || 0;
             const loanDurationUnit = form.querySelector('[name="loan_duration_unit"]').value;
+            const releaseDateValue = form.querySelector('[name="loan_release_date"]').value;
             const interestMethod = form.querySelector('[name="interest_method"]').value;
             const interestCalculation = form.querySelector('[name="interest_calculation"]').value;
             const repaymentCycle = form.querySelector('[name="repayment_cycle"]').value;
@@ -1134,9 +1226,38 @@
             const repaymentAmount = numberOfRepayments > 0 ? totalAmount / numberOfRepayments : 0;
 
             form.querySelector('[name="number_of_repayments"]').value = numberOfRepayments.toFixed(2);
+            form.querySelector('[name="total_interest"]').value = totalInterest.toFixed(2);
             form.querySelector('[name="total_amount"]').value = totalAmount.toFixed(2);
             form.querySelector('[name="total_amount_inclusive"]').value = totalAmountInclusive.toFixed(2);
             form.querySelector('[name="repayment_amount"]').value = repaymentAmount.toFixed(2);
+
+            const maturityInput = form.querySelector('[name="projected_maturity_date"]');
+            if (maturityInput) {
+                if (!releaseDateValue || loanDuration <= 0) {
+                    maturityInput.value = '';
+                } else {
+                    const maturityDate = new Date(releaseDateValue + 'T00:00:00');
+                    switch (loanDurationUnit) {
+                        case 'days':
+                            maturityDate.setDate(maturityDate.getDate() + loanDuration);
+                            break;
+                        case 'weeks':
+                            maturityDate.setDate(maturityDate.getDate() + (loanDuration * 7));
+                            break;
+                        case 'years':
+                            maturityDate.setFullYear(maturityDate.getFullYear() + loanDuration);
+                            break;
+                        default:
+                            maturityDate.setMonth(maturityDate.getMonth() + loanDuration);
+                            break;
+                    }
+
+                    const year = maturityDate.getFullYear();
+                    const month = String(maturityDate.getMonth() + 1).padStart(2, '0');
+                    const day = String(maturityDate.getDate()).padStart(2, '0');
+                    maturityInput.value = `${year}-${month}-${day}`;
+                }
+            }
         }
 
         document.querySelectorAll('.edit-loan-form').forEach(function(form) {
@@ -1146,7 +1267,6 @@
             form.addEventListener('change', function() {
                 calculateEditLoanDetails(form);
             });
-            calculateEditLoanDetails(form);
         });
     </script>
     <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
