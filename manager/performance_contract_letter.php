@@ -79,6 +79,45 @@ function performanceDate($value, $fallback = 'Not specified') {
     return $date ? $date->format('d/m/Y') : $fallback;
 }
 
+function performanceLapseDate($startDate, $period, $unit) {
+    $startDate = DateTimeImmutable::createFromFormat('!Y-m-d', trim((string) $startDate));
+    $dateErrors = DateTimeImmutable::getLastErrors();
+    $period = filter_var($period, FILTER_VALIDATE_INT);
+    if (!$startDate || ($dateErrors && ($dateErrors['warning_count'] > 0 || $dateErrors['error_count'] > 0)) || $period === false || $period < 1 || !in_array($unit, ['months', 'years'], true)) {
+        return null;
+    }
+
+    $year = (int) $startDate->format('Y');
+    $month = (int) $startDate->format('n');
+    $day = (int) $startDate->format('j');
+    if ($unit === 'months') {
+        if ($period > ((9999 - $year) * 12) + (12 - $month)) {
+            return null;
+        }
+        $targetMonth = ($year * 12) + ($month - 1) + $period;
+        $year = intdiv($targetMonth, 12);
+        $month = ($targetMonth % 12) + 1;
+    } else {
+        if ($period > 9999 - $year) {
+            return null;
+        }
+        $year += $period;
+    }
+
+    if ($year > 9999) {
+        return null;
+    }
+
+    $lastDay = (int) $startDate->setDate($year, $month, 1)->format('t');
+    return $startDate->setDate($year, $month, min($day, $lastDay))->format('Y-m-d');
+}
+
+function performancePeriodLabel($period, $unit) {
+    $period = (int) $period;
+    $unitLabel = $unit === 'years' ? 'year' : 'month';
+    return $period . ' ' . $unitLabel . ($period === 1 ? '' : 's');
+}
+
 function performanceMoney($value) {
     return max(0, (float) str_replace(',', '', trim((string) $value)));
 }
@@ -175,7 +214,7 @@ function rolePerformancePlan($role) {
     ];
 }
 
-function generatePerformanceContractPdf($employee, $manager, $plan, $contractDate, $startDate, $monthlySalary, $commissionAmount) {
+function generatePerformanceContractPdf($employee, $manager, $plan, $contractDate, $startDate, $contractPeriod, $contractPeriodUnit, $lapseDate, $monthlySalary, $commissionAmount) {
     $pdf = new TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
     $pdf->SetCreator('Inua Premium Services Ltd');
     $pdf->SetAuthor($manager['name']);
@@ -247,7 +286,7 @@ function generatePerformanceContractPdf($employee, $manager, $plan, $contractDat
     $pdf->Cell(0, 5, '(' . $safe($plan['title']) . ')', 0, 1, 'C');
     $pdf->SetTextColor(45, 45, 45);
     $pdf->Ln(3);
-    $table('<table border="1" cellpadding="3"><tr bgcolor="#e8f4f3"><td width="25%"><b>Employee</b></td><td width="25%">' . $safe($employee['name']) . '</td><td width="25%"><b>Role</b></td><td width="25%">' . $safe($plan['title']) . '</td></tr><tr><td><b>Email</b></td><td>' . $safe($employee['email']) . '</td><td><b>Contract date</b></td><td>' . $safe(performanceDate($contractDate)) . '</td></tr><tr><td><b>Commencement</b></td><td>' . $safe(performanceDate($startDate)) . '</td><td><b>Reference</b></td><td>PC-' . date('YmdHis') . '</td></tr></table>');
+    $table('<table border="1" cellpadding="3"><tr bgcolor="#e8f4f3"><td width="25%"><b>Employee</b></td><td width="25%">' . $safe($employee['name']) . '</td><td width="25%"><b>Role</b></td><td width="25%">' . $safe($plan['title']) . '</td></tr><tr><td><b>Email</b></td><td>' . $safe($employee['email']) . '</td><td><b>Contract date</b></td><td>' . $safe(performanceDate($contractDate)) . '</td></tr><tr><td><b>Commencement</b></td><td>' . $safe(performanceDate($startDate)) . '</td><td><b>Contract period</b></td><td>' . $safe(performancePeriodLabel($contractPeriod, $contractPeriodUnit)) . '</td></tr><tr><td><b>Contract lapses</b></td><td>' . $safe(performanceDate($lapseDate)) . '</td><td><b>Reference</b></td><td>PC-' . date('YmdHis') . '</td></tr></table>');
     $section('1. PARTIES AND PURPOSE');
     $pdf->SetFont('helvetica', '', 8.8);
     $pdf->writeHTML('This Performance Contract is made between <b>' . $safe($employee['name']) . '</b>, holder of the employee record selected above, and <b>Inua Premium Services Ltd</b> (the "Employer"). The employee accepts responsibility for delivering the duties, targets, standards, and procedures in this document in accordance with the laws of Kenya, the employment agreement, and the Employer\'s approved policies.', true, false, true, false, 'L');
@@ -347,7 +386,7 @@ function generatePerformanceContractPdf($employee, $manager, $plan, $contractDat
     return $pdf->Output('', 'S');
 }
 
-function sendPerformanceContractEmail($staff, $pdfContent, $filename, $monthlySalary, $commissionAmount) {
+function sendPerformanceContractEmail($staff, $pdfContent, $filename, $contractPeriod, $contractPeriodUnit, $lapseDate, $monthlySalary, $commissionAmount) {
     $credentials = getEmailAccount();
     if (empty($credentials['sender_email']) || empty($credentials['sender_app_password'])) {
         throw new Exception('Email settings are not configured.');
@@ -366,8 +405,10 @@ function sendPerformanceContractEmail($staff, $pdfContent, $filename, $monthlySa
     $mail->addAddress($staff['email'], $staff['name']);
     $mail->isHTML(true);
     $mail->Subject = 'Performance Contract - Inua Premium Services Ltd';
-    $mail->Body = '<p>Dear ' . htmlspecialchars($staff['name'], ENT_QUOTES, 'UTF-8') . ',</p><p>Please find attached your formal Performance Contract prepared specifically for your role as <strong>' . htmlspecialchars($staff['role_label'], ENT_QUOTES, 'UTF-8') . '</strong> at Inua Premium Services Ltd.</p><p>Your contract records a monthly salary of <strong>KES ' . number_format($monthlySalary, 2) . '</strong> and a monthly commission or incentive amount of <strong>KES ' . number_format($commissionAmount, 2) . '</strong>, subject to the signed employment terms and verification of performance.</p><p>The contract sets out your distinct duties, measurable expectations, policies, standards, procedures, and the importance of applying consistent effort toward the organization\'s goals and vision. Please review, sign, and return it as instructed by Human Resources and Administration.</p><p>Regards,<br>Human Resources and Administration Department<br>Inua Premium Services Ltd</p>';
-    $mail->AltBody = 'Please find attached your role-specific Performance Contract. Monthly salary: KES ' . number_format($monthlySalary, 2) . '. Monthly commission or incentive: KES ' . number_format($commissionAmount, 2) . '. Please review, sign, and return it as instructed.';
+    $periodLabel = performancePeriodLabel($contractPeriod, $contractPeriodUnit);
+    $lapseDateLabel = performanceDate($lapseDate);
+    $mail->Body = '<p>Dear ' . htmlspecialchars($staff['name'], ENT_QUOTES, 'UTF-8') . ',</p><p>Please find attached your formal Performance Contract prepared specifically for your role as <strong>' . htmlspecialchars($staff['role_label'], ENT_QUOTES, 'UTF-8') . '</strong> at Inua Premium Services Ltd.</p><p>Your contract period is <strong>' . htmlspecialchars($periodLabel, ENT_QUOTES, 'UTF-8') . '</strong> and it lapses on <strong>' . htmlspecialchars($lapseDateLabel, ENT_QUOTES, 'UTF-8') . '</strong>. It records a monthly salary of <strong>KES ' . number_format($monthlySalary, 2) . '</strong> and a monthly commission or incentive amount of <strong>KES ' . number_format($commissionAmount, 2) . '</strong>, subject to the signed employment terms and verification of performance.</p><p>The contract sets out your distinct duties, measurable expectations, policies, standards, procedures, and the importance of applying consistent effort toward the organization\'s goals and vision. Please review, sign, and return it as instructed by Human Resources and Administration.</p><p>Regards,<br>Human Resources and Administration Department<br>Inua Premium Services Ltd</p>';
+    $mail->AltBody = 'Please find attached your role-specific Performance Contract. Contract period: ' . $periodLabel . '. Contract lapses on: ' . $lapseDateLabel . '. Monthly salary: KES ' . number_format($monthlySalary, 2) . '. Monthly commission or incentive: KES ' . number_format($commissionAmount, 2) . '. Please review, sign, and return it as instructed.';
     $mail->addStringAttachment($pdfContent, $filename, 'base64', 'application/pdf');
     $mail->send();
 }
@@ -376,13 +417,15 @@ $manager = getPerformanceManager($conn);
 $staffList = getPerformanceStaff($conn);
 $sendMessage = '';
 $sendStatus = '';
-$formValues = ['staff_id' => '', 'contract_date' => date('Y-m-d'), 'start_date' => date('Y-m-d'), 'monthly_salary' => '20000', 'commission_amount' => '5000'];
+$formValues = ['staff_id' => '', 'contract_date' => date('Y-m-d'), 'start_date' => date('Y-m-d'), 'contract_period' => '12', 'contract_period_unit' => 'months', 'monthly_salary' => '20000', 'commission_amount' => '5000'];
 $selectedStaff = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_performance_contract'])) {
     $formValues['staff_id'] = (int) ($_POST['staff_id'] ?? 0);
     $formValues['contract_date'] = trim((string) ($_POST['contract_date'] ?? ''));
     $formValues['start_date'] = trim((string) ($_POST['start_date'] ?? ''));
+    $formValues['contract_period'] = trim((string) ($_POST['contract_period'] ?? ''));
+    $formValues['contract_period_unit'] = trim((string) ($_POST['contract_period_unit'] ?? ''));
     $formValues['monthly_salary'] = trim((string) ($_POST['monthly_salary'] ?? ''));
     $formValues['commission_amount'] = trim((string) ($_POST['commission_amount'] ?? ''));
     foreach ($staffList as $staff) {
@@ -393,8 +436,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_performance_cont
     }
     $monthlySalary = performanceMoney($formValues['monthly_salary']);
     $commissionAmount = performanceMoney($formValues['commission_amount']);
+    $lapseDate = performanceLapseDate($formValues['start_date'], $formValues['contract_period'], $formValues['contract_period_unit']);
     if (!$selectedStaff) {
         $sendMessage = 'Select a valid staff member with an email address.';
+        $sendStatus = 'danger';
+    } elseif ($lapseDate === null) {
+        $sendMessage = 'Enter a valid commencement date and a positive contract period in months or years.';
         $sendStatus = 'danger';
     } elseif ($monthlySalary <= 0 || $commissionAmount < 0) {
         $sendMessage = 'Enter a valid monthly salary and commission amount.';
@@ -402,9 +449,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_performance_cont
     } else {
         try {
             $plan = rolePerformancePlan($selectedStaff['role_label']);
-            $pdf = generatePerformanceContractPdf($selectedStaff, $manager, $plan, $formValues['contract_date'], $formValues['start_date'], $monthlySalary, $commissionAmount);
+            $pdf = generatePerformanceContractPdf($selectedStaff, $manager, $plan, $formValues['contract_date'], $formValues['start_date'], $formValues['contract_period'], $formValues['contract_period_unit'], $lapseDate, $monthlySalary, $commissionAmount);
             $safeName = preg_replace('/[^A-Za-z0-9_-]+/', '_', $selectedStaff['name']) ?: 'staff_member';
-            sendPerformanceContractEmail($selectedStaff, $pdf, 'performance_contract_' . $safeName . '.pdf', $monthlySalary, $commissionAmount);
+            sendPerformanceContractEmail($selectedStaff, $pdf, 'performance_contract_' . $safeName . '.pdf', $formValues['contract_period'], $formValues['contract_period_unit'], $lapseDate, $monthlySalary, $commissionAmount);
             $sendMessage = 'The performance contract was sent successfully to ' . $selectedStaff['name'] . '.';
             $sendStatus = 'success';
         } catch (Exception $e) {
@@ -413,6 +460,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_performance_cont
         }
     }
 }
+$lapseDate = performanceLapseDate($formValues['start_date'], $formValues['contract_period'], $formValues['contract_period_unit']);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -458,7 +506,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_performance_cont
                     <div class="section-title">Contract Recipient</div>
                     <form method="post" action="performance_contract_letter.php">
                         <div class="mb-3"><label class="form-label" for="staff_id">Select Staff Member</label><select class="form-select" id="staff_id" name="staff_id" required><option value="">Choose staff member</option><?php foreach ($staffList as $staff): ?><option value="<?= (int) $staff['id']; ?>" data-name="<?= performanceValue($staff['name']); ?>" data-email="<?= performanceValue($staff['email']); ?>" data-role="<?= performanceValue($staff['role_label']); ?>" <?= (int) $formValues['staff_id'] === (int) $staff['id'] ? 'selected' : ''; ?>><?= performanceValue($staff['name']); ?> - <?= performanceValue($staff['role_label']); ?> (<?= performanceValue($staff['email']); ?>)</option><?php endforeach; ?></select></div>
-                        <div class="row g-3"><div class="col-md-6"><label class="form-label" for="contract_date">Contract Date</label><input type="date" class="form-control" id="contract_date" name="contract_date" value="<?= performanceValue($formValues['contract_date']); ?>" required></div><div class="col-md-6"><label class="form-label" for="start_date">Commencement Date</label><input type="date" class="form-control" id="start_date" name="start_date" value="<?= performanceValue($formValues['start_date']); ?>" required></div><div class="col-md-6"><label class="form-label" for="monthly_salary">Monthly Salary (KES)</label><input type="number" class="form-control" id="monthly_salary" name="monthly_salary" min="1" step="0.01" value="<?= performanceValue($formValues['monthly_salary']); ?>" required></div><div class="col-md-6"><label class="form-label" for="commission_amount">Monthly Commission / Incentive (KES)</label><input type="number" class="form-control" id="commission_amount" name="commission_amount" min="0" step="0.01" value="<?= performanceValue($formValues['commission_amount']); ?>" required></div></div>
+                        <div class="row g-3"><div class="col-md-6"><label class="form-label" for="contract_date">Contract Date</label><input type="date" class="form-control" id="contract_date" name="contract_date" value="<?= performanceValue($formValues['contract_date']); ?>" required></div><div class="col-md-6"><label class="form-label" for="start_date">Commencement Date</label><input type="date" class="form-control" id="start_date" name="start_date" value="<?= performanceValue($formValues['start_date']); ?>" required></div><div class="col-md-6"><label class="form-label" for="contract_period">Contract Period</label><input type="number" class="form-control" id="contract_period" name="contract_period" min="1" step="1" value="<?= performanceValue($formValues['contract_period']); ?>" required></div><div class="col-md-6"><label class="form-label" for="contract_period_unit">Period Unit</label><select class="form-select" id="contract_period_unit" name="contract_period_unit" required><option value="months" <?= $formValues['contract_period_unit'] === 'months' ? 'selected' : ''; ?>>Months</option><option value="years" <?= $formValues['contract_period_unit'] === 'years' ? 'selected' : ''; ?>>Years</option></select></div><div class="col-md-6"><label class="form-label" for="monthly_salary">Monthly Salary (KES)</label><input type="number" class="form-control" id="monthly_salary" name="monthly_salary" min="1" step="0.01" value="<?= performanceValue($formValues['monthly_salary']); ?>" required></div><div class="col-md-6"><label class="form-label" for="commission_amount">Monthly Commission / Incentive (KES)</label><input type="number" class="form-control" id="commission_amount" name="commission_amount" min="0" step="0.01" value="<?= performanceValue($formValues['commission_amount']); ?>" required></div></div>
                         <div class="alert alert-light border mt-4 mb-0">The contract includes duties, role-based performance targets, remuneration guidance, working hours, policies, standards, procedures, disciplinary terms, termination terms, signature fields, and the company stamp.</div>
                         <button type="submit" name="send_performance_contract" class="btn btn-primary btn-lg w-100 mt-4">Send Performance Contract</button>
                     </form>
@@ -471,6 +519,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_performance_cont
                     <div class="preview-line"><strong>Staff member:</strong> <span id="previewName"><?= $selectedStaff ? performanceValue($selectedStaff['name']) : 'Not selected'; ?></span></div>
                     <div class="preview-line"><strong>Email:</strong> <span id="previewEmail"><?= $selectedStaff ? performanceValue($selectedStaff['email']) : 'Not selected'; ?></span></div>
                     <div class="preview-line"><strong>Role:</strong> <span id="previewRole"><?= $selectedStaff ? performanceValue($selectedStaff['role_label']) : 'Role-specific plan'; ?></span></div>
+                    <div class="preview-line"><strong>Contract period:</strong> <span id="previewContractPeriod"><?= performanceValue(performancePeriodLabel($formValues['contract_period'], $formValues['contract_period_unit'])); ?></span></div>
+                    <div class="preview-line"><strong>Commencement date:</strong> <span id="previewCommencement"><?= performanceDate($formValues['start_date']); ?></span></div>
+                    <div class="preview-line"><strong>Contract lapses:</strong> <span id="previewLapseDate"><?= performanceDate($lapseDate); ?></span></div>
                     <div class="preview-line"><strong>Monthly salary:</strong> KES <?= number_format((float) $formValues['monthly_salary'], 2); ?></div>
                     <div class="preview-line"><strong>Monthly commission:</strong> KES <?= number_format((float) $formValues['commission_amount'], 2); ?></div>
                     <div class="preview-line"><strong>Source targets:</strong> 70 loans, 90% collection, maximum 5% arrears, KES 600,000 monthly loan-book growth</div>
@@ -487,6 +538,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_performance_cont
         document.getElementById('previewEmail').textContent = option.dataset.email || 'Not selected';
         document.getElementById('previewRole').textContent = option.dataset.role || 'Role-specific plan';
     });
+    const updateContractPreview = function () {
+        const startDate = document.getElementById('start_date').value;
+        const period = Number.parseInt(document.getElementById('contract_period').value, 10);
+        const unit = document.getElementById('contract_period_unit').value;
+        const periodName = unit === 'years' ? (period === 1 ? 'year' : 'years') : (period === 1 ? 'month' : 'months');
+        document.getElementById('previewContractPeriod').textContent = Number.isInteger(period) && period > 0 ? period + ' ' + periodName : 'Not specified';
+        document.getElementById('previewCommencement').textContent = startDate ? new Date(startDate + 'T00:00:00').toLocaleDateString('en-GB') : 'Not specified';
+
+        if (!startDate || !Number.isInteger(period) || period < 1) {
+            document.getElementById('previewLapseDate').textContent = 'Not specified';
+            return;
+        }
+        const parts = startDate.split('-').map(Number);
+        let year = parts[0];
+        let month = parts[1] - 1;
+        const day = parts[2];
+        if (unit === 'years') {
+            year += period;
+        } else {
+            const targetMonth = month + period;
+            year += Math.floor(targetMonth / 12);
+            month = targetMonth % 12;
+        }
+        const lapseDate = new Date(0);
+        lapseDate.setFullYear(year, month, 1);
+        const lastDay = new Date(0);
+        lastDay.setFullYear(year, month + 1, 0);
+        lapseDate.setDate(Math.min(day, lastDay.getDate()));
+        document.getElementById('previewLapseDate').textContent = lapseDate.toLocaleDateString('en-GB');
+    };
+    ['start_date', 'contract_period', 'contract_period_unit'].forEach(function (id) {
+        document.getElementById(id).addEventListener('input', updateContractPreview);
+        document.getElementById(id).addEventListener('change', updateContractPreview);
+    });
+    updateContractPreview();
 </script>
 </body>
 </html>

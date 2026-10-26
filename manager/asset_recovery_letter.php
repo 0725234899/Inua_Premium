@@ -62,7 +62,8 @@ function fetchDefaultedClientsForRecovery($conn) {
             FROM borrowers b
             INNER JOIN loan_applications la ON la.borrower = b.id
             LEFT JOIN users u ON b.loan_officer = u.email
-            WHERE GREATEST(COALESCE(la.total_amount, 0)
+            WHERE LOWER(TRIM(COALESCE(la.loan_status, ''))) NOT LIKE '%roll%'
+              AND GREATEST(COALESCE(la.total_amount, 0)
                        - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = la.id), 0)
                        - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = la.id), 0), 0) > 0
             ORDER BY b.full_name ASC, la.id DESC";

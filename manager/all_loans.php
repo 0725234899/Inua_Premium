@@ -232,6 +232,22 @@
         return $result->fetch_assoc();
     }
 
+    function getMonthLoanApprovalTotals($conn) {
+        $result = $conn->query(
+            "SELECT COALESCE(SUM(COALESCE(principal, 0)), 0) AS total_principal,
+                    COALESCE(SUM(COALESCE(total_amount, 0) - COALESCE(principal, 0)), 0) AS total_projected_interest
+             FROM loan_applications
+             WHERE loan_status = 'approved'
+               AND approved_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+               AND approved_at < DATE_FORMAT(DATE_ADD(CURDATE(), INTERVAL 1 MONTH), '%Y-%m-01')"
+        );
+        if (!$result) {
+            throw new RuntimeException('Unable to calculate the current month’s approved-loan totals.');
+        }
+
+        return $result->fetch_assoc();
+    }
+
     function buildLoanApprovalEmailBody($recipientName, $details, $installmentAmount, $maturityDate, $managerTotals = null, $includeProjectedInterest = true, $repaymentSchedule = []) {
         $escape = static function ($value) {
             return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
@@ -279,8 +295,12 @@
         }
         if ($managerTotals !== null) {
             $body .= '<div style="margin-top:18px;padding:14px 16px;background:#f0f4f8;border:1px solid #e2e8f0;border-radius:8px;">';
-            $body .= 'Today\'s Total Principal: KES ' . number_format((float) $managerTotals['total_principal'], 2) . '<br>';
-            $body .= ' Today\'s Total Projected Interest: KES ' . number_format((float) $managerTotals['total_projected_interest'], 2);
+            $body .= '<strong>Today\'s Principal:</strong> KES ' . number_format((float) $managerTotals['today_total_principal'], 2) . '<br>';
+            $body .= '<strong>Month Principal:</strong> KES ' . number_format((float) $managerTotals['month_total_principal'], 2);
+            if ($includeProjectedInterest) {
+                $body .= '<br><strong>Today\'s Interest:</strong> KES ' . number_format((float) $managerTotals['today_total_projected_interest'], 2);
+                $body .= '<br><strong>Month Interest:</strong> KES ' . number_format((float) $managerTotals['month_total_projected_interest'], 2);
+            }
             $body .= '</div>';
         }
         $body .= '<p style="margin:18px 0 0;font-size:12px;color:#64748b;">This is an automated loan approval notification from Inua Premium Services.</p>';
@@ -729,7 +749,14 @@
                                 $loanDetails['loan_duration_unit'] ?? 'months'
                             );
                         $maturityDateDisplay = $maturityDate ? $maturityDate->format('d/m/Y') : 'Not available';
-                        $managerTotals = getTodaysLoanApprovalTotals($conn);
+                        $todayTotals = getTodaysLoanApprovalTotals($conn);
+                        $monthTotals = getMonthLoanApprovalTotals($conn);
+                        $managerTotals = [
+                            'today_total_principal' => (float) ($todayTotals['total_principal'] ?? 0),
+                            'month_total_principal' => (float) ($monthTotals['total_principal'] ?? 0),
+                            'today_total_projected_interest' => (float) ($todayTotals['total_projected_interest'] ?? 0),
+                            'month_total_projected_interest' => (float) ($monthTotals['total_projected_interest'] ?? 0),
+                        ];
                         $officerEmail = trim((string) ($loanDetails['officer_email'] ?? ''));
                         $officerName = trim((string) ($loanDetails['officer_name'] ?? ''));
 
@@ -741,7 +768,7 @@
                                     $loanDetails,
                                     $installmentAmount,
                                     $maturityDateDisplay,
-                                    null,
+                                    $managerTotals,
                                     false,
                                     $repaymentSchedule
                                 );
