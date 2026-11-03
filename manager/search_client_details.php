@@ -34,6 +34,7 @@ $sql_loans = "SELECT id, principal, total_amount, loan_duration, loan_release_da
                     COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = loan_applications.id), 0) + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0) AS total_paid,
                     GREATEST(0, total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = loan_applications.id), 0) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0)) AS dues_arrears,
                     CASE
+                        WHEN LOWER(TRIM(COALESCE(loan_status, ''))) LIKE '%roll%' THEN 'Rolled Over'
                         WHEN total_amount - COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = loan_applications.id), 0) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0) <= 0 THEN 'Cleared'
                         WHEN COALESCE((SELECT SUM(pdr.Amount) FROM payment_date_records pdr WHERE pdr.loan_id = loan_applications.id), 0)
                              + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0)

@@ -75,6 +75,19 @@ function get_advance_schedule_date($startDate, $monthOffset) {
         ->format('Y-m-d');
 }
 
+function is_valid_advance_date($date) {
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D', $date)) {
+        return false;
+    }
+
+    $dateObject = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+    $dateErrors = DateTimeImmutable::getLastErrors();
+
+    return $dateObject !== false
+        && ($dateErrors === false || ($dateErrors['warning_count'] === 0 && $dateErrors['error_count'] === 0))
+        && $dateObject->format('Y-m-d') === $date;
+}
+
 function build_advance_email_body($subject, $body, $advanceDetails, $scheduleRows) {
     $escape = static function ($value) {
         return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
@@ -180,21 +193,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $amount = round((float) $_POST['amount'], 2);
         $monthly = round((float) $_POST['monthly_deduction'], 2);
         $booking_date = trim((string) ($_POST['booking_date'] ?? ''));
-        $bookingDateObject = DateTimeImmutable::createFromFormat('!Y-m-d', $booking_date);
-        $bookingDateErrors = DateTimeImmutable::getLastErrors();
-        if (
-            !$bookingDateObject
-            || ($bookingDateErrors !== false && ($bookingDateErrors['warning_count'] > 0 || $bookingDateErrors['error_count'] > 0))
-            || $bookingDateObject->format('Y-m-d') !== $booking_date
-        ) {
+        $start_date = trim((string) ($_POST['start_date'] ?? ''));
+        if (!is_valid_advance_date($booking_date)) {
             $messages[] = 'Please select a valid advance booking date.';
+        } elseif (!is_valid_advance_date($start_date)) {
+            $messages[] = 'Please select a valid advance start date.';
         } else {
             if ($amount > 0 && $monthly > 0) {
                 $duration = max(1, min(36, (int) ceil($amount / $monthly)));
             } else {
                 $duration = 1;
             }
-            $start_date = $_POST['start_date'];
             $recorded_by = $_SESSION['user_id'] ?? null;
 
         // get officer name and email
@@ -276,9 +285,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $duration = ($amount > 0 && $monthly > 0)
             ? max(1, min(36, (int) ceil($amount / $monthly)))
             : 1;
-        $start_date = $_POST['start_date'];
+        $start_date = trim((string) ($_POST['start_date'] ?? ''));
         $recorded_by = $_SESSION['user_id'] ?? null;
 
+        if (!is_valid_advance_date($start_date)) {
+            $messages[] = 'Please select a valid advance start date.';
+        } else {
         $res = $conn->prepare("SELECT name FROM users WHERE id = ? LIMIT 1");
         $res->bind_param('i', $loan_officer_id);
         $res->execute();
@@ -326,6 +338,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $messages[] = 'Error updating advance: ' . $conn->error;
             }
             $upd->close();
+        }
         }
     }
 

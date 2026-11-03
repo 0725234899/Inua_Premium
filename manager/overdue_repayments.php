@@ -276,11 +276,11 @@ function fetch_arrears_report_data($conn, $selected_officer = 'all', $selected_d
                     WHEN repayments.repayment_date < CURDATE() 
                     THEN GREATEST(COALESCE(repayments.amount, 0) - COALESCE(repayments.paid, 0), 0) 
                     ELSE 0 
-                END) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0), 0) AS total_overdue,
+                END) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id AND LOWER(TRIM(COALESCE(pla.loan_status, ''))) NOT LIKE '%roll%'), 0), 0) AS total_overdue,
                 GREATEST(
-                    COALESCE((SELECT SUM(la.total_amount) FROM loan_applications la WHERE la.borrower = borrowers.id), 0)
-                    - COALESCE((SELECT SUM(rp.paid) FROM loan_applications la2 LEFT JOIN repayments rp ON la2.id = rp.loan_id WHERE la2.borrower = borrowers.id), 0)
-                    - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0),
+                    COALESCE((SELECT SUM(la.total_amount) FROM loan_applications la WHERE la.borrower = borrowers.id AND LOWER(TRIM(COALESCE(la.loan_status, ''))) NOT LIKE '%roll%'), 0)
+                    - COALESCE((SELECT SUM(rp.paid) FROM loan_applications la2 LEFT JOIN repayments rp ON la2.id = rp.loan_id WHERE la2.borrower = borrowers.id AND LOWER(TRIM(COALESCE(la2.loan_status, ''))) NOT LIKE '%roll%'), 0)
+                    - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id AND LOWER(TRIM(COALESCE(pla.loan_status, ''))) NOT LIKE '%roll%'), 0),
                     0
                 ) AS outstanding_loan_balance
             FROM borrowers
@@ -547,7 +547,7 @@ $sql_overdue = "SELECT
                             ELSE 0 
                         END), 0) 
                         - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0)
-                        - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0),
+                        - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id AND LOWER(TRIM(COALESCE(pla.loan_status, ''))) NOT LIKE '%roll%'), 0),
                         0
                     ) AS total_overdue,
                     GREATEST(
@@ -568,7 +568,7 @@ $sql_overdue = "SELECT
                             WHERE la4.borrower = borrowers.id
                             AND LOWER(TRIM(COALESCE(la4.loan_status, ''))) NOT LIKE '%roll%'
                         ), 0)
-                        - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0),
+                        - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id AND LOWER(TRIM(COALESCE(pla.loan_status, ''))) NOT LIKE '%roll%'), 0),
                         0
                     ) AS outstanding_loan_balance
                 FROM 

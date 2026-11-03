@@ -327,6 +327,7 @@ FROM (
     FROM loan_applications la
     INNER JOIN borrowers b ON b.id = la.borrower
     WHERE la.loan_status = 'approved'
+      AND LOWER(TRIM(COALESCE(la.loan_status, ''))) NOT LIKE '%roll%'
       AND b.loan_officer = (SELECT email FROM users WHERE id = ?)
     GROUP BY la.borrower
 ) portfolio";
@@ -353,6 +354,7 @@ if ($selected_officer === 'all') {
         FROM loan_applications la
         INNER JOIN borrowers b ON b.id = la.borrower
         WHERE la.loan_status = 'approved'
+          AND LOWER(TRIM(COALESCE(la.loan_status, ''))) NOT LIKE '%roll%'
         GROUP BY la.borrower
     ) portfolio";
     $portfolio_metrics_stmt = $conn->prepare($portfolio_metrics_sql);
@@ -420,6 +422,7 @@ $sql_due_loans = "SELECT
                   WHERE 
                     repayments.repayment_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
                                         AND loan_applications.loan_status = 'approved'
+                                        AND LOWER(TRIM(COALESCE(loan_applications.loan_status, ''))) NOT LIKE '%roll%'
                                         $cleared_loan_filter
                                         $day_filter
                                         $officer_filter

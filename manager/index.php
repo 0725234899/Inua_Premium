@@ -1410,7 +1410,7 @@ if (session_status() === PHP_SESSION_NONE) {
                         <td>KSH ${Number(loan.total_paid || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                         <td>KSH ${Number(loan.dues_arrears || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                         <td>${escapeClientSearchText(loan.loan_release_date || 'Not specified')}</td>
-                        <td><span class="status ${loan.loan_status === 'Cleared' ? 'status-cleared' : 'status-not-cleared'}">${escapeClientSearchText(loan.loan_status || 'Not Cleared')}</span></td>
+                        <td><span class="status ${loan.loan_status === 'Rolled Over' ? 'rolled-over-badge' : loan.loan_status === 'Cleared' ? 'status-cleared' : 'status-not-cleared'}">${escapeClientSearchText(loan.loan_status || 'Not Cleared')}</span></td>
                     </tr>`).join('') : '<tr><td colspan="7" class="text-center">No loans found.</td></tr>';
                 return `<div class="client-summary mb-3">
                     <h3>${escapeClientSearchText(client.full_name)}</h3>
