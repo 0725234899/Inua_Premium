@@ -1,6 +1,13 @@
 <?php
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+if (!isset($_SESSION['email']) || empty($_SESSION['email'])) {
+    header('Location: ../index.html');
+    exit();
+}
 include 'db.php';
 include '../includes/functions.php';
 
@@ -31,95 +38,6 @@ function bindDynamicParams($stmt, $params) {
     $stmt->bind_param($types, ...$params);
 }
 
-function get_projected_maturity_date_for_loan($loan) {
-    if (empty($loan['loan_release_date'])) {
-        return null;
-    }
-
-    $date = new DateTime($loan['loan_release_date']);
-    $count = (int) ($loan['number_of_repayments'] ?? 0);
-    $cycle = ($loan['repayment_cycle'] ?? 'monthly');
-
-    if ($count <= 0) {
-        return $date;
-    }
-
-    if ($cycle === 'once') {
-        $loan_duration = (int) ($loan['loan_duration'] ?? 0);
-        $loan_duration_unit = $loan['loan_duration_unit'] ?? 'months';
-        switch ($loan_duration_unit) {
-            case 'days':
-                $date->modify('+' . max(1, $loan_duration) . ' days');
-                break;
-            case 'weeks':
-                $date->modify('+' . max(1, $loan_duration) . ' weeks');
-                break;
-            case 'months':
-                $date->modify('+' . max(1, $loan_duration) . ' months');
-                break;
-            case 'years':
-                $date->modify('+' . max(1, $loan_duration) . ' years');
-                break;
-            default:
-                $date->modify('+' . max(1, $loan_duration) . ' months');
-                break;
-        }
-        return $date;
-    }
-
-    $intervalSpec = 'P1M';
-    switch ($cycle) {
-        case 'daily':
-            $intervalSpec = 'P1D';
-            break;
-        case 'weekly':
-            $intervalSpec = 'P1W';
-            break;
-        case 'monthly':
-            $intervalSpec = 'P1M';
-            break;
-        case 'yearly':
-            $intervalSpec = 'P1Y';
-            break;
-    }
-
-    $interval = new DateInterval($intervalSpec);
-    for ($i = 0; $i < $count; $i++) {
-        $date->add($interval);
-    }
-
-    return $date;
-}
-
-function get_eligible_loan_ids_for_arrears($conn) {
-    $eligible_ids = [];
-    $stmt = $conn->prepare("SELECT id, loan_status, loan_release_date, repayment_cycle, number_of_repayments, loan_duration FROM loan_applications WHERE loan_status IN ('approved', 'rolled_over') OR LOWER(TRIM(COALESCE(loan_status, ''))) LIKE '%roll%'");
-    if (!$stmt) {
-        return $eligible_ids;
-    }
-
-    $stmt->execute();
-    $result = $stmt->get_result();
-
-    $today = new DateTime('today');
-    while ($loan = $result->fetch_assoc()) {
-        $loanStatus = strtolower(trim((string) ($loan['loan_status'] ?? '')));
-        $isRolledOver = strpos($loanStatus, 'roll') !== false;
-
-        if (!$isRolledOver) {
-            $eligible_ids[] = (int) $loan['id'];
-            continue;
-        }
-
-        $projected_maturity_date = get_projected_maturity_date_for_loan($loan);
-        if ($projected_maturity_date !== null && $projected_maturity_date <= $today) {
-            $eligible_ids[] = (int) $loan['id'];
-        }
-    }
-
-    return $eligible_ids;
-}
-
 // Fetch available areas for loan officers
 $sql_areas = "SELECT area_id, area_name FROM areas ORDER BY area_name";
 $result_areas = $conn->query($sql_areas);
@@ -145,11 +63,6 @@ if ($selected_area !== 'all') {
     $filter_params[] = (int) $selected_area;
 }
 
-$eligible_loan_ids = get_eligible_loan_ids_for_arrears($conn);
-$eligible_loan_filter = !empty($eligible_loan_ids)
-    ? "AND loan_applications.id IN (" . implode(',', $eligible_loan_ids) . ")"
-    : "AND 1=0";
-
 // Fetch loan officers for the selected area
 $sql_officers = "SELECT id, name AS full_name, area FROM users WHERE role_id = '2'";
 if ($selected_area !== 'all') {
@@ -162,55 +75,23 @@ if ($selected_area !== 'all') {
 $stmt_officers->execute();
 $result_officers = $stmt_officers->get_result();
 
-// Fetch total overdue amount using the overdue_repayments logic
-$sql_total_overdue = "SELECT COALESCE(SUM(overdue_summary.total_overdue), 0) AS total_overdue
-                FROM (
-                    SELECT 
-                        borrowers.id AS borrower_id,
-                        borrowers.full_name AS borrower_name, 
-                        borrowers.mobile AS phone_number, 
-                        GREATEST(
-                            COALESCE(SUM(CASE 
-                                WHEN repayments.repayment_date < CURDATE() 
-                                THEN COALESCE(repayments.amount, 0) 
-                                ELSE 0 
-                            END), 0)
-                            - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0)
-                            - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0),
-                            0
-                        ) AS total_overdue
-                    FROM 
-                        borrowers
-                    LEFT JOIN 
-                        loan_applications ON borrowers.id = loan_applications.borrower
-                    LEFT JOIN 
-                        repayments ON loan_applications.id = repayments.loan_id
-                    LEFT JOIN 
-                        users ON borrowers.loan_officer = users.email
-                    WHERE 
-                        1=1
-                        $eligible_loan_filter
-                        $filter_sql
-                    GROUP BY 
-                        borrowers.id, borrowers.full_name, borrowers.mobile
-                    HAVING 
-                        total_overdue > 0
-                ) AS overdue_summary";
-
-$stmt_total_overdue = $conn->prepare($sql_total_overdue);
-bindDynamicParams($stmt_total_overdue, $filter_params);
-$stmt_total_overdue->execute();
-$result_total_overdue = $stmt_total_overdue->get_result();
-
-$total_arrears = $result_total_overdue->fetch_assoc()['total_overdue'] ?? 0;
+$overdueFilters = [];
+if ($selected_officer !== 'all') {
+    $overdueFilters['officer_id'] = (int) $selected_officer;
+}
+if ($selected_area !== 'all') {
+    $overdueFilters['area_id'] = (int) $selected_area;
+}
+$overdue_summary = getOverdueRepaymentSummary($conn, $overdueFilters);
+$total_arrears = $overdue_summary['total_overdue'];
 
 
 // Fetch total paid amount for approved loans
 $sql_total_paid = "SELECT CEIL(SUM(repayments.paid + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0))) AS total_paid
                    FROM repayments
                    INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
-                   INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
-                   INNER JOIN users ON borrowers.loan_officer = users.email
+                   LEFT JOIN borrowers ON loan_applications.borrower = borrowers.id
+                   LEFT JOIN users ON borrowers.loan_officer = users.email
                    WHERE loan_applications.loan_status = 'approved'
                    $filter_sql";
 $stmt_total_paid = $conn->prepare($sql_total_paid);
@@ -221,8 +102,8 @@ $total_paid_amount = $stmt_total_paid->get_result()->fetch_assoc()['total_paid']
 // Fetch total interest and combined fee totals for approved loans
 $sql_total_interest = "SELECT CEIL(COALESCE(SUM(total_amount - principal), 0)) AS total_interest
                        FROM loan_applications
-                       INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
-                       INNER JOIN users ON borrowers.loan_officer = users.email
+                       LEFT JOIN borrowers ON loan_applications.borrower = borrowers.id
+                       LEFT JOIN users ON borrowers.loan_officer = users.email
                        WHERE loan_applications.loan_status = 'approved'
                        $filter_sql";
 $stmt_total_interest = $conn->prepare($sql_total_interest);
@@ -232,8 +113,8 @@ $total_interest_amount = $stmt_total_interest->get_result()->fetch_assoc()['tota
 
 $sql_total_fees = "SELECT CEIL(COALESCE(SUM(processing_fee + registration_fee), 0)) AS total_fees
                    FROM loan_applications
-                   INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
-                   INNER JOIN users ON borrowers.loan_officer = users.email
+                   LEFT JOIN borrowers ON loan_applications.borrower = borrowers.id
+                   LEFT JOIN users ON borrowers.loan_officer = users.email
                    WHERE loan_applications.loan_status = 'approved'
                    $filter_sql";
 $stmt_total_fees = $conn->prepare($sql_total_fees);
@@ -241,17 +122,98 @@ bindDynamicParams($stmt_total_fees, $filter_params);
 $stmt_total_fees->execute();
 $total_fee_amount = $stmt_total_fees->get_result()->fetch_assoc()['total_fees'] ?? 0;
 
+$sql_daily_inflows = "SELECT CEIL(COALESCE(SUM(payment_date_records.Amount), 0)) AS daily_inflows
+                      FROM payment_date_records
+                      INNER JOIN loan_applications ON payment_date_records.loan_id = loan_applications.id
+                      LEFT JOIN borrowers ON loan_applications.borrower = borrowers.id
+                      LEFT JOIN users ON borrowers.loan_officer = users.email
+                      WHERE payment_date_records.PaymentDate = CURDATE()
+                      AND loan_applications.loan_status = 'approved'
+                      $filter_sql";
+$stmt_daily_inflows = $conn->prepare($sql_daily_inflows);
+bindDynamicParams($stmt_daily_inflows, $filter_params);
+$stmt_daily_inflows->execute();
+$daily_inflows = $stmt_daily_inflows->get_result()->fetch_assoc()['daily_inflows'] ?? 0;
+
 // Fetch total disbursed loans (including interest)
 $sql_total_loans = "SELECT CEIL(SUM(loan_applications.total_amount)) AS total_loans 
                     FROM loan_applications 
-                    INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
-                    INNER JOIN users ON borrowers.loan_officer = users.email
+                    LEFT JOIN borrowers ON loan_applications.borrower = borrowers.id
+                    LEFT JOIN users ON borrowers.loan_officer = users.email
                     WHERE loan_applications.loan_status = 'approved'
                     $filter_sql";
 $stmt_total_loans = $conn->prepare($sql_total_loans);
 bindDynamicParams($stmt_total_loans, $filter_params);
 $stmt_total_loans->execute();
 $total_loan_amount = $stmt_total_loans->get_result()->fetch_assoc()['total_loans'] ?? 0;
+
+$sql_total_principal = "SELECT CEIL(COALESCE(SUM(loan_applications.principal), 0)) AS total_principal
+                        FROM loan_applications
+                        LEFT JOIN borrowers ON loan_applications.borrower = borrowers.id
+                        LEFT JOIN users ON borrowers.loan_officer = users.email
+                        WHERE loan_applications.loan_status = 'approved'
+                        $filter_sql";
+$stmt_total_principal = $conn->prepare($sql_total_principal);
+bindDynamicParams($stmt_total_principal, $filter_params);
+$stmt_total_principal->execute();
+$total_disbursed_principal = $stmt_total_principal->get_result()->fetch_assoc()['total_principal'] ?? 0;
+
+$interestCalculationColumnStmt = $conn->query("SELECT COUNT(*) AS column_count FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'loan_applications' AND COLUMN_NAME = 'interest_calculation'");
+$hasInterestCalculationColumn = $interestCalculationColumnStmt && (int) $interestCalculationColumnStmt->fetch_assoc()['column_count'] > 0;
+$weeklyLoanExpression = $hasInterestCalculationColumn
+    ? "LOWER(COALESCE(l.interest_calculation, '')) IN ('weekly', 'week', 'weeks') OR LOWER(COALESCE(l.repayment_cycle, '')) IN ('weekly', 'week', 'weeks') OR LOWER(COALESCE(l.loan_duration_unit, '')) IN ('weekly', 'week', 'weeks')"
+    : "LOWER(COALESCE(l.repayment_cycle, '')) IN ('weekly', 'week', 'weeks') OR LOWER(COALESCE(l.loan_duration_unit, '')) IN ('weekly', 'week', 'weeks')";
+$totalPaidExpression = "COALESCE((SELECT SUM(r.paid) FROM repayments r WHERE r.loan_id = l.id), 0)";
+$penaltyThresholdExpression = "l.principal + (l.principal * CASE WHEN $weeklyLoanExpression THEN 0.06 ELSE 0.24 END * l.loan_duration)";
+$loanPenaltyDebitExpression = "COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = l.id), 0)";
+
+$sql_penalty_details = "SELECT
+    GREATEST(0, (($totalPaidExpression) - ($penaltyThresholdExpression))) AS gross_penalty_amount,
+    ($loanPenaltyDebitExpression) AS used_penalty_amount
+FROM loan_applications l
+LEFT JOIN borrowers ON l.borrower = borrowers.id
+LEFT JOIN users ON borrowers.loan_officer = users.email
+WHERE (
+    l.loan_status IN ('approved', 'rolled_over')
+    OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%'
+)
+$filter_sql";
+$stmt_penalty_details = $conn->prepare($sql_penalty_details);
+bindDynamicParams($stmt_penalty_details, $filter_params);
+$stmt_penalty_details->execute();
+$result_penalty_details = $stmt_penalty_details->get_result();
+$gross_penalty_total = 0;
+$used_penalty_total = 0;
+while ($penaltyRow = $result_penalty_details->fetch_assoc()) {
+    $gross_penalty_total += (float) $penaltyRow['gross_penalty_amount'];
+    $used_penalty_total += (float) $penaltyRow['used_penalty_amount'];
+}
+$balance_penalty_amount = max(0, $gross_penalty_total - $used_penalty_total);
+
+$conn->query("CREATE TABLE IF NOT EXISTS loan_officer_expenses (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    template_id INT NULL,
+    template_name VARCHAR(100) NOT NULL,
+    expense_type VARCHAR(100) NOT NULL,
+    amount DECIMAL(12,2) NOT NULL,
+    expense_date DATE NOT NULL,
+    loan_officer_id INT NOT NULL,
+    loan_officer_name VARCHAR(100) NOT NULL,
+    payment_method VARCHAR(50) DEFAULT 'cash',
+    recorded_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_loan_officer (loan_officer_id),
+    KEY idx_expense_date (expense_date)
+)");
+$sql_total_expenses = "SELECT CEIL(COALESCE(SUM(expenses.amount), 0)) AS total_expenses
+                       FROM loan_officer_expenses expenses
+                       LEFT JOIN users ON expenses.loan_officer_id = users.id
+                       WHERE 1=1
+                       $filter_sql";
+$stmt_total_expenses = $conn->prepare($sql_total_expenses);
+bindDynamicParams($stmt_total_expenses, $filter_params);
+$stmt_total_expenses->execute();
+$total_expenses_amount = $stmt_total_expenses->get_result()->fetch_assoc()['total_expenses'] ?? 0;
 
 // Calculate Performing Book
 $performing_book = max(0, $total_loan_amount - $total_arrears - $total_paid_amount);
@@ -266,8 +228,8 @@ $par = ($loan_book > 0) ? ($total_arrears / $loan_book) * 100 : 0;
 $sql_due_loans = "SELECT CEIL(SUM(amount - paid - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = repayments.loan_id), 0))) AS total_due_loans
                   FROM repayments 
                   INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id 
-                  INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
-                  INNER JOIN users ON borrowers.loan_officer = users.email
+                  LEFT JOIN borrowers ON loan_applications.borrower = borrowers.id
+                  LEFT JOIN users ON borrowers.loan_officer = users.email
                   WHERE repayment_date = CURDATE()
                   AND loan_applications.loan_status = 'approved' 
                   AND (amount - paid - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0)) > 0
@@ -295,294 +257,199 @@ bindDynamicParams($stmt_total_clients, $filter_params);
 $stmt_total_clients->execute();
 $total_clients = $stmt_total_clients->get_result()->fetch_assoc()['total_clients'] ?? 0;
 
-// Fetch total number of clients in arrears (with total overdue amount > 0)
-$sql_clients_in_arrears = "SELECT COUNT(*) AS clients_in_arrears 
-                           FROM (
-                               SELECT borrowers.id,
-                                   SUM(CASE 
-                                       WHEN repayments.repayment_date < CURDATE() 
-                                       THEN GREATEST(COALESCE(repayments.amount, 0) - COALESCE(repayments.paid, 0), 0) 
-                                       ELSE 0
-                                   END) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0) AS total_overdue
-                               FROM borrowers
-                               LEFT JOIN loan_applications ON borrowers.id = loan_applications.borrower
-                               LEFT JOIN repayments ON loan_applications.id = repayments.loan_id
-                               LEFT JOIN users ON borrowers.loan_officer = users.email
-                               WHERE 1=1
-                                   $eligible_loan_filter
-                                   $filter_sql
-                               GROUP BY borrowers.id
-                               HAVING total_overdue > 0
-                           ) AS arrears_summary";
-$stmt_clients_in_arrears = $conn->prepare($sql_clients_in_arrears);
-bindDynamicParams($stmt_clients_in_arrears, $filter_params);
-$stmt_clients_in_arrears->execute();
-$clients_in_arrears = $stmt_clients_in_arrears->get_result()->fetch_assoc()['clients_in_arrears'] ?? 0;
+$clients_in_arrears = $overdue_summary['total_overdue_count'];
+$arrears_client_percentage = $total_clients > 0
+    ? ($clients_in_arrears / $total_clients) * 100
+    : 0;
 
-// Fetch names of clients in arrears and their arrears amounts (consistent with clients_in_arrears count)
-$sql_clients_in_arrears_details = "SELECT 
-    borrowers.full_name AS client_name,
-    GREATEST(
-        COALESCE(SUM(CASE 
-            WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
-            ELSE 0 
-        END), 0) 
-        - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0), 
-        0
-    ) - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0) AS arrears_amount
-FROM 
-    borrowers
-LEFT JOIN 
-    loan_applications ON borrowers.id = loan_applications.borrower
-LEFT JOIN 
-    repayments ON loan_applications.id = repayments.loan_id
-LEFT JOIN 
-    users ON borrowers.loan_officer = users.email
-WHERE 
-    1=1
-    $eligible_loan_filter
-    $filter_sql
-GROUP BY 
-    borrowers.id, borrowers.full_name
-HAVING 
-    arrears_amount > 0
-ORDER BY 
-    arrears_amount DESC";
-$stmt_clients_in_arrears_details = $conn->prepare($sql_clients_in_arrears_details);
-bindDynamicParams($stmt_clients_in_arrears_details, $filter_params);
-$stmt_clients_in_arrears_details->execute();
-$result_clients_in_arrears_details = $stmt_clients_in_arrears_details->get_result();
-
-// Fetch names of clients with due repayments today and their due amounts
-$sql_clients_due_today = "SELECT 
-    borrowers.full_name AS client_name,
-    SUM(repayments.amount - repayments.paid) AS due_amount
-FROM 
-    borrowers
-INNER JOIN 
-    loan_applications ON borrowers.id = loan_applications.borrower
-INNER JOIN 
-    repayments ON loan_applications.id = repayments.loan_id
-INNER JOIN 
-    users ON borrowers.loan_officer = users.email
-WHERE 
-    repayments.repayment_date = CURDATE()
-    AND (repayments.amount - repayments.paid) > 0
-    $filter_sql
-GROUP BY 
-    borrowers.full_name";
-$stmt_clients_due_today = $conn->prepare($sql_clients_due_today);
-bindDynamicParams($stmt_clients_due_today, $filter_params);
-$stmt_clients_due_today->execute();
-$result_clients_due_today = $stmt_clients_due_today->get_result();
-
-// Fetch the last ten clients who made their payments recently
-$sql_recent_repayments = "SELECT 
-    borrowers.full_name AS client_name,
-    payment_date_records.Amount AS repaid_amount,
-    DATE_FORMAT(payment_date_records.PaymentDate, '%d/%m/%Y') AS payment_date
-FROM 
-    payment_date_records
-INNER JOIN 
-    loan_applications ON payment_date_records.loan_id = loan_applications.id
-INNER JOIN 
-    borrowers ON loan_applications.borrower = borrowers.id
-INNER JOIN 
-    users ON borrowers.loan_officer = users.email
-WHERE 
-    1=1
-    $filter_sql
-ORDER BY 
-    payment_date_records.PaymentDate DESC
-LIMIT 10";
-
-$stmt_recent_repayments = $conn->prepare($sql_recent_repayments);
-bindDynamicParams($stmt_recent_repayments, $filter_params);
-$stmt_recent_repayments->execute();
-$result_recent_repayments = $stmt_recent_repayments->get_result();
-$recent_repayments = [];
-while ($row = $result_recent_repayments->fetch_assoc()) {
-    $recent_repayments[] = "💰 " . htmlspecialchars($row['client_name']) . " repaid KSH " . number_format($row['repaid_amount'], 2) . " on " . htmlspecialchars($row['payment_date']);
-}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Dashboard - Microfinance</title>
+    <title>Manager Dashboard - Microfinance</title>
     <link href="/assets/img/logo.png" rel="icon">
+    <link href="/assets/img/logo.png" rel="apple-touch-icon">
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans&family=Montserrat&family=Poppins&display=swap" rel="stylesheet">
+    <link href="assets/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+    <link href="assets/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
+    <link href="assets/css/style.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
     <style>
-        /* General Styles */
+        :root {
+            --ink: #172331;
+            --muted: #687582;
+            --line: #dbe3e8;
+            --paper: #ffffff;
+            --canvas: #f2f5f6;
+            --teal: #147d78;
+            --gold: #c7973e;
+        }
+
         body {
-            background-color: #f8f9fa;
-            font-family: 'Open Sans', sans-serif;
-            color: #212529;
+            background: var(--canvas);
+            color: var(--ink);
+            font-family: "Trebuchet MS", Arial, sans-serif;
         }
 
-        /* Container */
-        .container {
-            max-width: 1200px;
+        .main {
+            margin-left: 250px;
+            padding: 34px 22px 60px;
+            transition: margin-left 0.3s ease;
         }
 
-        /* Back Button */
-        .btn-primary {
-            background-color: #e84545;
-            border: none;
-            transition: all 0.3s ease-in-out;
+        .main > .container {
+            margin: 18px auto 0;
+            max-width: 1280px;
+            padding: 0;
         }
 
-        .btn-primary:hover {
-            background-color: #d43d3d;
-        }
-
-        /* Tabs */
         .nav-tabs {
-            border-bottom: 2px solid #e84545;
+            border-bottom: 2px solid var(--teal);
         }
 
         .nav-tabs .nav-link {
-            color: #495057;
+            color: var(--muted);
             font-weight: 600;
             transition: 0.3s;
         }
 
         .nav-tabs .nav-link:hover,
         .nav-tabs .nav-link.active {
-            color: #e84545;
-            border-color: #e84545 #e84545 #fff;
+            color: var(--teal);
+            border-color: var(--teal) var(--teal) var(--paper);
         }
 
-        /* Dashboard Metrics */
         .dashboard-metrics {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: space-around;
+            display: grid;
+            gap: 28px;
+            margin-top: 24px;
         }
 
-        .metric {
-            background: #ffffff;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.1);
-            text-align: center;
-            width: 220px;
-            transition: transform 0.3s ease-in-out;
+        .metric-group > h2 {
+            color: var(--ink);
+            font-size: 18px;
+            font-weight: 700;
+            margin: 0 0 14px;
         }
 
-        .metric:hover {
-            transform: scale(1.05);
+        .metric-grid {
+            display: grid;
+            gap: 16px;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        }
+
+        .metric,
+        .metric-link .metric {
+            background: var(--paper);
+            border: 1px solid var(--line);
+            border-left: 4px solid var(--teal);
+            border-radius: 0;
+            box-shadow: none;
+            min-height: 120px;
+            padding: 18px 20px;
+            text-align: left;
+            height: 100%;
+            transition: border-color 0.2s ease, transform 0.2s ease;
+        }
+
+        .metric:hover,
+        .metric-link:hover .metric {
+            box-shadow: 0 3px 10px rgba(23, 35, 49, .08);
+            transform: translateY(-2px);
+        }
+
+        .metric-link {
+            color: inherit;
+            display: block;
+            text-decoration: none;
+        }
+
+        .metric-link:focus-visible {
+            outline: 3px solid var(--teal);
+            outline-offset: 3px;
         }
 
         .metric h2 {
-            font-size: 24px;
-            font-weight: bold;
-            color: #e84545;
+            color: var(--ink);
+            font-family: Georgia, serif;
+            font-size: 1.45rem;
+            margin: 8px 0 0;
+            overflow-wrap: anywhere;
         }
 
         .metric p {
-            font-size: 16px;
-            color: #6c757d;
+            color: var(--muted);
+            font-size: .74rem;
+            letter-spacing: .1em;
+            margin: 0;
+            text-transform: uppercase;
         }
 
-        /* Chart Container */
-        .chart-container {
-            background: #ffffff;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.1);
+        .metric-grid > :nth-child(2),
+        .metric-grid > :nth-child(6) { border-left-color: var(--gold); }
+        .metric-grid > :nth-child(3),
+        .metric-grid > :nth-child(7) { border-left-color: #5b7180; }
+        .metric-grid > :nth-child(4),
+        .metric-grid > :nth-child(8) { border-left-color: #a95d55; }
+
+        .sidebar { transition: all 0.3s ease; }
+        .sidebar.collapsed { display: none; }
+        .main.sidebar-collapsed { margin-left: 0; }
+
+        #sidebarWrapper {
+            box-sizing: border-box;
+            height: 100vh;
+            max-height: 100vh;
+            overflow-x: hidden;
+            overflow-y: auto;
+            position: fixed;
+            width: 250px;
+            z-index: 1000;
         }
 
-        /* Blinking Effect */
-        .blinking-container {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-top: 10px;
+        #sidebarWrapper .sidebar {
+            box-sizing: border-box;
+            height: auto;
+            max-height: none;
+            overflow: visible;
+            position: static;
+            width: 100%;
         }
 
-        .blinking {
-            font-weight: bold;
-            color: #ffc107;
-            animation: blink 5s infinite;
-            margin-right: 10px;
+        #sidebarWrapper .sidebar-nav {
+            box-sizing: border-box;
+            min-height: 100%;
+            padding-bottom: 80px;
         }
 
-        @keyframes blink {
-            0%, 100% {
-                opacity: 1;
-            }
-            50% {
-                opacity: 0;
-            }
+        #sidebarWrapper .sidebar-nav .collapse { overflow: visible; }
+
+        @media (max-width: 850px) {
+            .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
 
-        /* Responsive Design */
         @media (max-width: 768px) {
-            .dashboard-metrics {
-                flex-direction: column;
-                align-items: center;
-            }
-
-            .metric {
-                width: 100%;
-                margin-bottom: 15px;
-            }
+            .main { margin-left: 0; padding: 20px 12px 40px; }
         }
+
+        @media (max-width: 575px) {
+
+            .metric-grid { grid-template-columns: 1fr; }
+        }
+
     </style>
 </head>
 <body>
 <?php include 'includes/header.php'; ?>
 
-<div class="container mt-4">
-    <div class="d-flex justify-content-between align-items-center">
-        <h1 class="text-center">Manager Dashboard</h1>
-        <div class="blinking-container">
-            <div class="blinking">
-                <span id="blinking-text"></span>
-            </div>
-            <a href="add_repayments.php" class="btn btn-success">
-                <i class="fa fa-money-bill"></i> Add Repayments
-            </a>
-        </div>
-    </div>
-    <script>
-        document.addEventListener('DOMContentLoaded', function () {
-            const repayments = <?php echo json_encode($recent_repayments); ?>;
-            const blinkingText = document.getElementById('blinking-text');
-            let index = 0;
-
-            function updateBlinkingText() {
-                if (repayments.length > 0) {
-                    blinkingText.textContent = repayments[index];
-                    index = (index + 1) % repayments.length;
-                }
-            }
-
-            updateBlinkingText();
-            setInterval(updateBlinkingText, 5000); // Change text every 5 seconds
-        });
-    </script>
-
-    <marquee behavior="scroll" direction="left" style="background-color: #f8f9fa; padding: 10px; font-weight: bold; color: #e84545; border: 1px solid #ddd; border-radius: 5px;">
-        <?php while ($row = $result_clients_in_arrears_details->fetch_assoc()): ?>
-            <?php echo htmlspecialchars($row['client_name']) . " (Arrears: KSH " . number_format($row['arrears_amount'], 2) . ")"; ?> &nbsp;&nbsp;&nbsp;
-        <?php endwhile; ?>
-    </marquee>
-
-    <marquee behavior="scroll" direction="left" style="background-color: #f8f9fa; padding: 10px; font-weight: bold; color: #28a745; border: 1px solid #ddd; border-radius: 5px; margin-top: 10px;">
-        <?php while ($row = $result_clients_due_today->fetch_assoc()): ?>
-            <?php echo htmlspecialchars($row['client_name']) . " (Due Today: KSH " . number_format($row['due_amount'], 2) . ")"; ?> &nbsp;&nbsp;&nbsp;
-        <?php endwhile; ?>
-    </marquee>
-
-    <a href="index.php" class="btn btn-primary" style="width:100px;margin-bottom:20px">
-        <i class="fa fa-arrow-left"></i> Back
-    </a>
-
+<div class="sidebar" id="sidebarWrapper">
+    <?php include '../includes/sidebar.php'; ?>
+</div>
+<main class="main" id="mainContent">
+    <div class="container">
     <!-- Area Tabs -->
     <ul class="nav nav-tabs mt-3">
         <li class="nav-item">
@@ -615,106 +482,87 @@ while ($row = $result_recent_repayments->fetch_assoc()) {
     </ul>
 
     <!-- Dashboard Metrics -->
-    <div class="dashboard-metrics d-flex justify-content-around mt-4">
-        <div class="metric">
-            <h2>KSH <?php echo number_format(ceil($total_arrears)); ?></h2>
-            <p>Total Arrears</p>
-        </div>
-        <div class="metric">
-            <h2>KSH <?php echo number_format(ceil($total_loan_amount)); ?></h2>
-            <p>Total Disbursed Loans</p>
-        </div>
-        <div class="metric">
-            <h2>KSH <?php echo number_format(ceil($performing_book)); ?></h2>
-            <p>Performing Book</p>
-        </div>
-        <div class="metric">
-            <h2>KSH <?php echo number_format(ceil($loan_book)); ?></h2>
-            <p>Loan Book</p>
-        </div>
-        <div class="metric">
-            <h2><?= number_format($par, 2); ?>%</h2>
-            <p>Portfolio At Risk</p>
-        </div>
-        <div class="metric">
-            <h2>KSH <?php echo number_format(ceil($total_interest_amount)); ?></h2>
-            <p>Total Interest</p>
-        </div>
-        <div class="metric">
-            <h2>KSH <?php echo number_format(ceil($total_fee_amount)); ?></h2>
-            <p>Processing + Registration Fees</p>
-        </div>
-        <div class="metric">
-            <h2><?php echo $total_clients; ?></h2>
-            <p>Total Clients</p>
-        </div>
-        <div class="metric">
-            <h2><?php echo $clients_in_arrears; ?></h2>
-            <p>Clients in Arrears</p>
-        </div>
-        <div class="metric">
-            <h2>KSH <?php echo number_format(ceil($total_due_loans)); ?></h2>
-            <p>Due Loans</p>
-        </div>
+    <div class="dashboard-metrics">
+        <section class="metric-group" aria-labelledby="portfolioMetricsHeading">
+            <h2 id="portfolioMetricsHeading">Portfolio health</h2>
+            <div class="metric-grid">
+                <div class="metric">
+                    <h2>KSH <?php echo number_format(ceil($total_disbursed_principal)); ?></h2>
+                    <p>Total Disbursed Loans</p>
+                </div>
+                <div class="metric">
+                    <h2>KSH <?php echo number_format(ceil($loan_book)); ?></h2>
+                    <p>Loan Book</p>
+                </div>
+                <div class="metric">
+                    <h2>KSH <?php echo number_format(ceil($performing_book)); ?></h2>
+                    <p>Performing Book</p>
+                </div>
+                <div class="metric">
+                    <h2><?= number_format($par, 2); ?>%</h2>
+                    <p>Portfolio At Risk</p>
+                </div>
+                <div class="metric">
+                    <h2>KSH <?php echo number_format(ceil($total_arrears)); ?></h2>
+                    <p>Total Arrears</p>
+                </div>
+            </div>
+        </section>
+        <section class="metric-group" aria-labelledby="financialMetricsHeading">
+            <h2 id="financialMetricsHeading">Financial summary</h2>
+            <div class="metric-grid">
+                <div class="metric">
+                    <h2>KSH <?php echo number_format(ceil($total_interest_amount)); ?></h2>
+                    <p>Total Interest</p>
+                </div>
+                <div class="metric">
+                    <h2>KSH <?php echo number_format(ceil($total_fee_amount)); ?></h2>
+                    <p>Processing + Registration Fees</p>
+                </div>
+                <div class="metric">
+                    <h2>KSH <?php echo number_format(ceil($daily_inflows)); ?></h2>
+                    <p>Inflows Today</p>
+                </div>
+                <a class="metric-link" href="penalty_breakdown.php">
+                    <div class="metric">
+                        <h2>KSH <?php echo number_format(ceil($balance_penalty_amount)); ?></h2>
+                        <p>Balance Penalty</p>
+                    </div>
+                </a>
+                <a class="metric-link" href="expense_more_information.php">
+                    <div class="metric">
+                        <h2>KSH <?php echo number_format(ceil($total_expenses_amount)); ?></h2>
+                        <p>Total Expenses</p>
+                    </div>
+                </a>
+            </div>
+        </section>
+        <section class="metric-group" aria-labelledby="clientMetricsHeading">
+            <h2 id="clientMetricsHeading">Client activity</h2>
+            <div class="metric-grid">
+                <div class="metric">
+                    <h2><?php echo $total_clients; ?></h2>
+                    <p>Total Clients</p>
+                </div>
+                <div class="metric">
+                    <h2><?php echo $clients_in_arrears; ?></h2>
+                    <p>Clients in Arrears</p>
+                </div>
+                <div class="metric">
+                    <h2><?php echo number_format($arrears_client_percentage, 2); ?>%</h2>
+                    <p>% of Clients in Arrears</p>
+                </div>
+                <div class="metric">
+                    <h2>KSH <?php echo number_format(ceil($total_due_loans)); ?></h2>
+                    <p>Due Loans</p>
+                </div>
+            </div>
+        </section>
     </div>
 
-    <!-- Chart -->
-    <div class="chart-container mt-5 d-flex flex-wrap">
-        <div style="flex: 1; min-width: 300px; max-width: 50%;">
-            <canvas id="parPieChart"></canvas>
-        </div>
-        <div style="flex: 1; min-width: 300px; max-width: 50%;">
-            <canvas id="loanMetricsBarChart"></canvas>
-        </div>
     </div>
-
-    <script>
-        // Pie Chart for PAR
-        new Chart(document.getElementById('parPieChart'), {
-            type: 'pie',
-            data: {
-                labels: ['At Risk', 'Performing'],
-                datasets: [{
-                    data: [<?= $par; ?>, <?= 100 - $par; ?>],
-                    backgroundColor: ['red', 'green']
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'bottom'
-                    }
-                }
-            }
-        });
-
-        // Bar Chart for Loan Metrics
-        new Chart(document.getElementById('loanMetricsBarChart'), {
-            type: 'bar',
-            data: {
-                labels: ['Loan Book', 'Performing Book', 'Total Arrears'],
-                datasets: [{
-                    label: 'Loan Metrics',
-                    data: [<?= $loan_book; ?>, <?= $performing_book; ?>, <?= $total_arrears; ?>],
-                    backgroundColor: ['blue', 'green', 'red']
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false }
-                },
-                scales: {
-                    y: { title: { display: true, text: 'Amount (KSH)' } },
-                    x: { title: { display: true, text: 'Metrics' } }
-                }
-            }
-        });
-    </script>
-</div>
+</main>
+<script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+<script src="assets/js/main.js"></script>
 </body>
 </html>

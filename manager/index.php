@@ -447,42 +447,8 @@ $conn->query("CREATE TABLE IF NOT EXISTS penalty_actions (
     INDEX idx_penalty_actions_officer (officer_email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
-// Fetch total overdue amount using same calculation as overdue_repayments.php (sum per-borrower amounts)
-$sql_total_overdue = "SELECT 
-                    borrowers.id AS borrower_id,
-                    borrowers.full_name AS borrower_name, 
-                    borrowers.mobile AS phone_number, 
-                    GREATEST(
-                        COALESCE(SUM(CASE 
-                            WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
-                            ELSE 0 
-                        END), 0) 
-                        - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0)
-                        - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0),
-                        0
-                    ) AS total_overdue
-                FROM 
-                    borrowers
-                LEFT JOIN 
-                    loan_applications ON borrowers.id = loan_applications.borrower
-                LEFT JOIN 
-                    repayments ON loan_applications.id = repayments.loan_id
-                WHERE 
-                    1=1
-                    AND loan_applications.loan_status = 'approved'
-                GROUP BY 
-                    borrowers.id, borrowers.full_name, borrowers.mobile
-                HAVING 
-                    total_overdue > 0";
-$stmt_total_overdue = $conn->prepare($sql_total_overdue);
-$stmt_total_overdue->execute();
-$result_total_overdue = $stmt_total_overdue->get_result();
-
-// Calculate total overdue amount
-$total_overdue_amount = 0;
-while ($row = $result_total_overdue->fetch_assoc()) {
-    $total_overdue_amount += $row['total_overdue'];
-}
+$overdue_summary = getOverdueRepaymentSummary($conn);
+$total_overdue_amount = $overdue_summary['total_overdue'];
 
 // Fetch total paid amount for approved loans
 $sql_total_paid = "SELECT CEIL(SUM(repayments.paid + COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0))) AS total_paid
@@ -612,29 +578,7 @@ $stmt_total_clients = $conn->prepare($sql_total_clients);
 $stmt_total_clients->execute();
 $total_clients = $stmt_total_clients->get_result()->fetch_assoc()['total_clients'] ?? 0;
 
-// Fetch total number of clients in arrears (with total overdue amount > 0)
-$sql_clients_in_arrears = "SELECT COUNT(*) AS clients_in_arrears 
-                           FROM (
-                               SELECT borrowers.id,
-                                   GREATEST(
-                                       COALESCE(SUM(CASE 
-                                           WHEN repayments.repayment_date < CURDATE() THEN COALESCE(repayments.amount, 0) 
-                                           ELSE 0 
-                                       END), 0) 
-                                       - COALESCE(SUM(COALESCE(repayments.paid, 0)), 0)
-                                       - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa INNER JOIN loan_applications pla ON pla.id = pa.loan_id WHERE pla.borrower = borrowers.id), 0),
-                                       0
-                                   ) AS total_overdue
-                               FROM borrowers
-                               LEFT JOIN loan_applications ON borrowers.id = loan_applications.borrower
-                               LEFT JOIN repayments ON loan_applications.id = repayments.loan_id
-                               WHERE loan_applications.loan_status = 'approved'
-                               GROUP BY borrowers.id
-                               HAVING total_overdue > 0
-                           ) AS arrears_summary";
-$stmt_clients_in_arrears = $conn->prepare($sql_clients_in_arrears);
-$stmt_clients_in_arrears->execute();
-$clients_in_arrears = $stmt_clients_in_arrears->get_result()->fetch_assoc()['clients_in_arrears'] ?? 0;
+$clients_in_arrears = $overdue_summary['total_overdue_count'];
 
 // Fetch total due loans
 $sql_due_loans = "SELECT CEIL(SUM(amount - paid - COALESCE((SELECT SUM(pa.amount) FROM penalty_actions pa WHERE pa.loan_id = loan_applications.id), 0))) AS total_due_loans
@@ -686,6 +630,41 @@ $sql_overdue = "SELECT borrowers.full_name,
 $stmt_overdue = $conn->prepare($sql_overdue);
 $stmt_overdue->execute();
 $result_overdue = $stmt_overdue->get_result();
+
+// Prepare dashboard notices shown below the metrics.
+$dashboard_arrears_notices = $overdue_summary['rows'];
+
+$sql_dashboard_due_notices = "SELECT
+    borrowers.full_name AS client_name,
+    SUM(repayments.amount - repayments.paid) AS due_amount
+FROM borrowers
+INNER JOIN loan_applications ON borrowers.id = loan_applications.borrower
+INNER JOIN repayments ON loan_applications.id = repayments.loan_id
+WHERE repayments.repayment_date = CURDATE()
+    AND loan_applications.loan_status = 'approved'
+    AND repayments.amount - repayments.paid > 0
+GROUP BY borrowers.id, borrowers.full_name
+ORDER BY due_amount DESC";
+$result_dashboard_due_notices = $conn->query($sql_dashboard_due_notices);
+
+$sql_recent_repayments = "SELECT
+    borrowers.full_name AS client_name,
+    payment_date_records.Amount AS repaid_amount,
+    DATE_FORMAT(payment_date_records.PaymentDate, '%d/%m/%Y') AS payment_date
+FROM payment_date_records
+INNER JOIN loan_applications ON payment_date_records.loan_id = loan_applications.id
+INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
+ORDER BY payment_date_records.id DESC
+LIMIT 10";
+$result_recent_repayments = $conn->query($sql_recent_repayments);
+$recent_repayments = [];
+while ($row = $result_recent_repayments->fetch_assoc()) {
+    $recent_repayments[] = [
+        'client_name' => $row['client_name'],
+        'repaid_amount' => number_format((float) $row['repaid_amount'], 2),
+        'payment_date' => $row['payment_date'],
+    ];
+}
 
 // Start session before any HTML output so includes/header.php can safely manage auth headers.
 if (session_status() === PHP_SESSION_NONE) {
@@ -744,6 +723,37 @@ if (session_status() === PHP_SESSION_NONE) {
             font-size: clamp(1.8rem, 3vw, 2.6rem);
             font-weight: normal;
             letter-spacing: .02em;
+        }
+
+        .dashboard-repayment-notice {
+            align-items: center;
+            background: var(--paper);
+            border: 1px solid var(--line);
+            border-left: 3px solid var(--gold);
+            color: var(--ink);
+            display: flex;
+            gap: 8px;
+            padding: 4px 8px;
+            position: fixed;
+            top: 72px;
+            right: 22px;
+            width: fit-content;
+            max-width: min(520px, calc(100vw - 32px));
+            z-index: 1100;
+        }
+
+        .dashboard-repayment-notice i {
+            color: var(--teal);
+            flex: 0 0 auto;
+            font-size: .85rem;
+        }
+
+        .dashboard-repayment-notice-text {
+            font-size: .76rem;
+            font-weight: 600;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .sidebar-toggle-btn {
@@ -887,6 +897,28 @@ if (session_status() === PHP_SESSION_NONE) {
             text-decoration: none;
         }
 
+        .dashboard-notices {
+            display: grid;
+            gap: 10px;
+            margin: 18px 0;
+        }
+
+        .dashboard-notice {
+            background: var(--paper);
+            border: 1px solid var(--line);
+            color: var(--ink);
+            display: block;
+            font-size: .88rem;
+            font-weight: 600;
+            margin: 0;
+            overflow: hidden;
+            padding: 11px 14px;
+            white-space: nowrap;
+        }
+
+        .dashboard-notice-arrears { border-left: 4px solid #a95d55; }
+        .dashboard-notice-due { border-left: 4px solid var(--teal); }
+
         .metric {
             background: var(--paper);
             border: 1px solid var(--line);
@@ -993,6 +1025,7 @@ if (session_status() === PHP_SESSION_NONE) {
             .dashboard-metrics { grid-template-columns: repeat(2, 1fr); }
             .dashboard-client-search { margin: 16px 0 0; max-width: none; order: 3; }
             .main > .header { flex-wrap: wrap; }
+            .dashboard-repayment-notice { right: 16px; }
         }
 
         @media (max-width: 768px) {
@@ -1006,6 +1039,7 @@ if (session_status() === PHP_SESSION_NONE) {
             .main > .header h1 { font-size: 1.8rem; }
             .table-container { padding-left: 12px; padding-right: 12px; }
             .dashboard-client-search { flex-direction: column; }
+            .dashboard-repayment-notice { right: 12px; }
         }
     </style>
 </head>
@@ -1134,6 +1168,27 @@ if (session_status() === PHP_SESSION_NONE) {
     <?php include '../includes/sidebar.php'; ?>
 </div>
 <main class="main" id="mainContent">
+    <div class="dashboard-repayment-notice" role="status" aria-live="polite">
+        <i class="bi bi-bell-fill" aria-hidden="true"></i>
+        <span class="dashboard-repayment-notice-text" id="latestRepaymentNotice">No repayments have been added yet.</span>
+    </div>
+    <script>
+        (function () {
+            const repayments = <?= json_encode($recent_repayments, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+            const notice = document.getElementById('latestRepaymentNotice');
+            if (!notice || repayments.length === 0) return;
+
+            let index = 0;
+            function showRepayment() {
+                const repayment = repayments[index];
+                notice.textContent = `💰 ${repayment.client_name} repaid KSH ${repayment.repaid_amount} on ${repayment.payment_date}`;
+                index = (index + 1) % repayments.length;
+            }
+
+            showRepayment();
+            if (repayments.length > 1) window.setInterval(showRepayment, 5000);
+        })();
+    </script>
     <div class="header d-flex justify-content-between align-items-center">
         <div class="d-flex align-items-center">
             <button type="button" class="header-icon-btn me-2" data-bs-toggle="modal" data-bs-target="#billingModal" aria-label="Open billing details" title="Billing details">
@@ -1207,6 +1262,18 @@ if (session_status() === PHP_SESSION_NONE) {
                 <h2>KSH <?php echo number_format(ceil($total_due_loans)); ?></h2>
                 <p>Due Loans</p>
             </div></a>
+        </div>
+        <div class="dashboard-notices" aria-label="Client payment notices">
+            <marquee class="dashboard-notice dashboard-notice-arrears" behavior="scroll" direction="left">
+                <?php foreach ($dashboard_arrears_notices as $row): ?>
+                    <?php echo htmlspecialchars($row['borrower_name']) . " (Arrears: KSH " . number_format($row['total_overdue'], 2) . ")"; ?> &nbsp;&nbsp;&nbsp;
+                <?php endforeach; ?>
+            </marquee>
+            <marquee class="dashboard-notice dashboard-notice-due" behavior="scroll" direction="left">
+                <?php while ($row = $result_dashboard_due_notices->fetch_assoc()): ?>
+                    <?php echo htmlspecialchars($row['client_name']) . " (Due Today: KSH " . number_format($row['due_amount'], 2) . ")"; ?> &nbsp;&nbsp;&nbsp;
+                <?php endwhile; ?>
+            </marquee>
         </div>
             </div>
         </div>

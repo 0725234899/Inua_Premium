@@ -4,6 +4,142 @@ use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 require_once __DIR__ . '/vendor/autoload.php';
 
+function getOverdueRepaymentSummary($conn, $filters = []) {
+    $sql = "SELECT
+                borrowers.id AS borrower_id,
+                borrowers.full_name AS borrower_name,
+                borrowers.mobile AS phone_number,
+                users.id AS loan_officer_id,
+                loan_applications.id AS loan_id,
+                loan_applications.total_amount AS total_disbursed,
+                repayments.amount AS amount_due,
+                repayments.repayment_date AS repayment_date_raw,
+                COALESCE(payment_totals.total_paid, 0) + COALESCE(penalty_totals.total_penalty, 0) AS total_paid
+            FROM repayments
+            INNER JOIN loan_applications ON repayments.loan_id = loan_applications.id
+            INNER JOIN borrowers ON loan_applications.borrower = borrowers.id
+            INNER JOIN users ON borrowers.loan_officer = users.email
+            LEFT JOIN (
+                SELECT loan_id, SUM(paid) AS total_paid
+                FROM repayments
+                GROUP BY loan_id
+            ) payment_totals ON payment_totals.loan_id = loan_applications.id
+            LEFT JOIN (
+                SELECT loan_id, SUM(amount) AS total_penalty
+                FROM penalty_actions
+                GROUP BY loan_id
+            ) penalty_totals ON penalty_totals.loan_id = loan_applications.id
+            WHERE loan_applications.loan_status = 'approved'";
+    $params = [];
+    $types = '';
+
+    if (!empty($filters['officer_email'])) {
+        $sql .= " AND borrowers.loan_officer = ?";
+        $params[] = (string) $filters['officer_email'];
+        $types .= 's';
+    }
+    if (!empty($filters['officer_id'])) {
+        $sql .= " AND users.id = ?";
+        $params[] = (int) $filters['officer_id'];
+        $types .= 'i';
+    }
+    if (!empty($filters['area_id'])) {
+        $sql .= " AND users.area = ?";
+        $params[] = (int) $filters['area_id'];
+        $types .= 'i';
+    }
+    if (!empty($filters['day'])) {
+        $sql .= " AND DAYNAME(repayments.repayment_date) = ?";
+        $params[] = (string) $filters['day'];
+        $types .= 's';
+    }
+    $sql .= " ORDER BY loan_applications.id ASC, repayments.repayment_date ASC, repayments.id ASC";
+
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        throw new RuntimeException('Unable to prepare the overdue repayment query: ' . $conn->error);
+    }
+    if ($params) {
+        $stmt->bind_param($types, ...$params);
+    }
+    if (!$stmt->execute()) {
+        $error = $stmt->error;
+        $stmt->close();
+        throw new RuntimeException('Unable to load overdue repayments: ' . $error);
+    }
+
+    $result = $stmt->get_result();
+    $borrowers = [];
+    $remainingPaidByLoan = [];
+    $loanBalanceByBorrower = [];
+    $today = date('Y-m-d');
+
+    while ($row = $result->fetch_assoc()) {
+        $loanId = (int) $row['loan_id'];
+        $borrowerId = (int) $row['borrower_id'];
+        $amountDue = (float) $row['amount_due'];
+        if (!isset($remainingPaidByLoan[$loanId])) {
+            $remainingPaidByLoan[$loanId] = (float) $row['total_paid'];
+        }
+        if (!isset($loanBalanceByBorrower[$borrowerId][$loanId])) {
+            $loanBalanceByBorrower[$borrowerId][$loanId] = max(
+                0,
+                (float) $row['total_disbursed'] - (float) $row['total_paid']
+            );
+        }
+
+        $paidForThisDue = min($amountDue, max(0, $remainingPaidByLoan[$loanId]));
+        $remainingPaidByLoan[$loanId] -= $paidForThisDue;
+        $outstandingDue = max(0, $amountDue - $paidForThisDue);
+        $repaymentDate = date('Y-m-d', strtotime($row['repayment_date_raw']));
+        if ($outstandingDue <= 0 || $repaymentDate >= $today) {
+            continue;
+        }
+
+        if (!isset($borrowers[$borrowerId])) {
+            $borrowers[$borrowerId] = [
+                'borrower_id' => $borrowerId,
+                'borrower_name' => $row['borrower_name'],
+                'phone_number' => $row['phone_number'],
+                'total_overdue' => 0.0,
+                'outstanding_loan_balance' => 0.0,
+                'loan_id' => $loanId,
+                'days_in_arrears' => 0,
+                '_loan_overdue' => [],
+                '_earliest_overdue_date' => $repaymentDate,
+            ];
+        }
+
+        $borrowers[$borrowerId]['total_overdue'] += $outstandingDue;
+        $borrowers[$borrowerId]['_loan_overdue'][$loanId] = ($borrowers[$borrowerId]['_loan_overdue'][$loanId] ?? 0) + $outstandingDue;
+        if ($repaymentDate < $borrowers[$borrowerId]['_earliest_overdue_date']) {
+            $borrowers[$borrowerId]['_earliest_overdue_date'] = $repaymentDate;
+        }
+    }
+    $stmt->close();
+
+    foreach ($borrowers as $borrowerId => &$borrower) {
+        $borrower['outstanding_loan_balance'] = array_sum($loanBalanceByBorrower[$borrowerId] ?? []);
+        arsort($borrower['_loan_overdue']);
+        $borrower['loan_id'] = (int) array_key_first($borrower['_loan_overdue']);
+        $borrower['days_in_arrears'] = (int) (new DateTime($borrower['_earliest_overdue_date']))->diff(new DateTime($today))->days;
+        unset($borrower['_loan_overdue'], $borrower['_earliest_overdue_date']);
+    }
+    unset($borrower);
+
+    $rows = array_values($borrowers);
+    usort($rows, function ($a, $b) {
+        $daysDiff = ((int) $b['days_in_arrears']) <=> ((int) $a['days_in_arrears']);
+        return $daysDiff !== 0 ? $daysDiff : ((float) $b['total_overdue']) <=> ((float) $a['total_overdue']);
+    });
+
+    return [
+        'rows' => $rows,
+        'total_overdue' => array_sum(array_column($rows, 'total_overdue')),
+        'total_overdue_count' => count($rows),
+    ];
+}
+
 function calculateManagerBillingExpiry($startDate, $billingCycle) {
     $monthsByCycle = ['Monthly' => 1, 'Quarterly' => 3, 'Annually' => 12];
     if (!isset($monthsByCycle[$billingCycle])) {

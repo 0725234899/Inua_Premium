@@ -214,6 +214,12 @@ function sendCombinedStaffNotification($loan_id, $amount_paid, $conn) {
     $details = getLoanNotificationDetails($loan_id, $conn);
     if (!$details) return "<div class='alert alert-warning text-center'>Payment saved but loan/staff details not found for notification.</div>";
 
+    try {
+        $currentMonthInterest = getCurrentMonthInterestTotal($conn);
+    } catch (RuntimeException $e) {
+        return "<div class='alert alert-warning text-center'>Payment saved but current-month interest could not be calculated, so the staff notification was not sent: " . htmlspecialchars($e->getMessage()) . "</div>";
+    }
+
     $officerEmail = trim($details['officer_email'] ?? '');
     $officerName = !empty($details['loan_officer_name']) ? $details['loan_officer_name'] : $officerEmail;
     $senderEmail = getConfiguredSenderEmail();
@@ -275,6 +281,7 @@ function sendCombinedStaffNotification($loan_id, $amount_paid, $conn) {
     $body .= '<tr><td style="padding:18px 24px;">';
     $body .= '<p style="margin:0 0 8px;">Dear ' . htmlspecialchars($greet) . ',</p>';
     $body .= '<p style="margin:0 0 12px;">The client <strong>' . htmlspecialchars($details['borrower_name'] ?? '') . '</strong> has paid <strong>KES ' . number_format($amount_paid, 2) . '</strong>.</p>';
+    $body .= '<div style="margin:0 0 16px;padding:10px 12px;border:1px solid #dbeafe;border-radius:8px;background:#eff6ff;font-size:14px;color:#0f172a;"><strong>Monthly Interest (' . htmlspecialchars(date('F Y')) . '):</strong> KES ' . number_format($currentMonthInterest, 2) . '<br><span style="font-size:12px;color:#475569;">Live total matching the current-month period in Interest Breakdown.</span></div>';
 
     // Loan terms if available
     if (!empty($loanTerms)) {
@@ -881,6 +888,38 @@ function getLoanOfficerTodayDues($officerEmail, $conn, $date = null) {
         $stmt->close();
 
         return (float) ($row['total_dues_today'] ?? 0);
+}
+
+function getCurrentMonthInterestTotal($conn) {
+    $periodStart = date('Y-m-01');
+    $periodEnd = date('Y-m-01', strtotime('first day of next month'));
+    $sql = "SELECT COALESCE(SUM(GREATEST(0, l.total_amount - l.principal)), 0) AS total_interest
+            FROM loan_applications l
+            INNER JOIN borrowers b ON l.borrower = b.id
+            LEFT JOIN users u ON b.loan_officer = u.email
+            LEFT JOIN areas a ON u.area = a.area_id
+            WHERE (
+                l.loan_status IN ('approved', 'rolled_over')
+                OR LOWER(TRIM(COALESCE(l.loan_status, ''))) LIKE '%roll%'
+            )
+            AND l.loan_release_date >= ?
+            AND l.loan_release_date < ?";
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        throw new RuntimeException('Unable to prepare the current-month interest query: ' . $conn->error);
+    }
+
+    $stmt->bind_param('ss', $periodStart, $periodEnd);
+    if (!$stmt->execute()) {
+        $error = $stmt->error;
+        $stmt->close();
+        throw new RuntimeException('Unable to calculate current-month interest: ' . $error);
+    }
+
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    return (float) ($row['total_interest'] ?? 0);
 }
 
 function sendPaymentNotificationEmail($loan_id, $amount_paid, $conn) {

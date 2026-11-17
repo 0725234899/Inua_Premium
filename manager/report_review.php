@@ -220,7 +220,10 @@ function sendReportReviewEmail($recipient, $pdfContent, $filename, $periodLabel)
     $mail->send();
 }
 
-$reviewType = in_array($_REQUEST['review_period'] ?? 'weekly', ['weekly', 'monthly', 'annual'], true) ? $_REQUEST['review_period'] : 'weekly';
+$requestedReviewPeriod = $_REQUEST['review_period'] ?? 'weekly';
+$reviewType = is_string($requestedReviewPeriod) && in_array($requestedReviewPeriod, ['weekly', 'monthly', 'annual'], true)
+    ? $requestedReviewPeriod
+    : 'weekly';
 $period = reviewPeriod($reviewType);
 $conn->query("CREATE TABLE IF NOT EXISTS loan_officer_expenses (
     id INT AUTO_INCREMENT PRIMARY KEY,
