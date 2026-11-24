@@ -157,11 +157,11 @@ function terminationReasonDetails($reason) {
     return $details[$reason] ?? $details['Poor Performance'];
 }
 
-function generateTerminationPdf($employee, $manager, $reason, $effectiveDate, $noticeDate, $details, $additionalNotes, $awarenessNotice = false, $performanceMetrics = null) {
+function generateTerminationPdf($employee, $manager, $reason, $effectiveDate, $noticeDate, $details, $additionalNotes, $awarenessNotice = false, $performanceMetrics = null, $personalizedNotice = false) {
     $pdf = new TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
     $pdf->SetCreator('Inua Premium Services');
     $pdf->SetAuthor($manager['name']);
-    $pdf->SetTitle(($awarenessNotice ? 'Staff Conduct Awareness Notice - ' : 'Termination Letter - ') . $employee['name']);
+    $pdf->SetTitle(($personalizedNotice ? 'Personalized Staff Conduct Notice - ' : ($awarenessNotice ? 'Staff Conduct Awareness Notice - ' : 'Termination Letter - ')) . $employee['name']);
     $pdf->SetMargins(15, 16, 15);
     $pdf->SetAutoPageBreak(false, 18);
     $pdf->setPrintHeader(false);
@@ -218,7 +218,7 @@ function generateTerminationPdf($employee, $manager, $reason, $effectiveDate, $n
     $header();
     $pdf->SetTextColor(210, 0, 0);
     $pdf->SetFont('helvetica', 'B', 13);
-    $pdf->Cell(0, 8, $awarenessNotice ? 'STAFF CONDUCT AND CONSEQUENCES NOTICE' : 'FORMAL TERMINATION NOTICE', 0, 1, 'C');
+    $pdf->Cell(0, 8, $personalizedNotice ? 'PERSONALIZED STAFF CONDUCT NOTICE' : ($awarenessNotice ? 'STAFF CONDUCT AND CONSEQUENCES NOTICE' : 'FORMAL TERMINATION NOTICE'), 0, 1, 'C');
     $pdf->SetTextColor(45, 45, 45);
     $pdf->SetFont('helvetica', 'B', 9);
     $pdf->Cell(0, 5, 'Reference: TL-' . date('YmdHis') . '    Date: ' . date('d/m/Y'), 0, 1, 'R');
@@ -231,7 +231,7 @@ function generateTerminationPdf($employee, $manager, $reason, $effectiveDate, $n
     $pdf->writeHTML('Dear ' . $safe($employee['name']) . ',', true, false, true, false, 'L');
     $pdf->Ln(2);
     $opening = $awarenessNotice
-        ? 'This notice is issued to all staff as a formal reminder of the standards expected at Inua Premium Services. It explains the consequences associated with <b>' . $safe($reason) . '</b> and is intended to prevent conduct that may harm clients, colleagues, or the organization.'
+        ? ($personalizedNotice ? 'This personalized copy of the formal staff reminder is issued to you to explain the standards expected at Inua Premium Services. It explains the consequences associated with <b>' . $safe($reason) . '</b> and is intended to prevent conduct that may harm clients, colleagues, or the organization.' : 'This notice is issued to all staff as a formal reminder of the standards expected at Inua Premium Services. It explains the consequences associated with <b>' . $safe($reason) . '</b> and is intended to prevent conduct that may harm clients, colleagues, or the organization.')
         : 'We write on behalf of Inua Premium Services to formally notify you of the Employer\'s decision regarding the termination of your employment. This notice has been prepared for the selected reason of <b>' . $safe($reason) . '</b>.';
     $pdf->writeHTML($opening, true, false, true, false, 'L');
     $section($awarenessNotice ? '1. STAFF AWARENESS PARTICULARS' : '1. TERMINATION PARTICULARS');
@@ -269,12 +269,25 @@ function generateTerminationPdf($employee, $manager, $reason, $effectiveDate, $n
     $header();
     $pdf->SetTextColor(210, 0, 0);
     $pdf->SetFont('helvetica', 'B', 13);
-    $pdf->Cell(0, 8, $awarenessNotice ? 'STAFF CONDUCT AND CONSEQUENCES NOTICE' : 'FORMAL TERMINATION NOTICE', 0, 1, 'C');
+    $pdf->Cell(0, 8, $personalizedNotice ? 'PERSONALIZED STAFF CONDUCT NOTICE' : ($awarenessNotice ? 'STAFF CONDUCT AND CONSEQUENCES NOTICE' : 'FORMAL TERMINATION NOTICE'), 0, 1, 'C');
     $pdf->SetTextColor(45, 45, 45);
-    $section($awarenessNotice ? '4. ACKNOWLEDGEMENT AND PREVENTION' : '5. CONTINUING OBLIGATIONS');
+    if ($personalizedNotice) {
+        $section('4. ADDITIONAL MANAGEMENT NOTES');
+        $pdf->SetFont('helvetica', '', 9.2);
+        $pdf->writeHTML(trim($additionalNotes) !== '' ? $safe($additionalNotes) : 'No additional management notes were provided.', true, false, true, false, 'L');
+        $footer();
+
+        $pdf->AddPage();
+        $header();
+        $pdf->SetTextColor(210, 0, 0);
+        $pdf->SetFont('helvetica', 'B', 13);
+        $pdf->Cell(0, 8, 'PERSONALIZED STAFF CONDUCT NOTICE', 0, 1, 'C');
+        $pdf->SetTextColor(45, 45, 45);
+    }
+    $section($awarenessNotice ? ($personalizedNotice ? '5. ACKNOWLEDGEMENT AND PREVENTION' : '4. ACKNOWLEDGEMENT AND PREVENTION') : '5. CONTINUING OBLIGATIONS');
     $pdf->SetFont('helvetica', '', 9.2);
     $pdf->writeHTML($awarenessNotice ? 'Every employee is expected to understand this notice, avoid the conduct described, seek guidance when uncertain, and contribute to a culture of integrity, accountability, customer protection, and respect.' : 'Termination does not release either party from obligations that are intended to continue after separation. You must continue to protect confidential client, financial, operational, employee, and business information; return or delete records as directed; avoid unauthorized use of company systems; and cooperate with any lawful audit, investigation, reconciliation, or handover request.', true, false, true, false, 'L');
-    $section($awarenessNotice ? '5. ACKNOWLEDGEMENT OF RECEIPT' : '6. ACKNOWLEDGEMENT OF RECEIPT');
+    $section($awarenessNotice ? ($personalizedNotice ? '6. ACKNOWLEDGEMENT OF RECEIPT' : '5. ACKNOWLEDGEMENT OF RECEIPT') : '6. ACKNOWLEDGEMENT OF RECEIPT');
     $pdf->writeHTML($awarenessNotice ? 'Your signature confirms that you received and understood this staff awareness notice. It does not indicate that you are being terminated. You are required to comply with the organization\'s policies, standards, and procedures.' : 'Your signature below confirms receipt of this notice. It does not necessarily mean that you agree with all matters stated in it. You may provide a written response or raise any question through the Human Resources and Administration Department in accordance with the applicable procedure.', true, false, true, false, 'L');
     $pdf->Ln(8);
     $pdf->Cell(92, 6, 'Employee signature: __________________________', 0, 0, 'L');
@@ -303,7 +316,7 @@ function generateTerminationPdf($employee, $manager, $reason, $effectiveDate, $n
     return $pdf->Output('', 'S');
 }
 
-function sendTerminationEmail($employee, $pdfContent, $filename, $reason, $awarenessNotice = false) {
+function sendTerminationEmail($employee, $pdfContent, $filename, $reason, $awarenessNotice = false, $personalizedNotice = false) {
     $credentials = getEmailAccount();
     if (empty($credentials['sender_email']) || empty($credentials['sender_app_password'])) {
         throw new Exception('Email settings are not configured.');
@@ -321,13 +334,19 @@ function sendTerminationEmail($employee, $pdfContent, $filename, $reason, $aware
     $mail->setFrom($credentials['sender_email'], 'Inua Premium Services');
     $mail->addAddress($employee['email'], $employee['name']);
     $mail->isHTML(true);
-    $mail->Subject = $awarenessNotice ? 'Staff Conduct and Consequences Notice - Inua Premium Services' : 'Formal Termination Notice - Inua Premium Services';
-    $mail->Body = $awarenessNotice
+    $mail->Subject = $personalizedNotice
+        ? 'Personalized Staff Conduct Notice - Inua Premium Services'
+        : ($awarenessNotice ? 'Staff Conduct and Consequences Notice - Inua Premium Services' : 'Formal Termination Notice - Inua Premium Services');
+    $mail->Body = $personalizedNotice
+        ? '<p>Dear ' . htmlspecialchars($employee['name'], ENT_QUOTES, 'UTF-8') . ',</p><p>Please find attached a personalized staff conduct notice for your role as <strong>' . htmlspecialchars($employee['role_name'], ENT_QUOTES, 'UTF-8') . '</strong>. It contains the same staff awareness information shared with all staff, together with additional management notes for you.</p><p>Please read the notice carefully and contact Human Resources and Administration if you have questions.</p><p>Regards,<br>Human Resources and Administration Department<br>Inua Premium Services</p>'
+        : ($awarenessNotice
         ? '<p>Dear ' . htmlspecialchars($employee['name'], ENT_QUOTES, 'UTF-8') . ',</p><p>Please find attached a formal staff awareness notice for your role as <strong>' . htmlspecialchars($employee['role_name'], ENT_QUOTES, 'UTF-8') . '</strong>.</p><p>The notice explains the prohibited conduct and consequences associated with <strong>' . htmlspecialchars($reason, ENT_QUOTES, 'UTF-8') . '</strong>. Please read it carefully and comply with the organization\'s policies and procedures.</p><p>Regards,<br>Human Resources and Administration Department<br>Inua Premium Services</p>'
-        : '<p>Dear ' . htmlspecialchars($employee['name'], ENT_QUOTES, 'UTF-8') . ',</p><p>Please find attached the formal termination notice relating to your employment as <strong>' . htmlspecialchars($employee['role_name'], ENT_QUOTES, 'UTF-8') . '</strong>.</p><p>The notice records the selected reason: <strong>' . htmlspecialchars($reason, ENT_QUOTES, 'UTF-8') . '</strong>. Please review the document and follow the handover and response instructions stated in it.</p><p>Regards,<br>Human Resources and Administration Department<br>Inua Premium Services</p>';
-    $mail->AltBody = $awarenessNotice
+        : '<p>Dear ' . htmlspecialchars($employee['name'], ENT_QUOTES, 'UTF-8') . ',</p><p>Please find attached the formal termination notice relating to your employment as <strong>' . htmlspecialchars($employee['role_name'], ENT_QUOTES, 'UTF-8') . '</strong>.</p><p>The notice records the selected reason: <strong>' . htmlspecialchars($reason, ENT_QUOTES, 'UTF-8') . '</strong>. Please review the document and follow the handover and response instructions stated in it.</p><p>Regards,<br>Human Resources and Administration Department<br>Inua Premium Services</p>');
+    $mail->AltBody = $personalizedNotice
+        ? 'Please find attached your personalized staff conduct notice. It contains the staff awareness information and additional management notes for you.'
+        : ($awarenessNotice
         ? 'Please find attached the staff conduct and consequences notice for ' . $reason . '. Please read and comply with the organization policies and procedures.'
-        : 'Please find attached the formal termination notice. Selected reason: ' . $reason . '. Please review and follow the instructions in the notice.';
+        : 'Please find attached the formal termination notice. Selected reason: ' . $reason . '. Please review and follow the instructions in the notice.');
     $mail->addStringAttachment($pdfContent, $filename, 'base64', 'application/pdf');
     $mail->send();
 }
@@ -353,8 +372,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_termination_lett
         }
     }
     $awarenessNotice = !in_array($formValues['reason'], ['Voluntary Request', 'Poor Performance'], true);
-    if (!$awarenessNotice && (!$selectedEmployee || !filter_var($selectedEmployee['email'], FILTER_VALIDATE_EMAIL))) {
-        $sendMessage = 'Select a valid staff member with a valid email address for a voluntary separation request.';
+    if (!$selectedEmployee || !filter_var($selectedEmployee['email'], FILTER_VALIDATE_EMAIL)) {
+        $sendMessage = 'Select a staff member with a valid email address to receive the personalized notice.';
         $sendStatus = 'danger';
     } elseif (!in_array($formValues['reason'], $reasons, true)) {
         $sendMessage = 'Select a valid termination reason.';
@@ -376,8 +395,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_termination_lett
                 $safeName = preg_replace('/[^A-Za-z0-9_-]+/', '_', $recipient['name']) ?: 'employee';
                 sendTerminationEmail($recipient, $pdf, ($awarenessNotice ? 'staff_conduct_notice_' : 'termination_notice_') . $safeName . '.pdf', $formValues['reason'], $awarenessNotice);
             }
+            if ($awarenessNotice) {
+                $safeName = preg_replace('/[^A-Za-z0-9_-]+/', '_', $selectedEmployee['name']) ?: 'employee';
+                $personalizedPdf = generateTerminationPdf($selectedEmployee, $manager, $formValues['reason'], $formValues['effective_date'], $formValues['notice_date'], $details, $formValues['additional_notes'], true, null, true);
+                sendTerminationEmail($selectedEmployee, $personalizedPdf, 'personalized_staff_conduct_notice_' . $safeName . '.pdf', $formValues['reason'], true, true);
+            }
             $sendMessage = $awarenessNotice
-                ? 'The reason-specific staff awareness notice was sent to ' . count($recipients) . ' staff members.'
+                ? 'The reason-specific staff awareness notice was sent to ' . count($recipients) . ' staff members, and a personalized copy with Additional Management Notes was sent to ' . $selectedEmployee['name'] . '.'
                 : 'The voluntary termination notice was sent successfully to ' . $selectedEmployee['name'] . '.';
             $sendStatus = 'success';
         } catch (Exception $e) {
@@ -430,10 +454,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_termination_lett
                 <div class="form-panel">
                     <div class="section-title">Termination Details</div>
                     <form method="post" action="termination_letter.php">
-                        <div class="mb-3"><label class="form-label" for="staff_id">Select Staff Member</label><select class="form-select" id="staff_id" name="staff_id"><option value="">Choose staff member (required for private notices)</option><?php foreach ($staffList as $employee): ?><option value="<?= (int) $employee['id']; ?>" data-name="<?= terminationValue($employee['name']); ?>" data-email="<?= terminationValue($employee['email']); ?>" data-role="<?= terminationValue($employee['role_name']); ?>" <?= (int) $formValues['staff_id'] === (int) $employee['id'] ? 'selected' : ''; ?>><?= terminationValue($employee['name']); ?> - <?= terminationValue($employee['role_name']); ?> (<?= terminationValue($employee['email']); ?>)</option><?php endforeach; ?></select><div class="form-text" id="recipientHelp">Poor Performance and Voluntary Request require a selected employee and are sent privately. Other reasons send awareness notices to all valid staff emails.</div></div>
+                        <div class="mb-3"><label class="form-label" for="staff_id">Select Staff Member</label><select class="form-select" id="staff_id" name="staff_id"><option value="">Choose staff member (required)</option><?php foreach ($staffList as $employee): ?><option value="<?= (int) $employee['id']; ?>" data-name="<?= terminationValue($employee['name']); ?>" data-email="<?= terminationValue($employee['email']); ?>" data-role="<?= terminationValue($employee['role_name']); ?>" <?= (int) $formValues['staff_id'] === (int) $employee['id'] ? 'selected' : ''; ?>><?= terminationValue($employee['name']); ?> - <?= terminationValue($employee['role_name']); ?> (<?= terminationValue($employee['email']); ?>)</option><?php endforeach; ?></select><div class="form-text" id="recipientHelp">Select the employee who will receive the personalized notice. For awareness reasons, all staff also receive a separate awareness copy.</div></div>
                         <div class="mb-3"><label class="form-label" for="reason">Reason for Termination</label><select class="form-select" id="reason" name="reason" required><?php foreach ($reasons as $reason): ?><option value="<?= terminationValue($reason); ?>" <?= $formValues['reason'] === $reason ? 'selected' : ''; ?>><?= terminationValue($reason); ?></option><?php endforeach; ?></select></div>
                         <div class="row g-3"><div class="col-md-6"><label class="form-label" for="notice_date">Notice Date</label><input type="date" class="form-control" id="notice_date" name="notice_date" value="<?= terminationValue($formValues['notice_date']); ?>" required></div><div class="col-md-6"><label class="form-label" for="effective_date">Effective Separation Date</label><input type="date" class="form-control" id="effective_date" name="effective_date" value="<?= terminationValue($formValues['effective_date']); ?>" required></div></div>
-                        <div class="mt-3"><label class="form-label" for="additional_notes">Additional Management Notes</label><textarea class="form-control" id="additional_notes" name="additional_notes" rows="4" placeholder="Optional facts, handover instructions, or approved notes"><?= terminationValue($formValues['additional_notes']); ?></textarea></div>
+                        <div class="mt-3"><label class="form-label" for="additional_notes">Additional Management Notes</label><textarea class="form-control" id="additional_notes" name="additional_notes" rows="4" placeholder="Optional facts, handover instructions, or approved notes"><?= terminationValue($formValues['additional_notes']); ?></textarea><div class="form-text">For awareness reasons, these notes appear only in the additional personalized copy sent to the selected employee.</div></div>
                         <div class="alert alert-light border mt-4 mb-0">The PDF includes due-process language, handover instructions, continuing confidentiality obligations, acknowledgement fields, and the company stamp.</div>
                         <button type="submit" name="send_termination_letter" class="btn btn-primary btn-lg w-100 mt-4" id="sendButton">Send Staff Awareness Notice</button>
                     </form>
@@ -447,7 +471,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_termination_lett
                     <div class="preview-line"><strong>Email:</strong> <span id="previewEmail"><?= $selectedEmployee ? terminationValue($selectedEmployee['email']) : 'Not selected'; ?></span></div>
                     <div class="preview-line"><strong>Role:</strong> <span id="previewRole"><?= $selectedEmployee ? terminationValue($selectedEmployee['role_name']) : 'Not selected'; ?></span></div>
                     <div class="preview-line"><strong>Reason:</strong> <span id="previewReason"><?= terminationValue($formValues['reason']); ?></span></div>
-                    <div class="alert alert-light border mt-4" id="sendScope">Select the reason carefully. Poor Performance and Voluntary Request send private notices to the selected employee; other reasons send customized awareness notices to all staff.</div>
+                    <div class="alert alert-light border mt-4" id="sendScope">Select a staff member and reason. Awareness reasons notify all staff and send the selected employee a separate personalized copy with Additional Management Notes.</div>
                 </div>
             </div>
         </div>
@@ -463,10 +487,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_termination_lett
     document.getElementById('reason').addEventListener('change', function () {
         document.getElementById('previewReason').textContent = this.value || 'Not selected';
         const isPrivate = this.value === 'Voluntary Request' || this.value === 'Poor Performance';
-        document.getElementById('sendButton').textContent = isPrivate ? 'Send Private Termination Notice' : 'Send Staff Awareness Notice';
+        document.getElementById('sendButton').textContent = isPrivate ? 'Send Private Termination Notice' : 'Send Awareness + Personalized Copy';
         document.getElementById('recipientHelp').textContent = isPrivate
             ? (this.value === 'Poor Performance' ? 'Select the employee whose four-month performance summary will be included. Only that employee will receive the notice.' : 'Select the employee who submitted the voluntary separation request. Only that employee will receive the notice.')
-            : 'The reason-specific awareness notice will be personalized and sent to all staff with valid email addresses.';
+            : 'Select the employee who will receive the personalized copy with Additional Management Notes. The standard reason-specific awareness notice is also sent to all staff with valid email addresses.';
     });
     document.getElementById('reason').dispatchEvent(new Event('change'));
 </script>
