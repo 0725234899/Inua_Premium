@@ -167,7 +167,7 @@ function getProjectedMaturityDate($releaseDate, $loan_duration, $loan_duration_u
     }
 }
 
-function calculateDaysOverdueAfterMaturity($conn, $loanId, $projectedMaturityDate, $totalDue) {
+function calculateDaysOverdueAfterMaturityFromDatabase($conn, $loanId, $projectedMaturityDate, $totalDue) {
     if (empty($projectedMaturityDate) || (float) $totalDue <= 0) {
         return 0;
     }
@@ -295,7 +295,7 @@ while ($row = $loanListResult->fetch_assoc()) {
     $row['processing_fee'] = (float) ($row['processing_fee'] ?? 0);
     $row['total_paid'] = (float) ($row['total_paid'] ?? 0);
     $row['projected_maturity_date'] = getProjectedMaturityDateForLoan($conn, $row);
-    $row['days_overdue'] = calculateDaysOverdueAfterMaturity($conn, $row['loan_id'], $row['projected_maturity_date'], $row['total_amount_due']);
+    $row['days_overdue'] = calculateDaysOverdueAfterMaturityFromDatabase($conn, $row['loan_id'], $row['projected_maturity_date'], $row['total_amount_due']);
 
     $totalPrincipal += $row['principal'];
     $totalProcessingFee += $row['processing_fee'];
